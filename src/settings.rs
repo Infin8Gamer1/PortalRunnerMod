@@ -31,6 +31,10 @@ pub struct Settings {
     /// Draw Portal's gun in Faith's view: 1 on, 0 off (she isn't holding it, so it floats
     /// over Mirror's Edge's arm animations; off by default).
     pub gun_model: f32,
+    /// How much the view widens when going fast (1 normal, 0 off).
+    pub fov_kick: f32,
+    /// Streaks round the screen's edges when going fast: 1 on, 0 off.
+    pub speed_lines: f32,
 }
 
 /// The volume sliders are perceptual: each step is the same number of decibels, and the
@@ -74,6 +78,8 @@ impl Default for Settings {
             portal_depth: 3.0,
             funnel: 1.0,
             gun_model: 0.0,
+            fov_kick: 1.0,
+            speed_lines: 1.0,
         }
     }
 }
@@ -137,6 +143,7 @@ pub enum Page {
     Audio,
     Controls,
     Gameplay,
+    Video,
 }
 
 struct Row {
@@ -176,7 +183,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 10] = [
+const ROWS: [Row; 12] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -226,6 +233,8 @@ const ROWS: [Row; 10] = [
         show: |v| format!("{v:.0}"),
     },
     Row { key: "funnel", page: Page::Gameplay, label: "Portal funnel", min: 0.0, max: 1.0, step: 1.0, get: |s| s.funnel, put: |s, v| s.funnel = v, show: on_off },
+    Row { key: "fov_kick", page: Page::Video, label: "Speed FOV increase", min: 0.0, max: 1.5, step: 0.25, get: |s| s.fov_kick, put: |s, v| s.fov_kick = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
+    Row { key: "speed_lines", page: Page::Video, label: "Speed lines", min: 0.0, max: 1.0, step: 1.0, get: |s| s.speed_lines, put: |s, v| s.speed_lines = v, show: on_off },
     Row { key: "gun_model", page: Page::Gameplay, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
 ];
 
@@ -436,7 +445,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_clamps() {
-        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0 };
+        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0, fov_kick: 0.5, speed_lines: 0.0 };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");
         assert_eq!(wild.master, 1.0);

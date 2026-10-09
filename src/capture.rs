@@ -147,6 +147,18 @@ fn script(name: &str) -> Vec<Act> {
             Wait(2),
             Shot("p6_fire"),
         ],
+        // Speed: sprinting, then far past it on Chamber 04's propulsion gel.
+        "speed" => vec![
+            Map(4),
+            Wait(60),
+            Look(0.0, -2.0),
+            Hold(fwd(), 60),
+            Shot("01_running"),
+            Hold(fwd(), 70),
+            Shot("02_sprinting"),
+            Hold(fwd(), 45),
+            Shot("03_on_gel"),
+        ],
         "menu" => vec![Map(1), Wait(30), Shot("before_menu"), Menu, Wait(10), Shot("menu")],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],

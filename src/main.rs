@@ -14,6 +14,7 @@ mod me_viewmodel;
 mod portal_audio;
 mod portal_render;
 mod settings;
+mod speed_fx;
 mod viewmodel;
 
 use std::f32::consts::FRAC_PI_2;
@@ -60,6 +61,7 @@ fn main() {
             .set(AssetPlugin { file_path: asset_dir, ..default() }),
     )
     .add_plugins(portal_render::PortalRenderPlugin)
+    .add_plugins(speed_fx::SpeedFxPlugin)
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
@@ -84,6 +86,7 @@ fn main() {
     let game = (
         switch_level,
         play,
+        speed_fx::update,
         chamber::update,
         viewmodel::animate,
         me_viewmodel::animate,
