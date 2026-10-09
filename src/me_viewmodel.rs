@@ -114,18 +114,18 @@ pub fn candidates() -> Vec<PathBuf> {
     v
 }
 
-fn image_from(t: &me_assets::Rgba) -> Image {
+pub(crate) fn image_from(t: &me_assets::Rgba) -> Image {
     image_with(t, t.pixels.clone(), TextureFormat::Rgba8UnormSrgb)
 }
 
 /// Normal maps hold vectors, not colours: no sRGB curve.
-fn normal_image(t: &me_assets::Rgba) -> Image {
+pub(crate) fn normal_image(t: &me_assets::Rgba) -> Image {
     image_with(t, t.pixels.clone(), TextureFormat::Rgba8Unorm)
 }
 
 /// The game's specular map as Bevy's metallic/roughness texture: shinier
 /// where the spec map is bright (G = roughness, B = metallic = 0).
-fn roughness_image(t: &me_assets::Rgba) -> Image {
+pub(crate) fn roughness_image(t: &me_assets::Rgba) -> Image {
     let px = t
         .pixels
         .chunks_exact(4)

@@ -53,6 +53,8 @@ pub struct Settings {
     pub portal_resolution: f32,
     /// `graphics::SHADOWS`.
     pub shadows: f32,
+    /// Faith's third-person body, seen through portals (and her shadow): 1 on, 0 off.
+    pub body3p: f32,
 }
 
 /// The volume sliders are perceptual: each step is the same number of decibels, and the
@@ -109,6 +111,7 @@ impl Default for Settings {
             sharpening: 0.0,
             portal_resolution: 1.0,
             shadows: 2.0,
+            body3p: 1.0,
         }
     }
 }
@@ -212,7 +215,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 23] = [
+const ROWS: [Row; 24] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -371,6 +374,7 @@ const ROWS: [Row; 23] = [
         show: |v| format!("{v:.2} s"),
     },
     Row { key: "show_timer", page: Page::Gameplay, label: "Chamber timer", min: 0.0, max: 1.0, step: 1.0, get: |s| s.show_timer, put: |s, v| s.show_timer = v, show: on_off },
+    Row { key: "body3p", page: Page::Display, label: "Faith's body in portals", min: 0.0, max: 1.0, step: 1.0, get: |s| s.body3p, put: |s, v| s.body3p = v, show: on_off },
     Row { key: "gun_model", page: Page::Display, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
 ];
 
@@ -427,6 +431,7 @@ mod tests {
             sharpening: 0.3,
             portal_resolution: 0.75,
             shadows: 3.0,
+            body3p: 0.0,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");

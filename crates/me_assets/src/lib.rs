@@ -213,6 +213,18 @@ impl FaithArms {
         Ok(FaithArms { mesh, anims, materials: vec![], legs: None, morphs: vec![], cooked_pc: cooked })
     }
 
+    /// Faith's third-person body (`SK_TKY_Crim_Fixer`: "Fixer" is her codename in the game's
+    /// files) with its textures, and her third-person animations (`AS_F3P_Unarmed`).
+    pub fn load_body3p(install: &Path, max_texture: u32) -> Result<Self> {
+        let cooked = cooked_pc(install).ok_or_else(|| Error::Missing(format!("TdGame/CookedPC under {}", install.display())))?;
+        let mut pkgs = Packages::new(&cooked);
+        let pkg = Rc::new(Package::open(&cooked.join("Characters/CH_TKY_Crim_Fixer.upk"))?);
+        let mesh = SkeletalMesh::read(&pkg, "SK_TKY_Crim_Fixer")?;
+        let anims = AnimSet::read_named(&Package::open(&cooked.join("Animations/AS_F3P_Unarmed.upk"))?, "AS_F3P_Unarmed")?;
+        let materials = slots(&mut pkgs, &pkg, &mesh, max_texture);
+        Ok(FaithArms { mesh, anims, materials, legs: None, morphs: vec![], cooked_pc: cooked })
+    }
+
     pub fn bone(&self, name: &str) -> Option<usize> {
         self.mesh.bones.iter().position(|b| b.name.eq_ignore_ascii_case(name))
     }

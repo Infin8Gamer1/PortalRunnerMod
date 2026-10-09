@@ -47,6 +47,8 @@ enum Act {
     Teleport(Vec3),
     /// Throw her at this velocity.
     Launch(Vec3),
+    /// Put a portal here (centre, facing, up).
+    Portal(PortalColor, Vec3, Vec3, Vec3),
     /// Open a menu screen.
     Menu(crate::menu::Screen),
 }
@@ -245,6 +247,29 @@ fn script(name: &str) -> Vec<Act> {
             Shot("p12_bridge_emitter"),
         ],
         "plate" => vec![Map(0), Wait(90), Teleport(Vec3::new(-14.0, 0.0, -0.5)), Look(0.0, -50.0), Wait(20), Shot("plate_a"), Teleport(Vec3::new(-11.0, 0.0, -4.0)), Look(90.0, -25.0), Wait(20), Shot("plate_b")],
+        // Faith's third-person body, seen through portals: from above (a floor portal in
+        // front of her, the ceiling portal over her head), then running.
+        "body" => vec![
+            Map(0),
+            Wait(60),
+            // Orange on the wall behind her, blue standing in front of her: looking into blue
+            // she sees herself from behind.
+            Teleport(Vec3::new(-21.5, 0.0, 0.0)),
+            Wait(20),
+            Portal(PortalColor::Orange, Vec3::new(-24.0, 1.2, 0.0), Vec3::X, Vec3::Y),
+            Portal(PortalColor::Blue, Vec3::new(-18.0, 1.2, 0.0), Vec3::NEG_X, Vec3::Y),
+            Look(-90.0, -5.0),
+            Wait(30),
+            Shot("b01_from_behind"),
+            Look(-90.0, -5.0),
+            Hold(MoveInput { move_axis: Vec2::new(0.0, -1.0), ..default() }, 25),
+            Shot("b02_walking_back"),
+            Teleport(Vec3::new(-21.5, 0.0, 0.0)),
+            Look(-90.0, -5.0),
+            Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), jump_pressed: true, jump_held: true, ..default() }, 1),
+            Hold(MoveInput::default(), 12),
+            Shot("b03_jumping"),
+        ],
         "menu" => {
             use crate::menu::Screen;
             use crate::settings::Page;
@@ -458,6 +483,7 @@ pub fn run(
         }
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Launch(v) => game.ctrl.launch(*v),
+        Act::Portal(c, at, n, up) => game.sim.set_portal(*c, Some(aperture::Portal::new(*at, *n, *up))),
         Act::Teleport(p) => {
             // What she's holding comes too.
             let d = *p - game.ctrl.feet;

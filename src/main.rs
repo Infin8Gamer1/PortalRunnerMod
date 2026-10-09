@@ -5,6 +5,7 @@
 //! (portals in `portal_render`, chambers in `chamber`, the gun in `gun`), sound, the HUD.
 
 mod audio;
+mod body3p;
 mod capture;
 mod chamber;
 mod extracted;
@@ -84,6 +85,7 @@ fn main() {
             hud::setup,
             viewmodel::setup,
             me_viewmodel::setup,
+            body3p::setup,
             gun::setup,
             menu::setup,
             audio::setup,
@@ -101,6 +103,7 @@ fn main() {
         props::animate,
         viewmodel::animate,
         me_viewmodel::animate,
+        body3p::animate,
         portal_roll,
         menu::title_camera,
         portal_render::update,
@@ -178,7 +181,7 @@ fn setup_world(mut commands: Commands) {
         DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: true, ..default() },
         Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y),
         // Lights the world, Faith's body and the first-person arms.
-        RenderLayers::from_layers(&[0, PLAYER_LAYER, viewmodel::VIEWMODEL_LAYER]),
+        RenderLayers::from_layers(&[0, PLAYER_LAYER, viewmodel::VIEWMODEL_LAYER, body3p::BODY_LAYER]),
     ));
     commands.spawn((
         PlayerCamera,

@@ -253,7 +253,7 @@ fn setup(
                 RenderTarget::from(images_per_level[level - 1][c.index()].clone()),
                 Projection::custom(ObliqueProjection::default()),
                 Transform::default(),
-                RenderLayers::from_layers(&[0, SURFACE_LAYER + level]),
+                RenderLayers::from_layers(&[0, SURFACE_LAYER + level, crate::body3p::BODY_LAYER]),
                 // The oblique projection would confuse the light clusters' depth slices.
                 ClusterConfig::Single,
             ));
