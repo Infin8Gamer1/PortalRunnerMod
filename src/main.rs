@@ -9,6 +9,7 @@ mod capture;
 mod chamber;
 mod extracted;
 mod fonts;
+mod graphics;
 mod gun;
 mod hud;
 mod me_viewmodel;
@@ -65,6 +66,7 @@ fn main() {
     )
     .add_plugins(portal_render::PortalRenderPlugin)
     .add_plugins(speed_fx::SpeedFxPlugin)
+    .add_plugins(graphics::GraphicsPlugin)
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
@@ -430,6 +432,7 @@ fn play(
     game.ctrl.tuning.skid_after_speed_gel = settings.gel_skid_delay;
     game.sim.funnel = settings.funnel > 0.5;
     render.depth = (settings.portal_depth.round() as usize).clamp(1, portal_render::MAX_DEPTH);
+    render.scale = settings.portal_resolution;
 
     // ---- gather input
     let mut input = MoveInput::default();

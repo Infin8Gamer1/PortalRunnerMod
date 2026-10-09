@@ -63,6 +63,7 @@ pub fn setup(
     let cam = commands
         .spawn((
             ViewmodelCamera,
+            crate::graphics::OverlayCamera,
             Camera3d::default(),
             Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
             // Fixed FOV: the arms shouldn't warp when sprinting widens the world FOV.

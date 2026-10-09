@@ -76,6 +76,7 @@ pub fn setup(
     let cam = commands
         .spawn((
             GunCamera,
+            crate::graphics::OverlayCamera,
             Camera3d::default(),
             Camera { order: 2, clear_color: ClearColorConfig::None, ..default() },
             Projection::Perspective(PerspectiveProjection { fov: 52f32.to_radians(), near: 0.01, ..default() }),

@@ -35,6 +35,24 @@ pub struct Settings {
     pub gel_skid_delay: f32,
     /// Show the chamber timer and best time (a time trial): 1 on, 0 off.
     pub show_timer: f32,
+    // ---- display and graphics (graphics.rs applies them)
+    /// 0 windowed, 1 borderless fullscreen, 2 fullscreen.
+    pub window_mode: f32,
+    /// Index into `graphics::RESOLUTIONS` (windowed).
+    pub resolution: f32,
+    pub vsync: f32,
+    /// Index into `graphics::FPS_CAPS`.
+    pub fps_cap: f32,
+    /// Exposure offset in stops (+ brighter).
+    pub brightness: f32,
+    /// `graphics::AA_MODES`.
+    pub anti_aliasing: f32,
+    /// Contrast-adaptive sharpening strength (0 off).
+    pub sharpening: f32,
+    /// The portal views' resolution, as a fraction of the window's.
+    pub portal_resolution: f32,
+    /// `graphics::SHADOWS`.
+    pub shadows: f32,
 }
 
 /// The volume sliders are perceptual: each step is the same number of decibels, and the
@@ -82,6 +100,15 @@ impl Default for Settings {
             speed_lines: 1.0,
             gel_skid_delay: 1.5,
             show_timer: 0.0,
+            window_mode: 0.0,
+            resolution: 1.0,
+            vsync: 1.0,
+            fps_cap: 0.0,
+            brightness: 0.0,
+            anti_aliasing: 3.0,
+            sharpening: 0.0,
+            portal_resolution: 1.0,
+            shadows: 2.0,
         }
     }
 }
@@ -145,7 +172,8 @@ pub enum Page {
     Audio,
     Controls,
     Gameplay,
-    Video,
+    Display,
+    Graphics,
 }
 
 struct Row {
@@ -184,7 +212,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 14] = [
+const ROWS: [Row; 23] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -234,8 +262,103 @@ const ROWS: [Row; 14] = [
         show: |v| format!("{v:.0}"),
     },
     Row { key: "funnel", page: Page::Gameplay, label: "Portal funnel", min: 0.0, max: 1.0, step: 1.0, get: |s| s.funnel, put: |s, v| s.funnel = v, show: on_off },
-    Row { key: "fov_kick", page: Page::Video, label: "Speed FOV increase", min: 0.0, max: 1.5, step: 0.25, get: |s| s.fov_kick, put: |s, v| s.fov_kick = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
-    Row { key: "speed_lines", page: Page::Video, label: "Speed lines", min: 0.0, max: 1.0, step: 1.0, get: |s| s.speed_lines, put: |s, v| s.speed_lines = v, show: on_off },
+    Row {
+        key: "window_mode",
+        page: Page::Display,
+        label: "Window",
+        min: 0.0,
+        max: 2.0,
+        step: 1.0,
+        get: |s| s.window_mode,
+        put: |s, v| s.window_mode = v,
+        show: |v| crate::graphics::WINDOW_MODES[v as usize].to_string(),
+    },
+    Row {
+        key: "resolution",
+        page: Page::Display,
+        label: "Window size",
+        min: 0.0,
+        max: (crate::graphics::RESOLUTIONS.len() - 1) as f32,
+        step: 1.0,
+        get: |s| s.resolution,
+        put: |s, v| s.resolution = v,
+        show: |v| {
+            let (x, y) = crate::graphics::RESOLUTIONS[v as usize];
+            format!("{x} x {y}")
+        },
+    },
+    Row { key: "vsync", page: Page::Display, label: "VSync", min: 0.0, max: 1.0, step: 1.0, get: |s| s.vsync, put: |s, v| s.vsync = v, show: on_off },
+    Row {
+        key: "fps_cap",
+        page: Page::Display,
+        label: "Frame rate cap",
+        min: 0.0,
+        max: (crate::graphics::FPS_CAPS.len() - 1) as f32,
+        step: 1.0,
+        get: |s| s.fps_cap,
+        put: |s, v| s.fps_cap = v,
+        show: |v| match crate::graphics::FPS_CAPS[v as usize] {
+            0 => "Off".to_string(),
+            n => format!("{n} fps"),
+        },
+    },
+    Row {
+        key: "brightness",
+        page: Page::Display,
+        label: "Brightness",
+        min: -2.0,
+        max: 2.0,
+        step: 0.25,
+        get: |s| s.brightness,
+        put: |s, v| s.brightness = v,
+        show: |v| format!("{v:+.2}"),
+    },
+    Row {
+        key: "anti_aliasing",
+        page: Page::Graphics,
+        label: "Anti-aliasing",
+        min: 0.0,
+        max: (crate::graphics::AA_MODES.len() - 1) as f32,
+        step: 1.0,
+        get: |s| s.anti_aliasing,
+        put: |s, v| s.anti_aliasing = v,
+        show: |v| crate::graphics::AA_MODES[v as usize].to_string(),
+    },
+    Row {
+        key: "sharpening",
+        page: Page::Graphics,
+        label: "Sharpening",
+        min: 0.0,
+        max: 1.0,
+        step: 0.1,
+        get: |s| s.sharpening,
+        put: |s, v| s.sharpening = v,
+        show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) },
+    },
+    Row {
+        key: "portal_resolution",
+        page: Page::Graphics,
+        label: "Portal view resolution",
+        min: 0.5,
+        max: 1.0,
+        step: 0.25,
+        get: |s| s.portal_resolution,
+        put: |s, v| s.portal_resolution = v,
+        show: pct,
+    },
+    Row {
+        key: "shadows",
+        page: Page::Graphics,
+        label: "Shadows",
+        min: 0.0,
+        max: (crate::graphics::SHADOWS.len() - 1) as f32,
+        step: 1.0,
+        get: |s| s.shadows,
+        put: |s, v| s.shadows = v,
+        show: |v| crate::graphics::SHADOWS[v as usize].to_string(),
+    },
+    Row { key: "fov_kick", page: Page::Display, label: "Speed FOV increase", min: 0.0, max: 1.5, step: 0.25, get: |s| s.fov_kick, put: |s, v| s.fov_kick = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
+    Row { key: "speed_lines", page: Page::Display, label: "Speed lines", min: 0.0, max: 1.0, step: 1.0, get: |s| s.speed_lines, put: |s, v| s.speed_lines = v, show: on_off },
     Row {
         key: "gel_skid_delay",
         page: Page::Gameplay,
@@ -248,7 +371,7 @@ const ROWS: [Row; 14] = [
         show: |v| format!("{v:.2} s"),
     },
     Row { key: "show_timer", page: Page::Gameplay, label: "Chamber timer", min: 0.0, max: 1.0, step: 1.0, get: |s| s.show_timer, put: |s, v| s.show_timer = v, show: on_off },
-    Row { key: "gun_model", page: Page::Video, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
+    Row { key: "gun_model", page: Page::Display, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
 ];
 
 pub fn setup(mut commands: Commands) {
@@ -274,14 +397,15 @@ pub fn nudge(i: usize, s: &mut Settings, dir: f32) {
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Audio, Page::Controls, Page::Gameplay, Page::Video];
+    pub const ALL: [Page; 5] = [Page::Audio, Page::Controls, Page::Gameplay, Page::Display, Page::Graphics];
 
     pub fn name(self) -> &'static str {
         match self {
             Page::Audio => "Audio",
             Page::Controls => "Controls",
             Page::Gameplay => "Gameplay",
-            Page::Video => "Video",
+            Page::Display => "Display",
+            Page::Graphics => "Graphics",
         }
     }
 }
@@ -292,7 +416,18 @@ mod tests {
 
     #[test]
     fn round_trips_and_clamps() {
-        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0, fov_kick: 0.5, speed_lines: 0.0, gel_skid_delay: 2.25, show_timer: 1.0 };
+        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0, fov_kick: 0.5, speed_lines: 0.0, gel_skid_delay: 2.25,
+            show_timer: 1.0,
+            window_mode: 1.0,
+            resolution: 3.0,
+            vsync: 0.0,
+            fps_cap: 2.0,
+            brightness: 0.5,
+            anti_aliasing: 4.0,
+            sharpening: 0.3,
+            portal_resolution: 0.75,
+            shadows: 3.0,
+        };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");
         assert_eq!(wild.master, 1.0);

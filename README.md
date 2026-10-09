@@ -102,8 +102,12 @@ change that makes one impossible is caught.
 In pages: **Audio** (master, music, effects), **Controls** (mouse sensitivity, field of view),
 **Gameplay** (**Hard landing from** and **Lethal fall from**, metres, Mirror's Edge's 5.3 and
 10, lethal can be Off; **Portal recursion**, how many portals deep you can see, 1-4; **Portal
-funnel**; **Skid delay off speed gel**; **Chamber timer**) and **Video** (**Speed FOV increase**,
-**Speed lines**, **Portal gun model**). They're saved to `settings.txt` where you run the game.
+funnel**; **Skid delay off speed gel**; **Chamber timer**), **Display** (window: windowed,
+borderless or fullscreen; window size; VSync; a frame-rate cap; brightness; **Speed FOV
+increase**, **Speed lines**, **Portal gun model**) and **Graphics** (anti-aliasing: off, FXAA,
+SMAA, MSAA 4x or TAA; sharpening; the portal views' resolution; shadow quality). They apply at
+once and are saved to `settings.txt` where you run the game. (`PORTAL_NOVSYNC=1` still forces
+VSync off.)
 
 ## Making levels
 
@@ -134,6 +138,7 @@ src/gun.rs              shot tracers, sparks, the hold beam (and the optional gu
 src/hud.rs              crosshair, hints, messages, timer, debug readout
 src/menu.rs             title, pause, chamber select, settings pages, controls
 src/speed_fx.rs         speed FOV kick, speed lines, skid dust
+src/graphics.rs         applying the display and graphics settings, the frame-rate cap
 src/fonts.rs            the UI font (Inter from the system, if it's there)
 src/progress.rs         best times and the last chamber, saved
 src/portal_audio.rs     Portal's sounds

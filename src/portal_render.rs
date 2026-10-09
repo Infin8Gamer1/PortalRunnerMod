@@ -167,6 +167,8 @@ pub struct PortalTunnel {
 pub struct PortalRender {
     /// Recursion levels drawn (1..=MAX_DEPTH).
     pub depth: usize,
+    /// The portal views' resolution, as a fraction of the window's.
+    pub scale: f32,
     size: UVec2,
     /// Per level (index 0 = level 1), per colour.
     images: Vec<[Handle<Image>; 2]>,
@@ -295,7 +297,7 @@ fn setup(
             NotShadowCaster,
         ));
     }
-    commands.insert_resource(PortalRender { depth: 3, size, images: images_per_level, surface_mats, tunnel_mats });
+    commands.insert_resource(PortalRender { depth: 3, scale: 1.0, size, images: images_per_level, surface_mats, tunnel_mats });
 }
 
 /// Whether any of a portal's opening shows on a camera's screen.
@@ -341,9 +343,10 @@ pub fn update(
     let sim = &game.sim;
     let t = time.elapsed_secs();
 
-    // Keep the images the size of the window.
+    // Keep the images the size of the window (times the resolution setting).
     if let Ok(w) = windows.single() {
-        let size = UVec2::new(w.physical_width().max(1), w.physical_height().max(1));
+        let scale = render.scale.clamp(0.25, 1.0);
+        let size = UVec2::new(((w.physical_width() as f32 * scale) as u32).max(1), ((w.physical_height() as f32 * scale) as u32).max(1));
         if size != render.size {
             render.size = size;
             for level in &render.images {
