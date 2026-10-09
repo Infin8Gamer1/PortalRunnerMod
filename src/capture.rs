@@ -46,6 +46,8 @@ enum Act {
     Map(usize),
     /// Put her at a point.
     Teleport(Vec3),
+    /// Open the settings menu.
+    Menu,
 }
 
 fn fwd() -> MoveInput {
@@ -96,6 +98,7 @@ fn script(name: &str) -> Vec<Act> {
             Hold(MoveInput { move_axis: Vec2::new(0.0, 0.35), ..default() }, 12),
             Shot("10_out"),
         ],
+        "menu" => vec![Map(1), Wait(30), Shot("before_menu"), Menu, Wait(10), Shot("menu")],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -218,6 +221,7 @@ pub fn run(
     mut game: ResMut<Game>,
     mut exit: MessageWriter<AppExit>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
+    mut menu: ResMut<crate::settings::Menu>,
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
@@ -239,7 +243,7 @@ pub fn run(
     let Some(act) = acts.get(cap.step) else {
         // Give the last screenshot time to be written.
         cap.step += 1;
-        if cap.step > acts.len() + 20 {
+        if cap.step > acts.len() + 60 {
             println!("capture: done");
             exit.write(AppExit::Success);
         }
@@ -276,6 +280,7 @@ pub fn run(
         Act::Map(i) => {
             game.pending = Some(*i);
         }
+        Act::Menu => menu.open = true,
         Act::Teleport(p) => {
             // What she's holding comes too.
             let d = *p - game.ctrl.feet;

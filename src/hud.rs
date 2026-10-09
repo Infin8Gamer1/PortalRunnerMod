@@ -200,11 +200,11 @@ pub fn update(
         }
     }
     if let Ok(mut t) = texts.p2().single_mut() {
-        t.0 = sim.hint(c.feet).unwrap_or("").to_string();
+        t.0 = if menu.open { String::new() } else { sim.hint(c.feet).unwrap_or("").to_string() };
     }
     if let Ok((mut t, mut color)) = texts.p3().single_mut() {
         let a = (1.0 - (game.intro - 2.5) / 1.0).clamp(0.0, 1.0);
-        if a > 0.0 {
+        if a > 0.0 && !menu.open {
             let intro = sim.level.intro;
             t.0 = if intro.is_empty() { sim.level.name.to_string() } else { format!("{}\n{}", sim.level.name, intro) };
             color.0 = Color::srgba(0.95, 0.95, 0.97, a);

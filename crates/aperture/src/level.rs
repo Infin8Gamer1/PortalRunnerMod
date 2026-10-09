@@ -458,19 +458,17 @@ impl Level {
         let mut l = Level::new(g.name);
         l.indoor = false;
         l.kill_y = g.solids.iter().map(|(b, _)| b.min.y).fold(f32::INFINITY, f32::min).min(0.0) - 2.0;
+        let mat_of = |look: &Look| match look {
+            Look::Roof => Mat::Roof,
+            Look::Wall => Mat::Wall,
+            Look::Runner | Look::Finish => Mat::Runner,
+            Look::Prop | Look::Skyline => Mat::Prop,
+        };
         for (b, look) in &g.solids {
-            let mat = match look {
-                Look::Roof => Mat::Roof,
-                Look::Wall => Mat::Wall,
-                Look::Runner => Mat::Runner,
-                Look::Prop => Mat::Prop,
-                Look::Finish => Mat::Runner,
-                Look::Skyline => Mat::Prop,
-            };
-            l.solids.push(Solid { b: *b, mat });
+            l.solids.push(Solid { b: *b, mat: mat_of(look) });
         }
         for (b, look) in &g.decor {
-            l.decor.push((*b, if *look == Look::Finish { Mat::Runner } else { Mat::Runner }));
+            l.decor.push((*b, mat_of(look)));
         }
         l.checkpoints = g.checkpoints.clone();
         l.fixtures = g.fixtures.clone();

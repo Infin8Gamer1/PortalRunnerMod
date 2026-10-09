@@ -577,7 +577,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         ));
     }
     for (paint, mat) in [(Paint::Bounce, &m.paint[0]), (Paint::Speed, &m.paint[1]), (Paint::Portal, &m.paint[2])] {
-        let mesh = meshes.add(Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default()));
+        let mesh = meshes.add(gel_mesh(&GelMap::default(), paint));
         commands.spawn((ChamberGeom, GelVis(paint), Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::default(), NotShadowCaster));
     }
 }
@@ -612,6 +612,12 @@ fn gel_mesh(gel: &GelMap, paint: Paint) -> Mesh {
         } else {
             idx.extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
         }
+    }
+    if pos.is_empty() {
+        // No paint: one degenerate triangle (the renderer doesn't like empty meshes).
+        pos = vec![[0.0, -1000.0, 0.0]; 3];
+        nrm = vec![[0.0, 1.0, 0.0]; 3];
+        idx = vec![0, 1, 2];
     }
     let n = pos.len();
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
