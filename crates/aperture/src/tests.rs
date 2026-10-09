@@ -627,3 +627,13 @@ fn chamber05_can_be_solved() {
     walk(&mut sim, &mut c, Vec3::new(0.0, ROOF_C, -98.0), 8.0);
     assert!(sim.complete);
 }
+
+#[test]
+fn mirrors_edge_roofs_take_portals() {
+    let (mut sim, mut c) = start(Level::from_greybox(&faith_move::rooftops::rooftops()));
+    settle(&mut sim, &mut c, 0.3);
+    // Straight down at the roof she stands on.
+    c.pitch = -1.4;
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "no portal on the roof");
+    assert_eq!(sim.portal(PortalColor::Blue).unwrap().normal, Vec3::Y);
+}
