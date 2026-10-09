@@ -154,6 +154,83 @@ fn a_cube_goes_through_portals() {
     assert!(sim.props[0].pos.x > 14.0, "{}", sim.props[0].pos);
 }
 
+/// Holding a cube, walk through a wall portal (blue at z = -6 facing +Z, orange at x = 20
+/// facing +X) with `input`, starting at `feet` looking along `yaw`: the cube comes too,
+/// smoothly, and is still held, near her, on her side at the end.
+fn carry_through(feet: Vec3, yaw: f32, input: Input, secs: f32) {
+    let mut l = flat();
+    l.solid(Mat::White, [-5.0, 0.0, -6.5], [5.0, 4.0, -6.0]);
+    l.solid(Mat::White, [19.5, 0.0, -10.0], [20.0, 4.0, 10.0]);
+    let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    l.cube(CubeKind::Storage, (feet + fwd * 1.6 + Vec3::Y * 0.45).to_array());
+    let (mut sim, mut c) = start(l);
+    sim.set_portal(PortalColor::Blue, Some(wall_portal(0.0, -6.0, Vec3::Z)));
+    sim.set_portal(PortalColor::Orange, Some(wall_portal(20.0, 0.0, Vec3::X)));
+    c.feet = feet;
+    c.yaw = yaw;
+    run(&mut sim, &mut c, 0.3, |_, _| Input::default());
+    c.pitch = -0.45;
+    sim.use_key(Aim::of(&c));
+    assert!(sim.held.is_some(), "didn't pick it up");
+    c.pitch = -0.2;
+    run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+    let mut last = sim.props[0].pos;
+    let mut worst = 0.0f32;
+    let mut dropped = false;
+    let mut through = false;
+    run(&mut sim, &mut c, secs, |sim, _| {
+        let p = sim.props[0].pos;
+        let tele = sim.events.iter().any(|e| matches!(e, SimEvent::PropTeleported { .. }));
+        through |= tele;
+        dropped |= sim.events.iter().any(|e| matches!(e, SimEvent::Drop { .. }));
+        if !tele {
+            worst = worst.max(p.distance(last));
+        }
+        last = p;
+        input
+    });
+    assert!(c.feet.x > 20.5, "she didn't come out of orange: {}", c.feet);
+    assert!(through, "the cube never went through");
+    assert!(!dropped && sim.held.is_some(), "dropped it");
+    assert_eq!(sim.held_through, None, "still through a portal at the end");
+    let eye = Aim::of(&c).eye;
+    assert!(sim.props[0].pos.distance(eye) < 2.6, "cube {} far from her eye {}", sim.props[0].pos, eye);
+    // No frame jumps more than a fast-moving cube covers (25 m/s * 1/60 s, and a bit).
+    assert!(worst < 0.5, "the cube jumped {worst} m in one frame");
+}
+
+#[test]
+fn a_cube_held_through_a_portal_then_walked_after() {
+    // Push the cube through blue ahead of her, then follow it.
+    carry_through(Vec3::new(0.0, 0.0, -3.0), 0.0, Input { move_axis: Vec2::new(0.0, 0.35), ..Default::default() }, 6.0);
+}
+
+#[test]
+fn carrying_a_cube_forwards_through_a_portal() {
+    carry_through(Vec3::new(0.0, 0.0, -2.0), 0.0, forward(), 2.5);
+}
+
+#[test]
+fn carrying_a_cube_backwards_through_a_portal() {
+    // Facing away from the portal, the cube in front of her, walking backwards into it.
+    let back = Input { move_axis: Vec2::new(0.0, -1.0), ..Default::default() };
+    carry_through(Vec3::new(0.0, 0.0, -2.5), std::f32::consts::PI, back, 3.5);
+}
+
+#[test]
+fn carrying_a_cube_sideways_through_a_portal() {
+    // Facing along the wall (-X), strafing right (-Z) into the portal.
+    let right = Input { move_axis: Vec2::new(1.0, 0.0), ..Default::default() };
+    carry_through(Vec3::new(0.0, 0.0, -2.5), std::f32::consts::FRAC_PI_2, right, 3.0);
+}
+
+#[test]
+fn carrying_a_cube_at_an_angle_through_a_portal() {
+    // Looking 45 degrees off, walking straight at it.
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    carry_through(Vec3::new(0.0, 0.0, -1.5), std::f32::consts::FRAC_PI_4, Input { move_axis: Vec2::new(s, s), ..Default::default() }, 2.5);
+}
+
 #[test]
 fn a_reflector_cube_turns_a_laser_into_the_catcher() {
     let mut l = flat();

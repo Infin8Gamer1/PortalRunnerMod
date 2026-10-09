@@ -328,6 +328,11 @@ pub struct Sim {
     pub signals: Vec<bool>,
     /// The prop Faith is carrying (index into `props`).
     pub held: Option<usize>,
+    /// Which portal the held cube is through, from Faith: None, it's on her side; Some(c),
+    /// it's on the far side of portal `c` (in through `c`, out of the other). Kept up to date
+    /// as she or the cube go through portals, so the cube is always held where she's looking
+    /// in its own space, whichever way either of them crossed.
+    pub held_through: Option<PortalColor>,
     held_far: f32,
     /// The paint's version when the portals were last checked against it.
     portals_checked_at: u64,
@@ -373,6 +378,7 @@ impl Sim {
             blobs: Vec::new(),
             signals: vec![false; level.signal_count()],
             held: None,
+            held_through: None,
             held_far: 0.0,
             portals_checked_at: 0,
             player_env: None,
@@ -479,6 +485,16 @@ impl Sim {
     pub fn set_portal(&mut self, c: PortalColor, p: Option<Portal>) {
         self.portals[c.index()] = p;
         self.rebuild_carved();
+        self.drop_if_held_through();
+    }
+
+    /// The portals changed: a cube held through them is let go (its way back is gone).
+    fn drop_if_held_through(&mut self) {
+        if self.held_through.take().is_some() {
+            if let Some(h) = self.held.take() {
+                self.events.push(SimEvent::Drop { id: self.props[h].id });
+            }
+        }
     }
 
     pub fn clear_portals(&mut self) {
@@ -488,6 +504,18 @@ impl Sim {
         self.portals = [None, None];
         self.rebuild_carved();
         self.player_env = None;
+        self.drop_if_held_through();
+    }
+
+    /// The open portal whose opening `p` lies on, if any.
+    fn portal_at(&self, p: Vec3) -> Option<PortalColor> {
+        PortalColor::BOTH.into_iter().find(|c| self.portals[c.index()].is_some_and(|q| q.signed_distance(p).abs() < 0.05 && q.in_rect(p, 0.05)))
+    }
+
+    /// Something went through portal `c`: from Faith, the held cube's side changes. Going
+    /// in through `c` is undone by going in through the other.
+    fn held_crossed(&mut self, c: PortalColor) {
+        self.held_through = if self.held_through == Some(c.other()) { None } else { Some(c) };
     }
 
     /// Close any portal whose surface no longer takes portals.
@@ -498,6 +526,7 @@ impl Sim {
                 self.portals[c.index()] = None;
                 self.rebuild_carved();
                 self.player_env = None;
+                self.drop_if_held_through();
                 for prop in &mut self.props {
                     prop.env = None;
                 }
@@ -991,14 +1020,30 @@ impl Sim {
         ctrl.teleport(feet, vel, yaw, pitch, keep_ground);
         self.roll = roll;
         self.events.push(SimEvent::Teleported { entered, roll });
-        // What she's carrying comes along, if it was still beside her on this side.
+        // What she's holding: already through this portal, she's caught up with it. In line
+        // with the opening (ahead of her or trailing behind), it
+        // stays where it is, now on the far side of the portal from her, and follows through
+        // the opening. Off to the side of it (she went through sideways or at an angle), it
+        // could never follow, so like Portal's it comes through with her, to where she's
+        // looking now.
         if let Some(h) = self.held {
-            let p = &mut self.props[h];
-            if link.from.signed_distance(p.pos) > -CUBE_HALF && p.pos.distance(eye) < 3.0 {
-                p.pos = link.point(p.pos);
-                p.vel = link.dir(p.vel);
-                p.rot = link.quat() * p.rot;
-                p.env = Some(entered.other());
+            let l = link.from.to_local(self.props[h].pos);
+            let in_line = l.x.abs() < link.from.half.x && l.y.abs() < link.from.half.y && l.z > -CUBE_HALF && l.z < 3.0;
+            if self.held_through == Some(entered) {
+                // Through the portal it's already through: she's joined it.
+                self.held_through = None;
+            } else if in_line && self.held_through.is_none() {
+                self.held_crossed(entered.other());
+            } else {
+                self.held_through = None;
+                let aim = Aim::of(ctrl);
+                let (to, rot) = self.hold_target(aim, h);
+                let p = &mut self.props[h];
+                p.pos = to;
+                p.vel = vel;
+                p.rot = rot;
+                p.env = None;
+                self.events.push(SimEvent::PropTeleported { id: p.id, at: p.pos });
             }
         }
     }
@@ -1039,10 +1084,11 @@ impl Sim {
             return;
         }
         let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask { fizzlers: false, ..Mask::SHOT }, 1);
-        let _ = legs;
         match hit.map(|h| h.what) {
             Some(HitWhat::Prop(i)) if self.props[i].fizzle.is_none() => {
                 self.held = Some(i);
+                // Picked up through a portal: it's on that portal's far side.
+                self.held_through = if legs.len() > 1 { self.portal_at(legs[0].1) } else { None };
                 self.held_far = 0.0;
                 self.events.push(SimEvent::PickUp { id: self.props[i].id });
             }
@@ -1075,6 +1121,7 @@ impl Sim {
                     .min_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some((_, i)) = near_cube {
                     self.held = Some(i);
+                    self.held_through = None;
                     self.held_far = 0.0;
                     self.events.push(SimEvent::PickUp { id: self.props[i].id });
                     return;
@@ -1256,32 +1303,33 @@ impl Sim {
         id
     }
 
-    /// Where a held cube should be: in front of her eye, and not inside a wall. Looking into
-    /// a portal, there are two answers: the point straight ahead (behind the portal's surface,
-    /// for a cube still on her side, which pulls it in) and the same point carried through
-    /// (for a cube already on the other side).
-    fn hold_target(&self, aim: Aim, skip: usize) -> (Vec3, Quat, Option<(Vec3, Quat)>) {
+    /// Where a held cube should be: in front of her eye, and not inside a wall, in the
+    /// cube's own space. Through a portal (`held_through`), her line of sight is followed
+    /// through it if she's looking into it; if she isn't, the point is carried through anyway,
+    /// which brings the cube back through the portal towards her.
+    fn hold_target(&self, aim: Aim, skip: usize) -> (Vec3, Quat) {
         let dist = 2.0;
         let mask = Mask { skip_prop: Some(skip), fizzlers: false, ..Mask::SOLID };
         let rot = Quat::from_rotation_y(aim.yaw);
-        if let Some(h) = self.raycast(aim.eye, aim.dir, dist, Mask { portals: true, ..mask }) {
-            if let HitWhat::Portal(c) = h.what {
-                let link = self.link(c).unwrap();
-                let left = dist - h.t;
-                let d = link.dir(aim.dir);
-                let o = link.point(h.point) + d * 0.01;
-                let t = match self.raycast(o, d, left + CUBE_HALF, mask) {
-                    Some(h2) => (h2.t - CUBE_HALF * 1.2).max(0.0),
-                    None => left,
-                };
-                return (aim.eye + aim.dir * dist, rot, Some((o + d * t, link.quat() * rot)));
-            }
-        }
-        let t = match self.raycast(aim.eye, aim.dir, dist + CUBE_HALF, mask) {
-            Some(h) => (h.t - CUBE_HALF * 1.2).max(0.0),
-            None => dist,
+        let clamp = |o: Vec3, d: Vec3, len: f32| match self.raycast(o, d, len + CUBE_HALF, mask) {
+            Some(h) => o + d * (h.t - CUBE_HALF * 1.2).max(0.0),
+            None => o + d * len,
         };
-        (aim.eye + aim.dir * t, rot, None)
+        let through = self.held_through.and_then(|c| self.link(c).map(|l| (c, l)));
+        let ahead = self.raycast(aim.eye, aim.dir, dist, Mask { portals: true, ..mask });
+        match (through, ahead.map(|h| (h.what, h.t, h.point))) {
+            // On her side, and a portal ahead: the point behind its surface, so the cube is
+            // pulled in (and once through, held from the other side).
+            (None, Some((HitWhat::Portal(_), _, _))) => (aim.eye + aim.dir * dist, rot),
+            (None, _) => (clamp(aim.eye, aim.dir, dist), rot),
+            // Through `c` and looking into it: on along her line of sight, out of the other.
+            (Some((c, link)), Some((HitWhat::Portal(hit), t, point))) if hit == c => {
+                let d = link.dir(aim.dir);
+                let o = link.point(point) + d * 0.01;
+                (clamp(o, d, dist - t), link.quat() * rot)
+            }
+            (Some((_, link)), _) => (link.point(aim.eye + aim.dir * dist), link.quat() * rot),
+        }
     }
 
     fn update_props(&mut self, dt: f32, aim: Aim, player_box: Aabb) {
@@ -1291,13 +1339,7 @@ impl Sim {
             if !self.props[h].alive || self.props[h].fizzle.is_some() {
                 self.held = None;
             } else {
-                let (near, near_rot, far) = self.hold_target(aim, h);
-                let pos = self.props[h].pos;
-                // Whichever side of the portal the cube is on.
-                let (target, rot) = match far {
-                    Some((f, fr)) if f.distance(pos) < near.distance(pos) => (f, fr),
-                    _ => (near, near_rot),
-                };
+                let (target, rot) = self.hold_target(aim, h);
                 let p = &mut self.props[h];
                 let to = target - p.pos;
                 p.vel = (to * 14.0).clamp_length_max(25.0);
@@ -1424,6 +1466,9 @@ impl Sim {
                             p.vel.y = p.vel.y.max(need);
                         }
                         self.events.push(SimEvent::PropTeleported { id: p.id, at: p.pos });
+                        if held {
+                            self.held_crossed(c);
+                        }
                     }
                 }
             }
