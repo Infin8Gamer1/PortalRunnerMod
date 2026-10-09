@@ -1,6 +1,8 @@
-//! The portal gun in Faith's hands: drawn by its own camera over the world (like Portal's
-//! viewmodel, at Portal's narrower field of view), with recoil, sway, a glowing core in the
-//! colour last fired, shot tracers, and sparks where the shots land.
+//! The portal gun's effects: shot tracers, sparks where the shots land, and the beam to what
+//! Faith is holding. The gun itself (Portal's model, drawn by its own camera over the
+//! world at Portal's narrower field of view, with recoil, sway and a glowing core) is off
+//! by default: Mirror's Edge's arms aren't animated holding it, so it only floats over
+//! them. The "Portal gun model" setting brings it back.
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::light::NotShadowCaster;
@@ -201,9 +203,14 @@ pub fn update(
     mut tracers: Query<(Entity, &mut Tracer, &mut Transform), (Without<GunRoot>, Without<GunCamera>, Without<PlayerCamera>, Without<Spark>, Without<HoldBeam>)>,
     mut sparks: Query<(Entity, &mut Spark, &mut Transform), (Without<GunRoot>, Without<GunCamera>, Without<PlayerCamera>, Without<Tracer>, Without<HoldBeam>)>,
     mut beam: Query<(&mut Transform, &mut Visibility), (With<HoldBeam>, Without<GunRoot>, Without<GunCamera>, Without<PlayerCamera>, Without<Tracer>, Without<Spark>)>,
+    settings: Res<crate::settings::Settings>,
 ) {
     let dt = time.delta_secs().min(0.1);
     st.time += dt;
+    st.visible = settings.gun_model > 0.5;
+    // Where shots and the hold beam start: the gun's muzzle, or without the gun, low and to
+    // the right of her eye (about her right hand), off the bottom of the screen.
+    let muzzle_at = if st.visible { Vec3::new(0.12, -0.12, -0.6) } else { Vec3::new(0.18, -0.38, -0.35) };
     let Ok((main_tf, _)) = main.single() else { return };
     let c = &game.ctrl;
     if let Ok((mut tf, mut cam)) = gun_cam.single_mut() {
@@ -216,8 +223,8 @@ pub fn update(
         if let SimEvent::Shot { color, from, to, .. } = *e {
             st.recoil = 1.0;
             st.last = Some(color);
-            // The first leg starts at the gun's muzzle, not the eye.
-            let muzzle = main_tf.translation + main_tf.rotation * Vec3::new(0.12, -0.12, -0.6);
+            // The first leg starts at the gun's muzzle (or her hand), not the eye.
+            let muzzle = main_tf.translation + main_tf.rotation * muzzle_at;
             let start = if from.distance(main_tf.translation) < 0.5 { muzzle } else { from };
             let len = start.distance(to);
             commands.spawn((
@@ -309,11 +316,11 @@ pub fn update(
     // The hold beam.
     if let Ok((mut tf, mut vis)) = beam.single_mut() {
         match game.sim.held.map(|h| game.sim.props[h].pos) {
-            Some(p) if st.visible => {
-                let muzzle = main_tf.translation + main_tf.rotation * Vec3::new(0.16, -0.17, -0.6);
+            Some(p) => {
+                let muzzle = main_tf.translation + main_tf.rotation * muzzle_at;
                 let d = p - muzzle;
                 let len = d.length();
-                if len > 0.05 && len < 3.0 {
+                if len > 0.05 && len < 3.2 {
                     tf.translation = (muzzle + p) * 0.5;
                     tf.rotation = Quat::from_rotation_arc(Vec3::Y, d / len);
                     tf.scale = Vec3::new(1.0 + 0.3 * (st.time * 20.0).sin(), len, 1.0);

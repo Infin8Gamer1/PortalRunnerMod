@@ -72,6 +72,8 @@ pub struct ChamberMats {
     pub button_off: Handle<StandardMaterial>,
     pub button_on: Handle<StandardMaterial>,
     pub cube: [Handle<StandardMaterial>; 3],
+    /// The same, faintly lit up while Faith is holding it.
+    pub cube_held: [Handle<StandardMaterial>; 3],
     pub cube_fizzle: Handle<StandardMaterial>,
     pub cube_coat: [Handle<StandardMaterial>; 2],
     pub fizzler: Handle<StandardMaterial>,
@@ -321,7 +323,8 @@ pub fn setup(
             emissive: LinearRgba::rgb(3.0, 1.2, 0.1),
             ..default()
         }),
-        cube: cube_tex.map(|t| materials.add(std(Color::WHITE, Some(t), 0.55, 0.2))),
+        cube: cube_tex.clone().map(|t| materials.add(std(Color::WHITE, Some(t), 0.55, 0.2))),
+        cube_held: cube_tex.map(|t| materials.add(StandardMaterial { emissive: LinearRgba::rgb(0.10, 0.16, 0.26), ..std(Color::WHITE, Some(t), 0.55, 0.2) })),
         cube_fizzle: materials.add(StandardMaterial {
             base_color: Color::srgba(0.1, 0.1, 0.1, 0.6),
             emissive: LinearRgba::rgb(0.6, 0.9, 1.4),
@@ -764,12 +767,13 @@ pub fn update(
                     tf.scale = Vec3::splat((1.0 - f * 0.3).max(0.2));
                     &m.cube_fizzle
                 } else {
+                    let base = if sim.held == Some(i) { &m.cube_held } else { &m.cube };
                     match (p.coat, p.kind) {
                         (Some(Paint::Bounce), _) => &m.cube_coat[0],
                         (Some(Paint::Speed), _) => &m.cube_coat[1],
-                        (_, CubeKind::Storage) => &m.cube[0],
-                        (_, CubeKind::Companion) => &m.cube[1],
-                        (_, CubeKind::Reflector) => &m.cube[2],
+                        (_, CubeKind::Storage) => &base[0],
+                        (_, CubeKind::Companion) => &base[1],
+                        (_, CubeKind::Reflector) => &base[2],
                     }
                 };
                 set(*e, Some(tf), Some(mat));

@@ -28,6 +28,9 @@ pub struct Settings {
     pub portal_depth: f32,
     /// Steer into portals you fall at (Portal's funnel): 1 on, 0 off.
     pub funnel: f32,
+    /// Draw Portal's gun in Faith's view: 1 on, 0 off (she isn't holding it, so it floats
+    /// over Mirror's Edge's arm animations; off by default).
+    pub gun_model: f32,
 }
 
 /// The volume sliders are perceptual: each step is the same number of decibels, and the
@@ -70,6 +73,7 @@ impl Default for Settings {
             lethal_fall: 10.0,
             portal_depth: 3.0,
             funnel: 1.0,
+            gun_model: 0.0,
         }
     }
 }
@@ -89,18 +93,11 @@ impl Settings {
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let Ok(v) = v.trim().parse::<f32>() else { continue };
-            match k.trim() {
-                "master" => s.master = v,
-                "music" => s.music = v,
-                "effects" => s.effects = v,
-                "sensitivity" => s.sensitivity = v,
-                "fov" => s.fov = v,
-                "hard_land" => s.hard_land = v,
-                "lethal_fall" => s.lethal_fall = v,
-                "portal_depth" => s.portal_depth = v,
-                "funnel" => s.funnel = v,
-                "audio" => audio_version = v,
-                _ => {}
+            let k = k.trim();
+            if k == "audio" {
+                audio_version = v;
+            } else if let Some(r) = ROWS.iter().find(|r| r.key == k) {
+                r.set(&mut s, v);
             }
         }
         // Volumes saved for the old linear sliders mean something else now.
@@ -108,18 +105,19 @@ impl Settings {
             let d = Settings::default();
             (s.master, s.music, s.effects) = (d.master, d.music, d.effects);
         }
-        for (i, r) in ROWS.iter().enumerate() {
+        for r in &ROWS {
             let v = r.get(&s).clamp(r.min, r.max);
-            ROWS[i].set(&mut s, v);
+            r.set(&mut s, v);
         }
         s
     }
 
     pub fn to_text(&self) -> String {
-        format!(
-            "# Portal Runner settings\naudio = {:.0}\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\nhard_land = {:.1}\nlethal_fall = {:.1}\nportal_depth = {:.0}\nfunnel = {:.0}\n",
-            AUDIO_VERSION, self.master, self.music, self.effects, self.sensitivity, self.fov, self.hard_land, self.lethal_fall, self.portal_depth, self.funnel
-        )
+        let mut t = format!("# Portal Runner settings\naudio = {AUDIO_VERSION}\n");
+        for r in &ROWS {
+            t += &format!("{} = {}\n", r.key, r.get(self));
+        }
+        t
     }
 
     pub fn load() -> Settings {
@@ -133,7 +131,19 @@ impl Settings {
     }
 }
 
+/// The menu's pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Audio,
+    Controls,
+    Gameplay,
+}
+
 struct Row {
+    /// Its name in the settings file.
+    key: &'static str,
+    #[allow(dead_code)] // for the menu's pages
+    page: Page,
     label: &'static str,
     min: f32,
     max: f32,
@@ -162,11 +172,17 @@ fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
 }
 
-const ROWS: [Row; 9] = [
-    Row { label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
-    Row { label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
-    Row { label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
+fn on_off(v: f32) -> String {
+    if v > 0.5 { "On".to_string() } else { "Off".to_string() }
+}
+
+const ROWS: [Row; 10] = [
+    Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
+    Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
+    Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
     Row {
+        key: "sensitivity",
+        page: Page::Controls,
         label: "Mouse sensitivity",
         min: 0.1,
         max: 3.0,
@@ -175,8 +191,10 @@ const ROWS: [Row; 9] = [
         put: |s, v| s.sensitivity = v,
         show: |v| format!("{v:.2}x"),
     },
-    Row { label: "Field of view", min: 70.0, max: 110.0, step: 1.0, get: |s| s.fov, put: |s, v| s.fov = v, show: |v| format!("{v:.0} deg") },
+    Row { key: "fov", page: Page::Controls, label: "Field of view", min: 70.0, max: 110.0, step: 1.0, get: |s| s.fov, put: |s, v| s.fov = v, show: |v| format!("{v:.0} deg") },
     Row {
+        key: "hard_land",
+        page: Page::Gameplay,
         label: "Hard landing from",
         min: 2.0,
         max: 30.0,
@@ -186,6 +204,8 @@ const ROWS: [Row; 9] = [
         show: |v| format!("{v:.1} m"),
     },
     Row {
+        key: "lethal_fall",
+        page: Page::Gameplay,
         label: "Lethal fall from",
         min: 5.0,
         max: LETHAL_OFF,
@@ -194,16 +214,19 @@ const ROWS: [Row; 9] = [
         put: |s, v| s.lethal_fall = v,
         show: |v| if v >= LETHAL_OFF { "Off".to_string() } else { format!("{v:.0} m") },
     },
-    Row { label: "Portal recursion", min: 1.0, max: 4.0, step: 1.0, get: |s| s.portal_depth, put: |s, v| s.portal_depth = v, show: |v| format!("{v:.0}") },
     Row {
-        label: "Portal funnel",
-        min: 0.0,
-        max: 1.0,
+        key: "portal_depth",
+        page: Page::Gameplay,
+        label: "Portal recursion",
+        min: 1.0,
+        max: 4.0,
         step: 1.0,
-        get: |s| s.funnel,
-        put: |s, v| s.funnel = v,
-        show: |v| if v > 0.5 { "On".to_string() } else { "Off".to_string() },
+        get: |s| s.portal_depth,
+        put: |s, v| s.portal_depth = v,
+        show: |v| format!("{v:.0}"),
     },
+    Row { key: "funnel", page: Page::Gameplay, label: "Portal funnel", min: 0.0, max: 1.0, step: 1.0, get: |s| s.funnel, put: |s, v| s.funnel = v, show: on_off },
+    Row { key: "gun_model", page: Page::Gameplay, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
 ];
 
 #[derive(Resource)]
@@ -413,12 +436,21 @@ mod tests {
 
     #[test]
     fn round_trips_and_clamps() {
-        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0 };
+        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0 };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");
         assert_eq!(wild.master, 1.0);
         assert_eq!(wild.fov, 70.0);
         assert_eq!(wild.music, Settings::default().music);
+    }
+
+    #[test]
+    fn every_row_has_its_own_key() {
+        for (i, a) in ROWS.iter().enumerate() {
+            assert!(ROWS[i + 1..].iter().all(|b| b.key != a.key), "{} twice", a.key);
+            let d = Settings::default();
+            assert!((a.min..=a.max).contains(&a.get(&d)), "{}'s default is out of range", a.key);
+        }
     }
 
     #[test]
