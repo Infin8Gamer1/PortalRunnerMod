@@ -31,6 +31,8 @@ pub enum Vis {
     PlateFlap { plate: usize, part: usize },
     Catcher(usize),
     Relay(usize),
+    /// A relay model's glow (only while lit).
+    RelayGlow(usize),
     Pedestal(usize),
     Hatch { dropper: usize, side: f32 },
     Wire(usize),
@@ -52,6 +54,8 @@ pub struct Pools {
     bridges: Vec<Entity>,
     blobs: Vec<Entity>,
     props: Vec<Entity>,
+    /// Each prop slot's models (storage, companion, reflector), when there are models.
+    prop_models: Vec<Option<[Entity; 3]>>,
     gel_version: u64,
 }
 
@@ -388,9 +392,16 @@ fn geom(commands: &mut Commands, mesh: Handle<Mesh>, mat: Handle<StandardMateria
 }
 
 /// Spawn everything for the sim's chamber.
-pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats, sim: &Sim, pools: &mut Pools) {
+pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats, sim: &Sim, pools: &mut Pools, models: &crate::props::PropModels) {
     *pools = Pools { gel_version: u64::MAX, ..default() };
     let l = &sim.level;
+    // Portal's models where they were extracted; the stand-ins below for the rest.
+    let r = crate::props::spawn(commands, models, sim);
+    // The boxes behind a laser or bridge (theirs now, when the emitter's a model).
+    let emitter_modelled = |b: &Aabb| {
+        (r.lasers && sim.lasers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.32)))
+            || (r.bridges && sim.bridges.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.2)))
+    };
     // The chamber's boxes (and the boxes of emitters and the like).
     for s in &sim.statics {
         match s.owner {
@@ -400,6 +411,8 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
                 geom(commands, meshes.add(box_faces(&s.b, |n| n.y < 0.5)), side.clone(), Transform::default());
                 geom(commands, meshes.add(box_faces(&s.b, |n| n.y >= 0.5)), top.clone(), Transform::default());
             }
+            Owner::Emitter if emitter_modelled(&s.b) => {}
+            Owner::Catcher(_) if r.catchers => {}
             Owner::Level(_) | Owner::Emitter | Owner::Catcher(_) => {
                 let mat = if matches!(s.owner, Owner::Level(_)) { mat_for(m, s.mat) } else { m.metal.clone() };
                 let e = geom(commands, meshes.add(box_mesh(&s.b)), mat, Transform::default());
@@ -449,7 +462,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     // Buttons: a dark base, a red top that goes down and lights when pressed.
     let base = meshes.add(Cylinder::new(0.95, BUTTON_TOP));
     let top = meshes.add(Cylinder::new(0.72, 0.06));
-    for (i, b) in sim.buttons.iter().enumerate() {
+    for (i, b) in sim.buttons.iter().enumerate().filter(|_| !r.buttons) {
         geom(commands, base.clone(), m.dark.clone(), Transform::from_translation(b.at + Vec3::Y * BUTTON_TOP * 0.5));
         let e = geom(commands, top.clone(), m.button_off.clone(), Transform::from_translation(b.at + Vec3::Y * (BUTTON_TOP + 0.03)));
         commands.entity(e).insert(Vis::Button(i));
@@ -460,14 +473,14 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     }
     let post = meshes.add(Cylinder::new(0.08, 1.0));
     let knob = meshes.add(Cylinder::new(0.14, 0.08));
-    for (i, p) in sim.pedestals.iter().enumerate() {
+    for (i, p) in sim.pedestals.iter().enumerate().filter(|_| !r.pedestals) {
         geom(commands, post.clone(), m.plate.clone(), Transform::from_translation(p.at + Vec3::Y * 0.5));
         geom(commands, meshes.add(Cuboid::new(0.36, 0.08, 0.36)), m.dark.clone(), Transform::from_translation(p.at + Vec3::Y * 0.96));
         let e = geom(commands, knob.clone(), m.button_off.clone(), Transform::from_translation(p.at + Vec3::Y * 1.03));
         commands.entity(e).insert(Vis::Pedestal(i));
     }
     // Doors: two halves that slide apart across the doorway.
-    for (i, d) in sim.doors.iter().enumerate() {
+    for (i, d) in sim.doors.iter().enumerate().filter(|_| !r.doors) {
         let s = d.b.size();
         let along_x = s.x >= s.z;
         let half_size = if along_x { Vec3::new(s.x * 0.5, s.y, s.z) } else { Vec3::new(s.x, s.y, s.z * 0.5) };
@@ -480,6 +493,9 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         let e = geom(commands, meshes.add(box_mesh(&f.b)), m.fizzler.clone(), Transform::default());
         commands.entity(e).insert((Vis::Fizzler(i), NotShadowCaster));
         // Emitter posts at both ends of its long side.
+        if r.fizzlers {
+            continue;
+        }
         let s = f.b.size();
         let c = f.b.center();
         let along = if s.x >= s.z { Vec3::X } else { Vec3::Z };
@@ -505,13 +521,19 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         let _ = e;
     }
     let lens = meshes.add(Sphere::new(0.22).mesh().uv(16, 10));
-    for (i, c) in sim.catchers.iter().enumerate() {
+    for (i, c) in sim.catchers.iter().enumerate().filter(|_| !r.catchers) {
         let e = geom(commands, lens.clone(), m.lens_off.clone(), Transform::from_translation(c.at));
         commands.entity(e).insert(Vis::Catcher(i));
     }
-    for (i, r) in sim.relays.iter().enumerate() {
-        geom(commands, meshes.add(Cylinder::new(0.12, 2.0)), m.metal.clone(), Transform::from_translation(r.at + Vec3::Y * 1.0));
-        let e = geom(commands, meshes.add(Cylinder::new(0.2, 0.5)), m.lens_off.clone(), Transform::from_translation(r.at + Vec3::Y * 1.0));
+    for (i, rl) in sim.relays.iter().enumerate() {
+        if r.relays {
+            // The model's lens glows when a laser passes through it.
+            let e = geom(commands, meshes.add(Sphere::new(0.14)), m.lens_on.clone(), Transform::from_translation(rl.at + Vec3::Y * 0.75));
+            commands.entity(e).insert((Vis::RelayGlow(i), NotShadowCaster));
+            continue;
+        }
+        geom(commands, meshes.add(Cylinder::new(0.12, 2.0)), m.metal.clone(), Transform::from_translation(rl.at + Vec3::Y * 1.0));
+        let e = geom(commands, meshes.add(Cylinder::new(0.2, 0.5)), m.lens_off.clone(), Transform::from_translation(rl.at + Vec3::Y * 1.0));
         commands.entity(e).insert(Vis::Relay(i));
     }
     for d in &sim.dispensers {
@@ -523,17 +545,17 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         let rot = Quat::from_rotation_arc(Vec3::Y, d.dir);
         geom(commands, meshes.add(Cylinder::new(0.3, 0.2)), paint, Transform::from_translation(d.at + d.dir * 0.02).with_rotation(rot));
     }
-    for l in &sim.lasers {
+    for l in sim.lasers.iter().filter(|_| !r.lasers) {
         let rot = Quat::from_rotation_arc(Vec3::Y, l.dir);
         geom(commands, meshes.add(Cylinder::new(0.16, 0.06)), m.lens_on.clone(), Transform::from_translation(l.at + l.dir * 0.01).with_rotation(rot));
     }
-    for b in &sim.bridges {
+    for b in sim.bridges.iter().filter(|_| !r.bridges) {
         let w = b.dir.cross(b.up).normalize_or_zero();
         let rot = Quat::from_mat3(&Mat3::from_cols(w, b.up, -b.dir));
         geom(commands, meshes.add(Cuboid::new(BRIDGE_HALF_WIDTH * 2.0, 0.05, 0.04)), m.bridge.clone(), Transform::from_translation(b.at + b.dir * 0.03 - b.up * 0.03).with_rotation(rot));
     }
     // Droppers: a tube above the drop point, and a hatch under it.
-    for (i, d) in sim.droppers.iter().enumerate() {
+    for (i, d) in sim.droppers.iter().enumerate().filter(|_| !r.droppers) {
         let top = d.at + Vec3::Y * (CUBE_HALF + 0.1);
         for (off, size) in [
             (Vec3::new(0.55, 1.5, 0.0), Vec3::new(0.1, 3.0, 1.2)),
@@ -652,6 +674,8 @@ pub fn update(
     mut meshes: ResMut<Assets<Mesh>>,
     mut vis: Query<(&Vis, &mut Transform, &mut Visibility, Option<&mut MeshMaterial3d<StandardMaterial>>)>,
     gel: Query<(&GelVis, &Mesh3d)>,
+    models: Res<crate::props::PropModels>,
+    mut cube_models: Query<(&mut Transform, &mut Visibility), Without<Vis>>,
 ) {
     let sim = &game.sim;
     let t = time.elapsed_secs();
@@ -691,6 +715,10 @@ pub fn update(
             }
             Vis::Catcher(i) => Some(lit(sim.catchers[i].lit, &m.lens_on, &m.lens_off)),
             Vis::Relay(i) => Some(lit(sim.relays[i].lit, &m.lens_on, &m.lens_off)),
+            Vis::RelayGlow(i) => {
+                *visible = if sim.relays[i].lit { Visibility::Inherited } else { Visibility::Hidden };
+                None
+            }
             Vis::Pedestal(i) => Some(lit(sim.pedestals[i].left > 0.0, &m.button_on, &m.button_off)),
             Vis::Wire(sig) => Some(lit(sim.signals.get(sig).copied().unwrap_or(false), &m.wire_on, &m.wire_off)),
             Vis::Hatch { dropper, side } => {
@@ -736,6 +764,11 @@ pub fn update(
         e.id()
     };
     pooled(&mut commands, &mut pools.props, sim.props.len(), |c| spawn_pooled(c, &m.cube_mesh, &m.cube[0], true));
+    while pools.prop_models.len() < pools.props.len() {
+        let slot = pools.prop_models.len();
+        let e = crate::props::spawn_cubes(&mut commands, &models, slot);
+        pools.prop_models.push(e);
+    }
     let beams: Vec<(Vec3, Vec3)> = sim.lasers.iter().filter(|l| l.on).flat_map(|l| l.path.iter().copied()).collect();
     pooled(&mut commands, &mut pools.beams, beams.len(), |c| spawn_pooled(c, &m.beam, &m.laser, false));
     pooled(&mut commands, &mut pools.glows, beams.len(), |c| spawn_pooled(c, &m.glow, &m.laser_glow, false));
@@ -760,6 +793,29 @@ pub fn update(
         }
     };
     for (i, e) in pools.props.iter().enumerate() {
+        // Portal's cube models, unless it's coated in gel or vaporising (the stand-in shows that).
+        let model = pools.prop_models.get(i).copied().flatten();
+        let modelled = sim.props.get(i).filter(|p| p.alive && p.fizzle.is_none() && p.coat.is_none()).map(|p| p.kind);
+        if let Some(ents) = model {
+            for (k, kind) in [CubeKind::Storage, CubeKind::Companion, CubeKind::Reflector].into_iter().enumerate() {
+                if let Ok((mut tf, mut v)) = cube_models.get_mut(ents[k]) {
+                    let want = modelled == Some(kind);
+                    if want {
+                        let p = &sim.props[i];
+                        tf.translation = p.pos;
+                        tf.rotation = p.rot;
+                    }
+                    let w = if want { Visibility::Inherited } else { Visibility::Hidden };
+                    if *v != w {
+                        *v = w;
+                    }
+                }
+            }
+            if modelled.is_some() {
+                set(*e, None, None);
+                continue;
+            }
+        }
         match sim.props.get(i) {
             Some(p) if p.alive => {
                 let mut tf = Transform::from_translation(p.pos).with_rotation(p.rot);

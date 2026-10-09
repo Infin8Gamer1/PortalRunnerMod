@@ -17,6 +17,7 @@ mod menu;
 mod portal_audio;
 mod portal_render;
 mod progress;
+mod props;
 mod settings;
 mod speed_fx;
 mod viewmodel;
@@ -74,6 +75,7 @@ fn main() {
         Startup,
         (
             extracted::setup,
+            props::setup,
             fonts::setup,
             settings::setup,
             setup_world,
@@ -95,6 +97,8 @@ fn main() {
         play,
         speed_fx::update,
         chamber::update,
+        props::tag_parts,
+        props::animate,
         viewmodel::animate,
         me_viewmodel::animate,
         portal_roll,
@@ -220,13 +224,14 @@ fn load_first_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mats: Res<chamber::ChamberMats>,
     mut pools: ResMut<chamber::Pools>,
+    models: Res<props::PropModels>,
     mut sun: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
     camera: Query<Entity, With<PlayerCamera>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
 ) {
     let g = &mut *game;
-    chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools);
+    chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
     light_for(&g.sim.level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     g.flash = None;
 }
@@ -357,6 +362,7 @@ fn switch_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mats: Res<chamber::ChamberMats>,
     mut pools: ResMut<chamber::Pools>,
+    models: Res<props::PropModels>,
     geom: Query<Entity, With<chamber::ChamberGeom>>,
     mut sun: Query<(&mut DirectionalLight, &mut Transform), With<Sun>>,
     camera: Query<Entity, With<PlayerCamera>>,
@@ -388,7 +394,7 @@ fn switch_level(
     g.sim = Sim::new(level.clone());
     g.sim.funnel = settings.funnel > 0.5;
     g.level = level.greybox();
-    chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools);
+    chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
     light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     let cp = &level.checkpoints[0];
     g.ctrl.spawn = cp.spawn;

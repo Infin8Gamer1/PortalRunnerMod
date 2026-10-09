@@ -155,11 +155,34 @@ const TEXTURES: &[(&str, &[&str])] = &[
     ("metal_box", &["materials/models/props/metal_box.vtf"]),
 ];
 
-/// (our name, which game, MDL path).
-const MODELS: &[(&str, &str, &str)] = &[
-    ("w_portalgun", "portal", "models/weapons/w_portalgun.mdl"),
-    ("v_portalgun", "portal", "models/weapons/v_portalgun.mdl"),
-    ("metal_box", "portal", "models/props/metal_box.mdl"),
+/// A model to convert: (our name, which game, MDL path, skin, and a turn about our Z axis in
+/// degrees for the few whose upright turn lives somewhere `vmdl` doesn't look).
+const MODELS: &[(&str, &str, &str, usize, f32)] = &[
+    ("w_portalgun", "portal", "models/weapons/w_portalgun.mdl", 0, 0.0),
+    ("v_portalgun", "portal", "models/weapons/v_portalgun.mdl", 0, 0.0),
+    // The puzzle pieces.
+    ("metal_box", "portal2", "models/props/metal_box.mdl", 0, 0.0),
+    ("companion_cube", "portal2", "models/props/metal_box.mdl", 1, 0.0),
+    ("reflection_cube", "portal2", "models/props/reflection_cube.mdl", 0, 0.0),
+    ("floor_button", "portal2", "models/props/portal_button.mdl", 0, -90.0),
+    ("floor_button_on", "portal2", "models/props/portal_button.mdl", 1, -90.0),
+    ("cube_button", "portal2", "models/props/box_socket.mdl", 0, 0.0),
+    ("cube_button_on", "portal2", "models/props/box_socket.mdl", 1, 0.0),
+    ("pedestal_button", "portal2", "models/props/switch001.mdl", 0, 0.0),
+    ("box_dropper", "portal2", "models/props/box_dropper.mdl", 0, 0.0),
+    ("box_dropper_cover", "portal2", "models/props/box_dropper_cover.mdl", 0, 0.0),
+    ("faith_plate", "portal2", "models/props/faith_plate.mdl", 0, 0.0),
+    ("bridge_emitter", "portal2", "models/props/wall_emitter.mdl", 0, 0.0),
+    ("laser_emitter", "portal2", "models/props/laser_emitter_center.mdl", 0, 0.0),
+    ("laser_catcher", "portal2", "models/props/laser_catcher_center.mdl", 0, 0.0),
+    ("laser_catcher_on", "portal2", "models/props/laser_catcher_center.mdl", 1, 0.0),
+    ("laser_relay", "portal2", "models/props/laser_receptacle.mdl", 0, 0.0),
+    ("fizzler_emitter", "portal2", "models/props/fizzler_dynamic.mdl", 0, 0.0),
+    ("door_upper", "portal2", "models/props/vert_door/vert_door_upper.mdl", 0, 0.0),
+    ("door_lower", "portal2", "models/props/vert_door/vert_door_lower.mdl", 0, 0.0),
+    ("door_frame", "portal2", "models/props/vert_door/vert_door_frame.mdl", 0, 0.0),
+    ("elevator", "portal", "models/props/round_elevator_body.mdl", 0, 0.0),
+    ("sign_frame", "portal2", "models/props/sign_frame02/sign_frame02.mdl", 0, 0.0),
 ];
 
 fn main() {
@@ -195,6 +218,13 @@ fn main() {
         std::process::exit(1);
     }
     let read_any = |path: &str| games.iter().find_map(|g| g.read(path));
+    // `--inspect <mdl path>...`: describe models (parts, bones, size) instead of extracting.
+    if let Some(i) = args.iter().position(|a| a == "--inspect") {
+        for path in &args[i + 1..] {
+            inspect(&games, path);
+        }
+        return;
+    }
 
     for sub in ["sounds", "textures", "models"] {
         std::fs::create_dir_all(out.join(sub)).expect("create output folder");
@@ -237,12 +267,12 @@ fn main() {
     println!("  {n} textures");
 
     let mut n = 0;
-    for (name, game, path) in MODELS {
-        let Some(g) = games.iter().find(|g| g.name == *game) else {
+    for (name, game, path, skin, turn) in MODELS {
+        let Some(g) = games.iter().find(|g| g.name == *game).or_else(|| games.first()) else {
             missing.push(*name);
             continue;
         };
-        match convert_model(g, &games, path) {
+        match convert_model(g, &games, path, *skin, *turn) {
             Ok(bytes) => {
                 std::fs::write(out.join("models").join(format!("{name}.glb")), bytes).expect("write model");
                 n += 1;
@@ -256,6 +286,53 @@ fn main() {
     println!("  {n} models");
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));
+    }
+}
+
+fn inspect(games: &[Game], mdl_path: &str) {
+    let read = |p: &str| games.iter().find_map(|g| g.read(p));
+    let stem = mdl_path.trim_end_matches(".mdl");
+    let (Some(mdl), Some(vvd), Some(vtx)) = (read(mdl_path), read(&format!("{stem}.vvd")), read(&format!("{stem}.dx90.vtx"))) else {
+        println!("{mdl_path}: not found");
+        return;
+    };
+    let model = match (vmdl::Mdl::read(&mdl), vmdl::Vtx::read(&vtx), vmdl::Vvd::read(&vvd)) {
+        (Ok(m), Ok(t), Ok(v)) => vmdl::Model::from_parts(m, t, v),
+        (m, t, v) => {
+            println!("{mdl_path}: unreadable: {:?} {:?} {:?}", m.err(), t.err(), v.err());
+            return;
+        }
+    };
+    let (lo, hi) = model.bounding_box();
+    let (lo, hi) = (convert_point(lo.into()), convert_point(hi.into()));
+    println!("{mdl_path}: {} vertices, bounds {:?} .. {:?} m", model.vertices().len(), lo, hi);
+    let mut uses = vec![0usize; model.bones().count()];
+    for v in model.vertices() {
+        if let Some(b) = v.bone_weights.weights().max_by(|a, b| a.weight.total_cmp(&b.weight)) {
+            if let Some(u) = uses.get_mut(b.bone_id as usize) {
+                *u += 1;
+            }
+        }
+    }
+    let world = bone_transforms(&model);
+    let mut lo = glam::Vec3::splat(f32::INFINITY);
+    let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
+    for v in model.vertices() {
+        let p = glam::Vec3::from(convert_point(root_turn(&model, v.position.into())));
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    println!("  posed vertices: {:.3?} .. {:.3?}", lo, hi);
+    for (i, b) in model.bones().enumerate() {
+        let p = convert_point(root_turn(&model, world[i].to_array()));
+        println!("  bone {i} {:?} parent {} at {:.3?} ({} vertices)", b.name, b.parent, p, uses[i]);
+    }
+    for (i, t) in model.textures().iter().enumerate() {
+        println!("  material {i}: {}", t.name);
+    }
+    println!("  skins: {}", model.skin_tables().count());
+    for a in model.animations() {
+        println!("  animation {:?}", a.name);
     }
 }
 
@@ -293,7 +370,90 @@ fn convert_dir(p: [f32; 3]) -> [f32; 3] {
     [-p[1], p[2], -p[0]]
 }
 
-fn convert_model(game: &Game, all: &[Game], mdl_path: &str) -> Result<Vec<u8>, String> {
+/// A material's look, from its VMT: the base texture (following `include`s, for Portal 2's
+/// patch materials) and whether it's see-through.
+fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_paths: &[String]) -> glb::Material {
+    let mut vmt_text = None;
+    for sp in search_paths.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()).chain(std::iter::once(String::new())) {
+        let vmt_path = format!("materials/{}{}.vmt", sp, name).replace("//", "/");
+        if let Some(vmt) = read(&vmt_path) {
+            vmt_text = Some(String::from_utf8_lossy(&vmt).into_owned());
+            break;
+        }
+    }
+    let mut text = vmt_text.unwrap_or_default();
+    // A patch material: the look is in the file it includes.
+    for _ in 0..3 {
+        if vmt_base_texture(&text).is_some() {
+            break;
+        }
+        let Some(inc) = vmt_value(&text, "include") else { break };
+        match read(&inc.replace('\\', "/").to_ascii_lowercase()) {
+            Some(b) => text = format!("{}\n{}", String::from_utf8_lossy(&b), text),
+            None => break,
+        }
+    }
+    let flag = |k: &str| vmt_value(&text, k).is_some_and(|v| v.trim() == "1");
+    let mut texture_png = None;
+    if let Some(base) = vmt_base_texture(&text) {
+        if let Some(vtf) = read(&format!("materials/{base}.vtf")) {
+            if let Ok(img) = decode_vtf(&vtf) {
+                let mut png = Vec::new();
+                if image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {
+                    texture_png = Some(png);
+                }
+            }
+        }
+    }
+    glb::Material { texture_png, blend: flag("$translucent"), mask: flag("$alphatest") }
+}
+
+/// A VMT key's value (case-insensitive, quoted or not), anywhere in the file.
+fn vmt_value(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let l = line.trim();
+        let lower = l.to_ascii_lowercase();
+        let k = lower.trim_start_matches('"');
+        if let Some(rest) = k.strip_prefix(key) {
+            let rest = rest.trim_start_matches('"');
+            if !rest.starts_with(|c: char| c.is_whitespace()) {
+                continue;
+            }
+            let v = l[l.len() - rest.len()..].trim().trim_matches('"').trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Each bone's place in the model's bind pose (Source space), from its pose-to-bone matrix.
+fn bone_transforms(model: &vmdl::Model) -> Vec<glam::Vec3> {
+    model
+        .bones()
+        .map(|b| {
+            let m: [[f32; 4]; 3] = bytemuck::cast(b.pose_to_bone);
+            let rot = glam::Mat3::from_cols(
+                glam::Vec3::new(m[0][0], m[1][0], m[2][0]),
+                glam::Vec3::new(m[0][1], m[1][1], m[2][1]),
+                glam::Vec3::new(m[0][2], m[1][2], m[2][2]),
+            );
+            glam::Affine3A::from_mat3_translation(rot, glam::Vec3::new(m[0][3], m[1][3], m[2][3])).inverse().translation.into()
+        })
+        .collect()
+}
+
+/// The model's own turn (a model built Y-up is turned upright by its root bone and its idle
+/// animation; Source draws it that way).
+fn root_turn(model: &vmdl::Model, p: [f32; 3]) -> [f32; 3] {
+    let v = model.apply_root_transform(vmdl::Vector { x: p[0], y: p[1], z: p[2] });
+    [v.x, v.y, v.z]
+}
+
+/// Convert a model (with skin `skin`) to glTF: a part per bone that moves any of it.
+fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32) -> Result<Vec<u8>, String> {
+    let turn = glam::Quat::from_rotation_z(turn_deg.to_radians());
     let read = |p: &str| game.read(p).or_else(|| all.iter().find_map(|g| g.read(p)));
     let mdl = read(mdl_path).ok_or("no .mdl")?;
     let stem = mdl_path.trim_end_matches(".mdl");
@@ -304,53 +464,64 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str) -> Result<Vec<u8>, S
         vmdl::Vtx::read(&vtx).map_err(|e| e.to_string())?,
         vmdl::Vvd::read(&vvd).map_err(|e| e.to_string())?,
     );
-    let verts: Vec<([f32; 3], [f32; 3], [f32; 2])> = model
-        .vertices()
-        .iter()
-        .map(|v| (convert_point(v.position.into()), convert_dir(v.normal.into()), v.texture_coordinates))
-        .collect();
+    let bones = bone_transforms(&model);
+    let names: Vec<String> = model.bones().map(|b| b.name.clone()).collect();
+    let vertices = model.vertices();
+    let bone_of = |i: usize| -> usize {
+        vertices[i].bone_weights.weights().max_by(|a, b| a.weight.total_cmp(&b.weight)).map(|w| w.bone_id as usize).unwrap_or(0).min(bones.len().saturating_sub(1))
+    };
 
-    // One primitive per material.
-    let skin = model.skin_tables().next();
-    let mut by_material: HashMap<i32, Vec<u32>> = HashMap::new();
+    let skin_table = model.skin_tables().nth(skin).or_else(|| model.skin_tables().next());
+    let mut materials: Vec<glb::Material> = Vec::new();
+    let mut material_of: HashMap<i32, usize> = HashMap::new();
+    // Parts by bone: (local vertices, global -> local, triangles by material).
+    let mut parts: HashMap<usize, (Vec<([f32; 3], [f32; 3], [f32; 2])>, HashMap<usize, u32>, HashMap<usize, Vec<u32>>)> = HashMap::new();
+    let pivot_of = |b: usize| -> [f32; 3] { (turn * glam::Vec3::from(convert_point(root_turn(&model, bones.get(b).map(|t| t.to_array()).unwrap_or([0.0; 3]))))).to_array() };
     for mesh in model.meshes() {
-        let entry = by_material.entry(mesh.material_index()).or_default();
-        for strip in mesh.vertex_strip_indices() {
-            let idx: Vec<u32> = strip.map(|i| i as u32).collect();
-            for t in idx.chunks_exact(3) {
-                // Source winds clockwise.
-                entry.extend_from_slice(&[t[0], t[2], t[1]]);
+        let m = mesh.material_index();
+        let mat = match material_of.get(&m) {
+            Some(&k) => k,
+            None => {
+                let info = skin_table.as_ref().and_then(|s| s.texture_info(m));
+                let material = match info {
+                    Some(info) => read_material(&read, &info.name.replace('\\', "/").to_ascii_lowercase(), &info.search_paths),
+                    None => glb::Material { texture_png: None, blend: false, mask: false },
+                };
+                materials.push(material);
+                material_of.insert(m, materials.len() - 1);
+                materials.len() - 1
             }
-        }
-    }
-    let mut prims = Vec::new();
-    let mut mats: Vec<i32> = by_material.keys().copied().collect();
-    mats.sort();
-    for m in mats {
-        let tex_info = skin.as_ref().and_then(|s| s.texture_info(m));
-        let mut texture = None;
-        if let Some(info) = tex_info {
-            let name = info.name.replace('\\', "/").to_ascii_lowercase();
-            for sp in info.search_paths.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()).chain(std::iter::once(String::new())) {
-                let vmt_path = format!("materials/{}{}.vmt", sp, name).replace("//", "/");
-                if let Some(vmt) = read(&vmt_path) {
-                    let text = String::from_utf8_lossy(&vmt);
-                    if let Some(base) = vmt_base_texture(&text) {
-                        if let Some(vtf) = read(&format!("materials/{base}.vtf")) {
-                            if let Ok(img) = decode_vtf(&vtf) {
-                                let mut png = Vec::new();
-                                image::DynamicImage::ImageRgba8(img)
-                                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-                                    .map_err(|e| e.to_string())?;
-                                texture = Some(png);
-                            }
-                        }
-                    }
-                    break;
+        };
+        for strip in mesh.vertex_strip_indices() {
+            let idx: Vec<usize> = strip.collect();
+            for t in idx.chunks_exact(3) {
+                let b = bone_of(t[0]);
+                let pivot = pivot_of(b);
+                let (verts, remap, tris) = parts.entry(b).or_default();
+                // Source winds clockwise.
+                for &g in &[t[0], t[2], t[1]] {
+                    let local = *remap.entry(g).or_insert_with(|| {
+                        let v = &vertices[g];
+                        let p = (turn * glam::Vec3::from(convert_point(root_turn(&model, v.position.into())))).to_array();
+                        let n = (turn * glam::Vec3::from(convert_dir(root_turn(&model, v.normal.into())))).to_array();
+                        verts.push(([p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]], n, v.texture_coordinates));
+                        (verts.len() - 1) as u32
+                    });
+                    tris.entry(mat).or_default().push(local);
                 }
             }
         }
-        prims.push(glb::Primitive { indices: by_material.remove(&m).unwrap(), texture_png: texture });
     }
-    Ok(glb::write(&verts, &prims))
+    let mut keys: Vec<usize> = parts.keys().copied().collect();
+    keys.sort();
+    let out: Vec<glb::Part> = keys
+        .into_iter()
+        .map(|b| {
+            let (verts, _, tris) = parts.remove(&b).unwrap();
+            let mut prims: Vec<(Vec<u32>, usize)> = tris.into_iter().map(|(m, t)| (t, m)).collect();
+            prims.sort_by_key(|p| p.1);
+            glb::Part { name: names.get(b).cloned().unwrap_or_else(|| format!("bone{b}")), pivot: pivot_of(b), verts, prims }
+        })
+        .collect();
+    Ok(glb::write(&out, &materials))
 }

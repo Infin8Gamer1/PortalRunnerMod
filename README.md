@@ -23,7 +23,11 @@ cargo run --release
 ```
 
 The extractor finds the games in the usual Steam folders (Linux and Windows); otherwise pass
-`--portal <dir>` and `--portal2 <dir>`. Mirror's Edge is found the same way, or set
+`--portal <dir>` and `--portal2 <dir>`. Run it again after pulling changes that add models: the
+puzzle pieces (buttons, cube sockets, pedestal buttons, cubes, droppers, chamber doors, grill
+emitters, laser emitters, catchers and relays, light bridge emitters) use Portal 2's models
+when they're extracted, and stand-ins when they aren't. `--inspect <model.mdl>...` describes
+models (parts, bones, size) instead of extracting. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
 It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were

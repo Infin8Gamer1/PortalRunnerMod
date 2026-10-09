@@ -4358,6 +4358,8 @@ dependencies = [
 name = "portal_extract"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "glam",
  "image",
  "serde_json",
  "vmdl",

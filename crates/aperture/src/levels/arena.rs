@@ -23,7 +23,7 @@ use crate::level::{CubeKind, Inputs, Level, Mat, Paint};
 
 pub fn arena() -> Level {
     let mut l = Level::new("Proving Grounds");
-    l.intro = "Every piece of the facility, to try out. Esc for settings, F1 for help.";
+    l.intro = "Every piece of the facility, to try out. Esc for the menu, F1 for the controls.";
     l.room([-24.0, 0.0, -24.0], [24.0, 12.0, 24.0], 1.0, Mat::White, Mat::White, Mat::White);
     l.repaint(Mat::Black, [-8.0, 0.0, -25.0], [8.0, 12.0, -24.0]);
     l.spawn([0.0, 0.0, 18.0], 0.0);
@@ -33,6 +33,8 @@ pub fn arena() -> Level {
     // ---- A cube, a button, a door (left, front). The door leads out.
     l.dropper(CubeKind::Storage, [-16.0, 5.0, 17.0], Inputs::always());
     l.button(0, [-16.0, 0.0, 8.0]);
+    // A cube-only button beside it (Faith standing on it does nothing).
+    l.cube_button(7, [-11.5, 0.0, 8.0]);
     l.cut([-25.01, 0.0, 9.0], [-23.99, 3.0, 12.0]);
     l.door(Inputs::on(0), [-24.6, 0.0, 9.0], [-24.4, 3.0, 12.0]);
     l.wire(0, &[[-16.0, 0.03, 9.0], [-16.0, 0.03, 10.5], [-24.0, 0.03, 10.5]]);
