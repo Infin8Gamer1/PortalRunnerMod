@@ -8,11 +8,14 @@ mod audio;
 mod capture;
 mod chamber;
 mod extracted;
+mod fonts;
 mod gun;
 mod hud;
 mod me_viewmodel;
+mod menu;
 mod portal_audio;
 mod portal_render;
+mod progress;
 mod settings;
 mod speed_fx;
 mod viewmodel;
@@ -69,6 +72,8 @@ fn main() {
         Startup,
         (
             extracted::setup,
+            fonts::setup,
+            settings::setup,
             setup_world,
             chamber::setup,
             load_first_level,
@@ -76,7 +81,7 @@ fn main() {
             viewmodel::setup,
             me_viewmodel::setup,
             gun::setup,
-            settings::setup,
+            menu::setup,
             audio::setup,
             portal_audio::setup,
             capture::setup,
@@ -91,6 +96,7 @@ fn main() {
         viewmodel::animate,
         me_viewmodel::animate,
         portal_roll,
+        menu::title_camera,
         portal_render::update,
         gun::update,
         gun::tag_model,
@@ -99,7 +105,7 @@ fn main() {
         hud::update,
     )
         .chain();
-    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), settings::update, cursor_lock, game).chain());
+    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), menu::update, cursor_lock, game).chain());
     app.run();
 }
 
@@ -120,12 +126,14 @@ pub struct Game {
     pub locked: bool,
     /// The mouse was grabbed this frame: that click isn't a shot.
     pub just_locked: bool,
-    pub show_help: bool,
+    /// The debug readout (F3).
+    pub show_debug: bool,
+    /// The Reaction Time hint has been shown in this chamber.
+    pub reaction_hinted: bool,
     pub mouse_sens: f32,
     pub pad_sens: f32,
     /// Time in this chamber, and the best per chamber.
     pub timer: f32,
-    pub best: Vec<Option<f32>>,
     pub last_time: Option<f32>,
     pub flash: Option<(String, f32)>,
     /// Seconds since the chamber started (its title card).
@@ -151,6 +159,7 @@ pub struct Sun;
 // ------------------------------------------------------------------ setup
 
 fn setup_world(mut commands: Commands) {
+    commands.insert_resource(progress::Progress::load());
     let levels = aperture::levels::all();
     let first = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(levels.len() - 1);
     let level = (levels[first].1)();
@@ -174,7 +183,6 @@ fn setup_world(mut commands: Commands) {
         Transform::from_translation(cp.spawn + Vec3::Y * 1.7),
         RenderLayers::from_layers(&[0, PLAYER_LAYER, portal_render::SURFACE_LAYER]),
     ));
-    let n = levels.len();
     commands.insert_resource(Game {
         ctrl,
         sim: Sim::new(level.clone()),
@@ -185,11 +193,11 @@ fn setup_world(mut commands: Commands) {
         next_in: None,
         locked: false,
         just_locked: false,
-        show_help: true,
+        show_debug: false,
+        reaction_hinted: false,
         mouse_sens: 0.0022,
         pad_sens: 3.2,
         timer: 0.0,
-        best: vec![None; n],
         last_time: None,
         flash: None,
         intro: 0.0,
@@ -310,7 +318,7 @@ fn cursor_lock(
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     capture: Option<Res<capture::Capture>>,
-    mut menu: ResMut<settings::Menu>,
+    mut menu: ResMut<menu::Menu>,
 ) {
     if capture.is_some() {
         return;
@@ -318,9 +326,13 @@ fn cursor_lock(
     let Ok(mut cursor) = cursor.single_mut() else { return };
     let focused = windows.single().map(|w| w.focused).unwrap_or(true);
     let start = std::mem::take(&mut menu.start);
-    let want = if menu.open || keys.just_pressed(KeyCode::Escape) || !focused {
+    let want = if menu.open || !focused {
         false
-    } else if start || mouse.just_pressed(MouseButton::Left) {
+    } else if start {
+        true
+    } else if keys.just_pressed(KeyCode::Escape) {
+        false
+    } else if mouse.just_pressed(MouseButton::Left) {
         true
     } else {
         game.locked
@@ -349,16 +361,19 @@ fn switch_level(
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
     settings: Res<settings::Settings>,
+    mut progress: ResMut<progress::Progress>,
+    menu: Res<menu::Menu>,
 ) {
     let n = game.levels.len();
     let mut to = game.pending.take();
-    if keys.just_pressed(KeyCode::KeyM) {
+    let keys_on = !menu.open;
+    if keys_on && keys.just_pressed(KeyCode::KeyM) {
         to = Some((game.level_index + 1) % n);
     }
-    if keys.just_pressed(KeyCode::KeyN) {
+    if keys_on && keys.just_pressed(KeyCode::KeyN) {
         to = Some((game.level_index + n - 1) % n);
     }
-    if keys.just_pressed(KeyCode::Backspace) {
+    if keys_on && keys.just_pressed(KeyCode::Backspace) {
         to = Some(game.level_index);
     }
     let Some(i) = to else { return };
@@ -383,6 +398,12 @@ fn switch_level(
     g.intro = 0.0;
     g.next_in = None;
     g.flash = None;
+    g.reaction_hinted = false;
+    let name = g.levels[i].0.to_string();
+    if progress.last.as_ref() != Some(&name) {
+        progress.last = Some(name);
+        progress.save();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -396,7 +417,8 @@ fn play(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut Transform, &mut Projection), With<PlayerCamera>>,
     settings: Res<settings::Settings>,
-    menu: Res<settings::Menu>,
+    menu: Res<menu::Menu>,
+    mut progress: ResMut<progress::Progress>,
     mut virtual_time: ResMut<Time<Virtual>>,
     mut render: ResMut<portal_render::PortalRender>,
 ) {
@@ -460,6 +482,15 @@ fn play(
     }
     input.strafe_raw = mv.x.clamp(-1.0, 1.0);
     input.move_axis = mv.clamp_length_max(1.0);
+    // The menu just closed: whatever closed it isn't also a move.
+    if menu.open || menu.just_closed {
+        input = MoveInput::default();
+        fire_blue = false;
+        fire_orange = false;
+        use_key = false;
+        respawn = false;
+        reaction = false;
+    }
     if let Some(scripted) = game.scripted {
         input = scripted;
         fire_blue = game.scripted_fire == Some(PortalColor::Blue);
@@ -469,15 +500,15 @@ fn play(
         game.scripted_use = false;
     }
 
-    if keys.just_pressed(KeyCode::F1) {
-        game.show_help = !game.show_help;
+    if keys.just_pressed(KeyCode::F3) {
+        game.show_debug = !game.show_debug;
     }
 
     // ---- checkpoints
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6];
     let mut goto = None;
     for (i, k) in digits.iter().enumerate() {
-        if keys.just_pressed(*k) && i < game.sim.level.checkpoints.len() {
+        if keys.just_pressed(*k) && !menu.open && i < game.sim.level.checkpoints.len() {
             goto = Some(i);
         }
     }
@@ -498,8 +529,9 @@ fn play(
             game.reaction.attempt();
         }
         let speed = game.reaction.update(dt, game.ctrl.vel.length());
-        if !was_full && game.reaction.energy >= 100.0 {
-            game.flash = Some(("REACTION TIME READY - Left Alt".to_string(), 0.0));
+        if !was_full && game.reaction.energy >= 100.0 && !game.reaction_hinted {
+            game.reaction_hinted = true;
+            game.flash = Some(("Reaction Time ready - Left Alt".to_string(), 0.0));
         }
         if !was_on && game.reaction.active {
             game.flash = Some(("REACTION TIME".to_string(), 0.0));
@@ -553,11 +585,8 @@ fn play(
             SimEvent::PortalsCleared => game.flash = Some(("PORTALS CLEARED".into(), 0.0)),
             SimEvent::LevelComplete => {
                 let t = game.timer;
-                let li = game.level_index;
-                let pb = game.best[li].is_none_or(|b| t < b);
-                if pb {
-                    game.best[li] = Some(t);
-                }
+                let pb = progress.finished(game.levels[game.level_index].0, t);
+                progress.save();
                 game.last_time = Some(t);
                 game.flash = Some((format!("CHAMBER COMPLETE  {}{}", hud::fmt_time(t), if pb { "  - NEW BEST" } else { "" }), -2.0));
                 game.next_in = Some(3.0);

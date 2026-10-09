@@ -26,7 +26,9 @@ The extractor finds the games in the usual Steam folders (Linux and Windows); ot
 `--portal <dir>` and `--portal2 <dir>`. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
-It opens on the settings menu; Enter or **PLAY** starts. **Esc** brings the menu back.
+It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were
+in, **Chambers** lists them all with your best times, and **Settings** and **Controls** are
+there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.
 
 ## Controls
 
@@ -43,9 +45,11 @@ It opens on the settings menu; Enter or **PLAY** starts. **Esc** brings the menu
 | Reaction Time (slow motion) | Left Alt | L3 |
 | Respawn at checkpoint / checkpoint 1-6 | R / 1-6 | Select |
 | Restart chamber / next map / previous map | Backspace / M / N | |
-| Help, Mirror's Edge body on/off | F1, F2 | |
+| Pause menu / controls | Esc / F1 | Start |
+| Debug readout (state, speed, fps) / Mirror's Edge body on/off | F3 / F2 | |
 
-Holding a cube, either trigger lets go of it with a push.
+Holding a cube, either trigger lets go of it with a push. Menus: arrows or WASD, Enter, Esc;
+the d-pad, A and B; or the mouse.
 
 ## The chambers
 
@@ -95,10 +99,11 @@ change that makes one impossible is caught.
 
 ## Settings
 
-Volumes, mouse sensitivity and field of view, plus: **Hard landing from** and **Lethal fall
-from** (metres, Mirror's Edge's 5.3 and 10; lethal can be Off), **Portal recursion** (how many
-portals deep you can see, 1-4) and **Portal funnel**. They're saved to `settings.txt` where you
-run the game.
+In pages: **Audio** (master, music, effects), **Controls** (mouse sensitivity, field of view),
+**Gameplay** (**Hard landing from** and **Lethal fall from**, metres, Mirror's Edge's 5.3 and
+10, lethal can be Off; **Portal recursion**, how many portals deep you can see, 1-4; **Portal
+funnel**; **Skid delay off speed gel**; **Chamber timer**) and **Video** (**Speed FOV increase**,
+**Speed lines**, **Portal gun model**). They're saved to `settings.txt` where you run the game.
 
 ## Making levels
 
@@ -125,12 +130,16 @@ crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> 
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces
-src/gun.rs              the portal gun viewmodel, shots, sparks
-src/hud.rs              crosshair, messages
+src/gun.rs              shot tracers, sparks, the hold beam (and the optional gun model)
+src/hud.rs              crosshair, hints, messages, timer, debug readout
+src/menu.rs             title, pause, chamber select, settings pages, controls
+src/speed_fx.rs         speed FOV kick, speed lines, skid dust
+src/fonts.rs            the UI font (Inter from the system, if it's there)
+src/progress.rs         best times and the last chamber, saved
 src/portal_audio.rs     Portal's sounds
 src/audio.rs            Mirror's Edge's sounds (Faith Runner)
 src/me_viewmodel.rs     Faith's Mirror's Edge body (Faith Runner)
-src/settings.rs         the menu
+src/settings.rs         the settings and their pages
 src/capture.rs          scripted screenshot runs (see below)
 docs/faith-runner.md    Faith Runner's own README: every move, in detail
 ```

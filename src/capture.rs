@@ -24,7 +24,6 @@ pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
         let _ = std::fs::create_dir_all(&dir);
         let script = std::env::var("PORTAL_SCRIPT").unwrap_or_else(|_| "tour".into());
         game.locked = true;
-        game.show_help = false;
         // Every frame is 1/60 s of game time, however fast it renders: scripts count frames.
         commands.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / 60.0)));
         commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0 });
@@ -48,8 +47,8 @@ enum Act {
     Teleport(Vec3),
     /// Throw her at this velocity.
     Launch(Vec3),
-    /// Open the settings menu.
-    Menu,
+    /// Open a menu screen.
+    Menu(crate::menu::Screen),
 }
 
 fn fwd() -> MoveInput {
@@ -186,7 +185,33 @@ fn script(name: &str) -> Vec<Act> {
             Hold(fwd(), 12),
             Shot("k6"),
         ],
-        "menu" => vec![Map(1), Wait(30), Shot("before_menu"), Menu, Wait(10), Shot("menu")],
+        "menu" => {
+            use crate::menu::Screen;
+            use crate::settings::Page;
+            vec![
+                Map(1),
+                Wait(60),
+                Shot("hud"),
+                Menu(Screen::Title),
+                Wait(10),
+                Shot("menu_title"),
+                Menu(Screen::Pause),
+                Wait(5),
+                Shot("menu_pause"),
+                Menu(Screen::Chambers),
+                Wait(5),
+                Shot("menu_chambers"),
+                Menu(Screen::Settings(Page::Audio)),
+                Wait(5),
+                Shot("menu_settings_audio"),
+                Menu(Screen::Settings(Page::Video)),
+                Wait(5),
+                Shot("menu_settings_video"),
+                Menu(Screen::Controls),
+                Wait(5),
+                Shot("menu_controls"),
+            ]
+        }
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -309,7 +334,7 @@ pub fn run(
     mut game: ResMut<Game>,
     mut exit: MessageWriter<AppExit>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
-    mut menu: ResMut<crate::settings::Menu>,
+    mut menu: ResMut<crate::menu::Menu>,
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
@@ -368,7 +393,7 @@ pub fn run(
         Act::Map(i) => {
             game.pending = Some(*i);
         }
-        Act::Menu => menu.open = true,
+        Act::Menu(screen) => menu.open_at(*screen),
         Act::Launch(v) => game.ctrl.launch(*v),
         Act::Teleport(p) => {
             // What she's holding comes too.

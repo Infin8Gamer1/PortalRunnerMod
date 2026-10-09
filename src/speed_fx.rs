@@ -129,7 +129,7 @@ pub fn update(
     time: Res<Time>,
     game: Res<Game>,
     settings: Res<settings::Settings>,
-    menu: Res<settings::Menu>,
+    menu: Res<crate::menu::Menu>,
     mut fx: ResMut<SpeedFx>,
     mut materials: ResMut<Assets<SpeedLinesMaterial>>,
     mut camera: Query<&mut Projection, With<PlayerCamera>>,

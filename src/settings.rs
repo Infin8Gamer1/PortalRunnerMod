@@ -1,10 +1,5 @@
-//! The launch menu: volume (master / music / effects), mouse sensitivity, field
-//! of view, Mirror's Edge's fall heights (hard landing, lethal), and the portals'
-//! recursion depth and funnel. It opens when the game starts and again on Esc, and saves
-//! to `settings.txt` next to where you run the game.
-//!
-//! Keyboard: ↑/↓ pick a row, ←/→ change it, Enter plays. Or click the − / +
-//! buttons and Play.
+//! The settings: what they are, their ranges and pages in the menu (`menu.rs` draws
+//! them), and saving them to `settings.txt` next to where you run the game.
 
 use bevy::prelude::*;
 
@@ -38,6 +33,8 @@ pub struct Settings {
     /// Off propulsion gel, seconds before landing-speed skids start (keeping the gel's speed
     /// until then).
     pub gel_skid_delay: f32,
+    /// Show the chamber timer and best time (a time trial): 1 on, 0 off.
+    pub show_timer: f32,
 }
 
 /// The volume sliders are perceptual: each step is the same number of decibels, and the
@@ -84,6 +81,7 @@ impl Default for Settings {
             fov_kick: 1.0,
             speed_lines: 1.0,
             gel_skid_delay: 1.5,
+            show_timer: 0.0,
         }
     }
 }
@@ -153,7 +151,6 @@ pub enum Page {
 struct Row {
     /// Its name in the settings file.
     key: &'static str,
-    #[allow(dead_code)] // for the menu's pages
     page: Page,
     label: &'static str,
     min: f32,
@@ -187,7 +184,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 13] = [
+const ROWS: [Row; 14] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -250,206 +247,41 @@ const ROWS: [Row; 13] = [
         put: |s, v| s.gel_skid_delay = v,
         show: |v| format!("{v:.2} s"),
     },
-    Row { key: "gun_model", page: Page::Gameplay, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
+    Row { key: "show_timer", page: Page::Gameplay, label: "Chamber timer", min: 0.0, max: 1.0, step: 1.0, get: |s| s.show_timer, put: |s, v| s.show_timer = v, show: on_off },
+    Row { key: "gun_model", page: Page::Video, label: "Portal gun model", min: 0.0, max: 1.0, step: 1.0, get: |s| s.gun_model, put: |s, v| s.gun_model = v, show: on_off },
 ];
 
-#[derive(Resource)]
-pub struct Menu {
-    pub open: bool,
-    selected: usize,
-    /// Set when Play is chosen; the cursor-lock system grabs the mouse and clears it.
-    pub start: bool,
-}
-
-#[derive(Component)]
-pub struct MenuRoot;
-#[derive(Component)]
-pub struct ValueText(usize);
-#[derive(Component)]
-pub struct RowNode(usize);
-#[derive(Component, Clone, Copy)]
-pub enum MenuButton {
-    Nudge(usize, f32),
-    Play,
-}
-
-const PANEL: Color = Color::srgba(0.04, 0.04, 0.05, 0.86);
-const RED: Color = Color::srgb(0.86, 0.10, 0.07);
-const ROW_IDLE: Color = Color::srgba(1.0, 1.0, 1.0, 0.04);
-const ROW_SELECTED: Color = Color::srgba(0.86, 0.10, 0.07, 0.35);
-const BTN: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
-const BTN_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.22);
-
 pub fn setup(mut commands: Commands) {
-    let settings = Settings::load();
-    // Screenshot capture runs straight through without the menu.
-    let open = std::env::var_os("PORTAL_CAPTURE").is_none();
-    let font = |px_: f32| TextFont { font_size: px_.into(), ..default() };
-    let white = TextColor(Color::srgb(0.95, 0.95, 0.95));
-    let dim = TextColor(Color::srgba(0.95, 0.95, 0.95, 0.55));
-
-    commands
-        .spawn((
-            MenuRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                width: percent(100.0),
-                height: percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
-            GlobalZIndex(10),
-            if open { Visibility::Visible } else { Visibility::Hidden },
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(px(28.0)),
-                    row_gap: px(8.0),
-                    width: px(520.0),
-                    ..default()
-                },
-                BackgroundColor(PANEL),
-            ))
-            .with_children(|panel| {
-                panel.spawn((Text::new("PORTAL RUNNER"), font(34.0), TextColor(RED)));
-                panel.spawn((Text::new("Settings"), font(18.0), dim.clone(), Node { margin: UiRect::bottom(px(12.0)), ..default() }));
-                for (i, r) in ROWS.iter().enumerate() {
-                    panel
-                        .spawn((
-                            RowNode(i),
-                            Node {
-                                flex_direction: FlexDirection::Row,
-                                align_items: AlignItems::Center,
-                                padding: UiRect::axes(px(12.0), px(6.0)),
-                                column_gap: px(10.0),
-                                ..default()
-                            },
-                            BackgroundColor(ROW_IDLE),
-                        ))
-                        .with_children(|row| {
-                            row.spawn((Text::new(r.label), font(19.0), white.clone(), Node { flex_grow: 1.0, ..default() }));
-                            row.spawn(button(MenuButton::Nudge(i, -1.0))).with_children(|b| {
-                                b.spawn((Text::new("-"), font(22.0), white.clone()));
-                            });
-                            row.spawn((
-                                ValueText(i),
-                                Text::new((r.show)(r.get(&settings))),
-                                font(19.0),
-                                white.clone(),
-                                Node { width: px(70.0), justify_content: JustifyContent::Center, ..default() },
-                            ));
-                            row.spawn(button(MenuButton::Nudge(i, 1.0))).with_children(|b| {
-                                b.spawn((Text::new("+"), font(22.0), white.clone()));
-                            });
-                        });
-                }
-                panel
-                    .spawn((
-                        MenuButton::Play,
-                        Button,
-                        Node {
-                            margin: UiRect::top(px(16.0)),
-                            padding: UiRect::axes(px(16.0), px(10.0)),
-                            justify_content: JustifyContent::Center,
-                            ..default()
-                        },
-                        BackgroundColor(RED),
-                    ))
-                    .with_children(|b| {
-                        b.spawn((Text::new("PLAY"), font(22.0), white.clone()));
-                    });
-                panel.spawn((
-                    Text::new("Up/Down pick  -  Left/Right change  -  Enter play  -  Esc opens this again"),
-                    font(14.0),
-                    dim.clone(),
-                    Node { margin: UiRect::top(px(10.0)), ..default() },
-                ));
-            });
-        });
-
-    commands.insert_resource(Menu { open, selected: 0, start: false });
-    commands.insert_resource(settings);
+    commands.insert_resource(Settings::load());
 }
 
-fn button(kind: MenuButton) -> impl Bundle {
-    (
-        kind,
-        Button,
-        Node { width: px(34.0), height: px(30.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
-        BackgroundColor(BTN),
-    )
+/// The rows on a page of the settings menu (indices for the functions below).
+pub fn rows_on(page: Page) -> Vec<usize> {
+    (0..ROWS.len()).filter(|&i| ROWS[i].page == page).collect()
 }
 
-#[allow(clippy::type_complexity)]
-pub fn update(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut menu: ResMut<Menu>,
-    mut settings: ResMut<Settings>,
-    mut buttons: Query<(&Interaction, &MenuButton, &mut BackgroundColor), (Changed<Interaction>, Without<RowNode>)>,
-    mut rows: Query<(&RowNode, &mut BackgroundColor), Without<MenuButton>>,
-    mut values: Query<(&ValueText, &mut Text)>,
-    mut root: Query<&mut Visibility, With<MenuRoot>>,
-) {
-    if !menu.open {
-        if keys.just_pressed(KeyCode::Escape) {
-            menu.open = true;
-        }
-    } else {
-        let before = settings.clone();
-        let n = ROWS.len();
-        if keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyS) {
-            menu.selected = (menu.selected + 1) % n;
-        }
-        if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
-            menu.selected = (menu.selected + n - 1) % n;
-        }
-        for (key, dir) in [(KeyCode::ArrowLeft, -1.0), (KeyCode::KeyA, -1.0), (KeyCode::ArrowRight, 1.0), (KeyCode::KeyD, 1.0)] {
-            if keys.just_pressed(key) {
-                ROWS[menu.selected].nudge(&mut settings, dir);
-            }
-        }
-        let mut play = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space);
-        for (interaction, kind, mut bg) in &mut buttons {
-            let play_button = matches!(kind, MenuButton::Play);
-            match interaction {
-                Interaction::Pressed => match *kind {
-                    MenuButton::Nudge(i, dir) => {
-                        menu.selected = i;
-                        ROWS[i].nudge(&mut settings, dir);
-                    }
-                    MenuButton::Play => play = true,
-                },
-                Interaction::Hovered => *bg = BackgroundColor(if play_button { RED.lighter(0.08) } else { BTN_HOVER }),
-                Interaction::None => *bg = BackgroundColor(if play_button { RED } else { BTN }),
-            }
-        }
-        if *settings != before {
-            settings.save();
-        }
-        if play {
-            menu.open = false;
-            menu.start = true;
-            settings.save();
-        }
-    }
+pub fn row_label(i: usize) -> &'static str {
+    ROWS[i].label
+}
 
-    for (row, mut bg) in &mut rows {
-        *bg = BackgroundColor(if row.0 == menu.selected { ROW_SELECTED } else { ROW_IDLE });
-    }
-    if settings.is_changed() {
-        for (v, mut text) in &mut values {
-            let r = &ROWS[v.0];
-            **text = (r.show)(r.get(&settings));
-        }
-    }
-    for mut vis in &mut root {
-        let want = if menu.open { Visibility::Visible } else { Visibility::Hidden };
-        if *vis != want {
-            *vis = want;
+pub fn row_value(i: usize, s: &Settings) -> String {
+    (ROWS[i].show)(ROWS[i].get(s))
+}
+
+/// Step a row up (`dir` 1) or down (-1).
+pub fn nudge(i: usize, s: &mut Settings, dir: f32) {
+    ROWS[i].nudge(s, dir);
+}
+
+impl Page {
+    pub const ALL: [Page; 4] = [Page::Audio, Page::Controls, Page::Gameplay, Page::Video];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Page::Audio => "Audio",
+            Page::Controls => "Controls",
+            Page::Gameplay => "Gameplay",
+            Page::Video => "Video",
         }
     }
 }
@@ -460,7 +292,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_clamps() {
-        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0, fov_kick: 0.5, speed_lines: 0.0, gel_skid_delay: 2.25 };
+        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0, gun_model: 1.0, fov_kick: 0.5, speed_lines: 0.0, gel_skid_delay: 2.25, show_timer: 1.0 };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");
         assert_eq!(wild.master, 1.0);
