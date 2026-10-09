@@ -372,6 +372,10 @@ pub struct Tuning {
     /// Propulsion gel: top speed (m/s) and the extra acceleration (m/s²) along your input.
     pub gel_speed_max: f32,
     pub gel_speed_accel: f32,
+    /// Off propulsion gel, this long (s) before the overspeed skid starts: until then she
+    /// keeps her gel speed, losing only `gel_exit_decel` (m/s²) of it.
+    pub skid_after_speed_gel: f32,
+    pub gel_exit_decel: f32,
 }
 
 /// Unreal units (cm) to metres.
@@ -549,6 +553,8 @@ impl Default for Tuning {
             gel_bounce_threshold: 2.0,
             gel_speed_max: 17.0,
             gel_speed_accel: 16.0,
+            skid_after_speed_gel: 1.5,
+            gel_exit_decel: 4.0,
             auto_step_up_max: uu(48.0),
             melee_speed: 0.4,
         }

@@ -359,7 +359,7 @@ impl Director {
                     self.step(9, surface(false), 1.0, &c.state, out);
                 }
                 // TdMove_RumpSlide: the slide's scrape, as a slide.
-                MoveEvent::Slide | MoveEvent::RumpSlide => {
+                MoveEvent::Slide | MoveEvent::RumpSlide | MoveEvent::Skid => {
                     self.play_move("A_Character_Female_01.Body.BodySlide", 0.9, &c.state, out);
                     self.step(11, surface(false), 1.0, &c.state, out);
                 }

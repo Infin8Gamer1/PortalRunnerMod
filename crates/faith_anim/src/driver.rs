@@ -49,6 +49,11 @@ const WALK_STATES: [WalkState; 6] = [
 
 /// The walk cycles share one phase (synch group "Walk"); backward cycles sit
 /// half a step later (SynchPosOffset 0.32 forward, 0.78 backward).
+/// Not Mirror's Edge: skidding off speed she can't run at (out of a portal fling) plays the
+/// medium landing (absorbing it, braced), for as long as the skid lasts.
+const SKID_CLIP: &str = "FallingLandMedium";
+const SKID_RATE: f32 = 1.0;
+
 const SYNC_FWD: f32 = 0.32;
 const SYNC_BWD: f32 = 0.78;
 
@@ -97,6 +102,8 @@ struct OneShot {
 }
 
 pub struct Driver {
+    /// The one-shot playing is the skid's (it ends with the skid).
+    skid_shot: bool,
     map: TrackMap,
     rest: Pose,
     layers: Vec<Layer>,
@@ -317,6 +324,7 @@ impl Driver {
             idle_time: 0.0,
             speed: 0.0,
             oneshot: None,
+            skid_shot: false,
             pending_blend: None,
             loco_notify_seq: None,
             wallclimb_rate: 1.0,
@@ -430,6 +438,7 @@ impl Driver {
     }
 
     fn oneshot(&mut self, seq: &'static str, arms: &FaithArms, hold: Option<f32>, blend: f32) {
+        self.skid_shot = false;
         let len = Self::length(arms, seq).unwrap_or(0.5);
         let dur = hold.unwrap_or(len).min(len);
         // Cut short, a one-shot hasn't come back to a resting pose yet, so the
@@ -442,6 +451,7 @@ impl Driver {
 
     /// A one-shot picked up part way through (`start` seconds in).
     fn oneshot_from(&mut self, seq: &'static str, arms: &FaithArms, start: f32, blend: f32) {
+        self.skid_shot = false;
         let len = Self::length(arms, seq).unwrap_or(0.5);
         if start >= len - 0.02 {
             return;
@@ -460,6 +470,7 @@ impl Driver {
     /// A one-shot played at `rate` (PlayMoveAnim's rate), blending in over `blend` and out over
     /// `out`.
     fn oneshot_rate(&mut self, seq: &'static str, arms: &FaithArms, rate: f32, blend: f32, out: f32) {
+        self.skid_shot = false;
         let len = Self::length(arms, seq).unwrap_or(0.5) / rate;
         self.oneshot = Some(OneShot { key: seq, until: self.clock + len, then: None, blend_out: out });
         let key = format!("{seq}#{}", self.clock);
@@ -615,6 +626,10 @@ impl Driver {
                 // JumpSlow under LongJumpNormalThreshold (500 uu/s), else JumpFast (in 0.1).
                 // (Past 500 the game plays JumpSlow too when its trace finds ground under where
                 // she'll land; that prediction isn't made here.)
+                MoveEvent::Skid => {
+                    self.oneshot_rate(SKID_CLIP, arms, SKID_RATE, 0.15, 0.3);
+                    self.skid_shot = true;
+                }
                 MoveEvent::Jump => {
                     let along = Vec3::new(c.vel.x, 0.0, c.vel.z).dot(fwd);
                     self.air_clip = if along < 0.05 { "jumpstill" } else if along < 5.0 { "JumpSlow" } else { "jumpfast" };
@@ -879,6 +894,7 @@ impl Driver {
             // A standing landing gives way as soon as you run off; so does an idle.
             let idle = Self::IDLES.iter().any(|i| *i == o.key);
             let run_off = (o.key == "JumpLand" && raw_speed > 2.6)
+                || (self.skid_shot && o.key == SKID_CLIP && !c.skidding)
                 || (idle && (raw_speed > 0.3 || c.state != MoveState::Ground || c.crouched));
             // A jump's own clip (dodge, wall jump-off, kick-off, springboard) belongs to that
             // jump: touching down ends it, blending out over the move's JumpBlendOutTime (0.2).

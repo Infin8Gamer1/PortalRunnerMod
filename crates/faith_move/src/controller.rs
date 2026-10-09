@@ -267,6 +267,8 @@ pub enum Event {
     DoorOpened { door: usize },
     /// Tripped on barbed wire.
     Stumble { forward: bool },
+    /// Started skidding off speed she can't run at (`Tuning::overspeed_decel`).
+    Skid,
     /// Landed a big drop on something soft.
     SoftLand,
     /// Sideways dodge jump; `dir` is the horizontal launch direction.
@@ -561,6 +563,10 @@ pub struct Controller {
     /// Set by a host while she drops into a hole that isn't one (a portal in the floor): no
     /// vaults, grabs or wall moves off its rim, and no stopping at its edge (vertigo).
     pub air_moves_off: bool,
+    /// Shedding speed after landing faster than she can run (`Tuning::overspeed_decel`).
+    pub skidding: bool,
+    /// Seconds since she was last on propulsion gel.
+    pub since_speed_gel: f32,
 }
 
 const SUBSTEP: f32 = 1.0 / 120.0;
@@ -657,6 +663,8 @@ impl Controller {
             doors: Vec::new(),
             crouch_held: false,
             air_moves_off: false,
+            skidding: false,
+            since_speed_gel: f32::INFINITY,
         }
     }
 
@@ -780,6 +788,9 @@ impl Controller {
     /// Advance by `dt` seconds.
     pub fn step(&mut self, dt: f32, input: &Input, world: &dyn World) {
         self.events.clear();
+        let was_skidding = self.skidding;
+        self.skidding = false;
+        self.since_speed_gel += dt;
         let mut input = *input;
         if input.strafe_raw == 0.0 {
             input.strafe_raw = input.move_axis.x.clamp(-1.0, 1.0);
@@ -924,6 +935,9 @@ impl Controller {
         self.against_wall = if self.state == State::Ground { self.check_against_wall(world) } else { AgainstWall::default() };
 
         self.update_view(dt);
+        if self.skidding && !was_skidding {
+            self.events.push(Event::Skid);
+        }
 
         if self.tuning.kill_y.is_some_and(|y| self.feet.y < y) {
             self.events.push(Event::Death);
@@ -1302,20 +1316,29 @@ impl Controller {
         let mut accel = tu.loco.controller_accel(&mut self.run, &ri, &mut h, dt);
         // Propulsion gel: a higher top speed and a hard push along the stick.
         let mut cap_mod = speed_mod;
-        if world.gel(self.feet, Vec3::Y) == Gel::Speed && !self.crouched {
+        let on_speed_gel = world.gel(self.feet, Vec3::Y) == Gel::Speed;
+        if on_speed_gel {
+            self.since_speed_gel = 0.0;
+        }
+        if on_speed_gel && !self.crouched {
             let dir = (ri.forward * ri.a_forward + ri.right * ri.a_strafe).normalize_or_zero();
             accel += dir * tu.gel_speed_accel;
             cap_mod = speed_mod * (tu.gel_speed_max / tu.loco.ground_speed).max(1.0);
         }
         let mut h = tu.loco.calc_velocity(h, accel, dt, cap_mod, tu.loco.ground_friction);
-        // Coming down from a fling faster than she can run: skid the excess off.
+        // Coming down from a fling faster than she can run: skid the excess off. Just off
+        // propulsion gel, she runs on at nearly its speed for a moment first.
         if let Some(decel) = tu.overspeed_decel {
             let cap = tu.loco.ground_speed * cap_mod;
             if before > cap {
-                let keep = (before - decel * dt).max(cap);
+                let grace = self.since_speed_gel < tu.skid_after_speed_gel;
+                let rate = if grace { tu.gel_exit_decel } else { decel };
+                let keep = (before - rate * dt).max(cap);
                 if h.length() < keep {
                     h = h.normalize_or_zero() * keep;
                 }
+                // A skid worth showing: not the last few tenths of a m/s.
+                self.skidding = !grace && before > cap + 0.3;
             }
         }
         self.vel = Vec3::new(h.x, 0.0, h.z);

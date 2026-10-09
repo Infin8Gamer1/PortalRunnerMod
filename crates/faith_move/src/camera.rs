@@ -304,6 +304,7 @@ impl CameraFx {
         self.trauma = (self.trauma - s.trauma_decay * dt).max(0.0);
         let floor = match c.state {
             State::Slide { .. } => s.slide_shake,
+            State::Ground if c.skidding => s.slide_shake,
             State::Ground => s.sprint_shake * sprint_frac * sprint_frac,
             State::WallRun { .. } => s.sprint_shake * 0.8,
             _ => 0.0,

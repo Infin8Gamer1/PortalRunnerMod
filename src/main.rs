@@ -405,6 +405,7 @@ fn play(
     game.fx.settings.fov_base = settings.fov;
     game.ctrl.tuning.hard_land_height = settings.hard_land;
     game.ctrl.tuning.lethal_fall_height = settings.lethal_height();
+    game.ctrl.tuning.skid_after_speed_gel = settings.gel_skid_delay;
     game.sim.funnel = settings.funnel > 0.5;
     render.depth = (settings.portal_depth.round() as usize).clamp(1, portal_render::MAX_DEPTH);
 

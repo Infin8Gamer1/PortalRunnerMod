@@ -1,6 +1,7 @@
 //! Going fast, felt: near Faith's top running speed the view widens a little, and streaks
 //! rush past the edges of the screen. Both grow past her top speed (flings, faith plates,
-//! propulsion gel), and both can be turned down or off in the settings.
+//! propulsion gel), and both can be turned down or off in the settings. Landing faster than
+//! she can run, she skids, kicking up dust.
 
 use bevy::asset::{load_internal_asset, uuid_handle};
 use bevy::prelude::*;
@@ -28,6 +29,7 @@ impl Plugin for SpeedFxPlugin {
     fn build(&self, app: &mut App) {
         load_internal_asset!(app, SPEED_LINES_SHADER, "shaders/speed_lines.wgsl", Shader::from_wgsl);
         app.add_plugins(UiMaterialPlugin::<SpeedLinesMaterial>::default()).add_systems(Startup, setup);
+        app.add_systems(Update, skid_dust);
     }
 }
 
@@ -61,6 +63,26 @@ pub struct SpeedFx {
 #[derive(Component)]
 pub struct SpeedLines;
 
+/// A puff of dust from a skid.
+#[derive(Component)]
+pub struct Dust {
+    vel: Vec3,
+    life: f32,
+}
+
+#[derive(Resource)]
+pub struct DustKit {
+    mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    /// Puffs owed (fractional, by time).
+    acc: f32,
+    n: u32,
+}
+
+/// Puffs a second while skidding, and how long each lasts.
+const DUST_RATE: f32 = 45.0;
+const DUST_LIFE: f32 = 0.6;
+
 /// The effects' strength for a speed: 0 below `START` of `top`, rising to 1 at `top` and on
 /// to 2 at `FULL`.
 pub fn amount_for(speed: f32, top: f32) -> f32 {
@@ -79,7 +101,18 @@ pub fn fov_for(amount: f32) -> f32 {
     FOV_AT_TOP * amount.min(1.0) + (FOV_AT_FULL - FOV_AT_TOP) * (amount - 1.0).clamp(0.0, 1.0)
 }
 
-fn setup(mut commands: Commands, mut materials: ResMut<Assets<SpeedLinesMaterial>>) {
+fn setup(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<SpeedLinesMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut std_materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.insert_resource(DustKit {
+        mesh: meshes.add(Sphere::new(0.11).mesh().ico(1).unwrap()),
+        material: std_materials.add(StandardMaterial { base_color: Color::srgba(0.42, 0.41, 0.40, 0.55), alpha_mode: AlphaMode::Blend, unlit: true, ..default() }),
+        acc: 0.0,
+        n: 0,
+    });
     let material = materials.add(SpeedLinesMaterial { uniform: SpeedLinesUniform::default() });
     commands.spawn((
         SpeedLines,
@@ -135,6 +168,53 @@ pub fn update(
         let t = fx.time;
         if let Some(mut m) = materials.get_mut(&fx.material) {
             m.uniform.params = Vec4::new(strength.min(1.0), t, aspect, 0.0);
+        }
+    }
+}
+
+/// Dust kicked up round her feet while she skids, thrown forward and out.
+pub fn skid_dust(
+    mut commands: Commands,
+    time: Res<Time>,
+    game: Res<Game>,
+    mut kit: ResMut<DustKit>,
+    mut dust: Query<(Entity, &mut Dust, &mut Transform)>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    let c = &game.ctrl;
+    if c.skidding {
+        kit.acc += DUST_RATE * dt;
+        let fwd = Vec3::new(-c.yaw.sin(), 0.0, -c.yaw.cos());
+        let side = Vec3::new(fwd.z, 0.0, -fwd.x);
+        let dir = Vec3::new(c.vel.x, 0.0, c.vel.z).normalize_or(fwd);
+        while kit.acc >= 1.0 {
+            kit.acc -= 1.0;
+            kit.n = kit.n.wrapping_add(1);
+            let r = |k: u32| ((kit.n.wrapping_mul(2654435761).wrapping_add(k * 40503) >> 8) & 1023) as f32 / 1023.0 * 2.0 - 1.0;
+            let at = c.feet + dir * (0.8 + 0.4 * r(1)) + side * 0.45 * r(2) + Vec3::Y * 0.05;
+            // Kicked forward at about her own speed, so it hangs in front of her as she slows.
+            let vel = Vec3::new(c.vel.x, 0.0, c.vel.z) * (0.9 + 0.1 * r(3)) + side * 1.6 * r(4) + Vec3::Y * (1.4 + 0.6 * r(5));
+            commands.spawn((
+                Dust { vel, life: DUST_LIFE },
+                Mesh3d(kit.mesh.clone()),
+                MeshMaterial3d(kit.material.clone()),
+                Transform::from_translation(at).with_scale(Vec3::splat(0.5)),
+                bevy::light::NotShadowCaster,
+            ));
+        }
+    } else {
+        kit.acc = 0.0;
+    }
+    for (e, mut d, mut tf) in &mut dust {
+        d.life -= dt;
+        d.vel *= (-1.5 * dt).exp();
+        d.vel.y -= 1.5 * dt;
+        tf.translation += d.vel * dt;
+        let k = (d.life / DUST_LIFE).clamp(0.0, 1.0);
+        // Grows as it spreads, then shrinks away.
+        tf.scale = Vec3::splat((0.5 + 2.0 * (1.0 - k)) * k.sqrt());
+        if d.life <= 0.0 {
+            commands.entity(e).despawn();
         }
     }
 }

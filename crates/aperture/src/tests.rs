@@ -660,3 +660,55 @@ fn mirrors_edge_roofs_take_portals() {
     assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "no portal on the roof");
     assert_eq!(sim.portal(PortalColor::Blue).unwrap().normal, Vec3::Y);
 }
+
+#[test]
+fn landing_faster_than_she_can_run_skids() {
+    let (mut sim, mut c) = start(flat());
+    c.feet = Vec3::new(0.0, 0.6, 14.0);
+    c.state = State::Air;
+    c.launch(Vec3::new(0.0, 1.0, -18.0));
+    let top = c.tuning.loco.ground_speed;
+    let mut skid_frames = 0;
+    let ev = run(&mut sim, &mut c, 1.5, |_, c| {
+        if c.skidding {
+            skid_frames += 1;
+            assert!(c.horizontal_speed() > top, "skidding at {}", c.horizontal_speed());
+        }
+        forward()
+    });
+    let _ = ev;
+    assert!(skid_frames > 10, "skidded for {skid_frames} frames");
+    assert!(!c.skidding);
+    assert!((c.horizontal_speed() - top).abs() < 0.3, "ran on at {}", c.horizontal_speed());
+}
+
+#[test]
+fn speed_gel_doesnt_skid_and_leaving_it_waits_before_skidding() {
+    let mut l = flat();
+    l.paint(Paint::Speed, [-2.0, 0.0, -10.0], [2.0, 0.0, 30.0], [0.0, 1.0, 0.0]);
+    let (mut sim, mut c) = start(l);
+    c.feet = Vec3::new(0.0, 0.0, 28.0);
+    c.vel = Vec3::new(0.0, 0.0, -17.0);
+    let delay = c.tuning.skid_after_speed_gel;
+    let (mut t, mut left_at, mut skid_at) = (0.0f32, None, None);
+    run(&mut sim, &mut c, 4.5, |_, c| {
+        t += DT;
+        if std::env::var_os("TRACE").is_some() && (t * 60.0).round() as i32 % 6 == 0 {
+            eprintln!("{t:.2} z {:.1} speed {:.2} state {} since {:.2} skid {}", c.feet.z, c.horizontal_speed(), c.state.name(), c.since_speed_gel, c.skidding);
+        }
+        if c.feet.z > -10.0 {
+            assert!(!c.skidding, "skidding on the gel at {t}");
+        } else if left_at.is_none() {
+            left_at = Some(t);
+        }
+        if c.skidding && skid_at.is_none() {
+            skid_at = Some(t);
+            // Kept most of the gel's speed until now.
+            assert!(c.horizontal_speed() > 17.0 - c.tuning.gel_exit_decel * (delay + 0.2) - 0.5, "{}", c.horizontal_speed());
+        }
+        forward()
+    });
+    let (left_at, skid_at) = (left_at.expect("never left the gel"), skid_at.expect("never skidded"));
+    let waited = skid_at - left_at;
+    assert!((waited - delay).abs() < 0.1, "skidded {waited} s after leaving the gel");
+}

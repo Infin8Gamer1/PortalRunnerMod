@@ -46,6 +46,8 @@ enum Act {
     Map(usize),
     /// Put her at a point.
     Teleport(Vec3),
+    /// Throw her at this velocity.
+    Launch(Vec3),
     /// Open the settings menu.
     Menu,
 }
@@ -158,6 +160,31 @@ fn script(name: &str) -> Vec<Act> {
             Shot("02_sprinting"),
             Hold(fwd(), 45),
             Shot("03_on_gel"),
+        ],
+        // Landing far faster than she can run: the skid.
+        "skid" => vec![
+            Map(0),
+            Wait(60),
+            Teleport(Vec3::new(-4.0, 0.6, 16.0)),
+            Look(90.0, -4.0),
+            Wait(2),
+            Launch(Vec3::new(-18.0, 1.0, 0.0)),
+            Hold(fwd(), 14),
+            Shot("k1"),
+            Hold(fwd(), 5),
+            Shot("k2"),
+            Look(90.0, -50.0),
+            Wait(1),
+            Shot("k2_down"),
+            Look(90.0, -4.0),
+            Hold(fwd(), 5),
+            Shot("k3"),
+            Hold(fwd(), 5),
+            Shot("k4"),
+            Hold(fwd(), 8),
+            Shot("k5"),
+            Hold(fwd(), 12),
+            Shot("k6"),
         ],
         "menu" => vec![Map(1), Wait(30), Shot("before_menu"), Menu, Wait(10), Shot("menu")],
         // The gun, standing and looking about.
@@ -342,6 +369,7 @@ pub fn run(
             game.pending = Some(*i);
         }
         Act::Menu => menu.open = true,
+        Act::Launch(v) => game.ctrl.launch(*v),
         Act::Teleport(p) => {
             // What she's holding comes too.
             let d = *p - game.ctrl.feet;
