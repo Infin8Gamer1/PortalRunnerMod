@@ -31,6 +31,8 @@ pub enum Mat {
     Roof,
     /// Mirror's Edge walls (concrete): portals go here.
     Wall,
+    /// Concrete that portals don't stick to (rooftops built as courses).
+    Concrete,
 }
 
 impl Mat {
@@ -47,7 +49,7 @@ impl Mat {
     pub fn look(self) -> Look {
         match self {
             Mat::White | Mat::Wall => Look::Wall,
-            Mat::Roof => Look::Roof,
+            Mat::Roof | Mat::Concrete => Look::Roof,
             Mat::Black | Mat::Grate => Look::Runner,
             Mat::Runner => Look::Runner,
             Mat::Glass | Mat::Prop => Look::Prop,

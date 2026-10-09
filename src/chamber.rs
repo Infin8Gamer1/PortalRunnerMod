@@ -376,6 +376,7 @@ fn mat_for(m: &ChamberMats, mat: Mat) -> Handle<StandardMaterial> {
         Mat::Prop => m.prop.clone(),
         Mat::Roof => m.roof.clone(),
         Mat::Wall => m.wall.clone(),
+        Mat::Concrete => m.roof.clone(),
     }
 }
 

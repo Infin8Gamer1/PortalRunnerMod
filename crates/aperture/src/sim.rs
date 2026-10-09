@@ -927,9 +927,9 @@ impl Sim {
                 vel.y = need;
             }
             let h = Vec3::new(vel.x, 0.0, vel.z);
-            if h.length() < 1.5 {
+            if h.length() < 2.5 {
                 let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-                vel += fwd * (1.5 - h.length());
+                vel += fwd * (2.5 - h.length());
             }
         }
         let keep_ground = link.from.normal.y.abs() < 0.3 && out.normal.y.abs() < 0.3;

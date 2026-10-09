@@ -283,22 +283,6 @@ fn aim(c: &mut Controller, target: Vec3) {
     c.pitch = pitch;
 }
 
-/// Walk to `target` (feet, horizontally), steering straight at it. Returns the events, and
-/// panics if she doesn't get there in `secs`.
-fn walk_to(sim: &mut Sim, c: &mut Controller, target: Vec3, secs: f32) -> Vec<SimEvent> {
-    let mut reached = false;
-    let ev = run(sim, c, secs, |_, c| {
-        let d = Vec3::new(target.x - c.feet.x, 0.0, target.z - c.feet.z);
-        if d.length() < 0.35 || reached {
-            reached = true;
-            return Input::default();
-        }
-        Input { move_axis: Vec2::new(0.0, if d.length() < 1.5 { 0.5 } else { 1.0 }), ..Default::default() }
-    });
-    let _ = ev.len();
-    ev
-}
-
 /// Steer: the yaw that faces `target` from her feet.
 fn face(c: &mut Controller, target: Vec3) {
     let d = target - c.feet;
@@ -349,7 +333,6 @@ fn walk_through(sim: &mut Sim, c: &mut Controller, secs: f32) {
 fn chamber01_can_be_solved() {
     use crate::levels::c01_portals::*;
     let (mut sim, mut c) = start(crate::levels::chamber01());
-    let _ = walk_to;
     walk(&mut sim, &mut c, Vec3::new(5.0, 0.0, -6.0), 6.0);
     settle(&mut sim, &mut c, 0.3);
     // Blue high on the wall above the ledge, orange down here on the right wall.
@@ -512,27 +495,135 @@ fn chamber03_can_be_solved() {
 }
 
 #[test]
-#[ignore]
-fn debug_bridge_step_off() {
-    use crate::levels::c03_hard_light::*;
-    let (mut sim, mut c) = start(crate::levels::chamber03());
-    settle(&mut sim, &mut c, 0.2);
-    walk(&mut sim, &mut c, Vec3::new(6.0, 0.0, 1.0), 4.0);
-    aim(&mut c, Vec3::new(10.0, 1.0, BRIDGE_Z));
-    sim.fire(PortalColor::Blue, Aim::of(&c));
-    aim(&mut c, Vec3::new(-2.0, 1.2, 6.0));
-    sim.fire(PortalColor::Orange, Aim::of(&c));
-    settle(&mut sim, &mut c, 0.2);
-    walk(&mut sim, &mut c, Vec3::new(0.5, 0.0, 2.5), 4.0);
-    walk(&mut sim, &mut c, Vec3::new(-2.0, BRIDGE_Y, 2.5), 3.0);
-    walk(&mut sim, &mut c, Vec3::new(-2.0, BRIDGE_Y, -21.0), 8.0);
-    eprintln!("after bridge walk: {} {} {}", c.state.name(), c.feet, c.vel);
-    face(&mut c, Vec3::new(2.0, 0.0, -21.5));
-    for _ in 0..60 {
-        face(&mut c, Vec3::new(2.0, 0.0, -21.5));
-        let i = Input { move_axis: Vec2::new(0.0, 1.0), ..Default::default() };
-        sim.step_player(&mut c, &i, DT);
-        sim.step(DT, &c);
-        eprintln!("{} {} {} env {:?}", c.state.name(), c.feet, c.vel, sim.player_env);
-    }
+fn chamber04_can_be_solved() {
+    use crate::levels::c04_gel::*;
+    let (mut sim, mut c) = start(crate::levels::chamber04());
+    // The orange runway, and the jump at its end.
+    let mut top = 0.0f32;
+    let mut jumped = false;
+    let mut log = Vec::new();
+    run(&mut sim, &mut c, 6.0, |_, c| {
+        top = top.max(c.horizontal_speed());
+        log.push(format!("{} {} {:.1}", c.state.name(), c.feet, c.horizontal_speed()));
+        let mut i = forward();
+        if !jumped && c.feet.z < GAP.1 + 0.4 {
+            jumped = true;
+            i.jump_pressed = true;
+        }
+        if jumped && c.state == State::Ground {
+            i.move_axis = Vec2::ZERO;
+        }
+        i
+    });
+    assert!(top > 14.0, "top speed {top}");
+    assert!(c.feet.z < GAP.0 && c.feet.y.abs() < 0.05, "didn't clear the gap: {} (top {top})\n{}", c.feet, log.iter().skip(150).step_by(6).cloned().collect::<Vec<_>>().join("\n"));
+    // Up the wall off the blue gel.
+    walk(&mut sim, &mut c, Vec3::new(0.0, 0.0, WALL_Z + 1.2), 6.0);
+    c.yaw = 0.0;
+    c.pitch = 0.0;
+    let mut jumped = false;
+    let mut log = Vec::new();
+    run(&mut sim, &mut c, 4.0, |_, c| {
+        log.push(format!("{} {} {}", c.state.name(), c.feet, c.vel));
+        let mut i = forward();
+        if !jumped {
+            jumped = true;
+            i.jump_pressed = true;
+        }
+        if c.feet.y > UPPER - 0.1 && c.feet.z < WALL_Z - 1.0 {
+            i.move_axis = Vec2::ZERO;
+        }
+        i
+    });
+    assert!((c.feet.y - UPPER).abs() < 0.05, "not up the wall: {}\n{}", c.feet, log.iter().step_by(4).cloned().collect::<Vec<_>>().join("\n"));
+    // Portals: the white patch across the goo, the white panel here.
+    walk(&mut sim, &mut c, Vec3::new(4.0, UPPER, -58.0), 4.0);
+    aim(&mut c, glam::Vec3::from(PATCH));
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "no portal on the white gel");
+    aim(&mut c, glam::Vec3::from(PANEL));
+    assert!(sim.fire(PortalColor::Orange, Aim::of(&c)), "no portal on the panel");
+    c.pitch = 0.0;
+    walk_through(&mut sim, &mut c, 3.0);
+    let ev = settle(&mut sim, &mut c, 2.0);
+    assert!(!ev.iter().any(|e| matches!(e, SimEvent::Teleported { .. })), "fell back in");
+    assert!((c.feet.y - UPPER).abs() < 0.05 && c.feet.z < FAR_Z, "not across: {}", c.feet);
+    // Round the floor portal (or back through it she goes).
+    let z = c.feet.z.min(-73.0);
+    walk(&mut sim, &mut c, Vec3::new(3.0, UPPER, z), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(3.0, UPPER, -79.0), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(0.0, UPPER, -79.0), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(0.0, UPPER, -84.0), 4.0);
+    assert!(sim.complete);
+}
+
+#[test]
+fn chamber05_can_be_solved() {
+    use crate::levels::c05_rooftops::*;
+    let (mut sim, mut c) = start(crate::levels::chamber05());
+    // Round the AC unit, crouch under the pipe, and wallrun the billboard over gap 1.
+    walk(&mut sim, &mut c, Vec3::new(RUN_WALL_X - 0.5, 0.0, -2.0), 4.0);
+    c.yaw = 0.0;
+    c.pitch = 0.0;
+    let mut jumped = false;
+    let mut log = Vec::new();
+    run(&mut sim, &mut c, 9.0, |_, c| {
+        log.push(format!("{} {} {}", c.state.name(), c.feet, c.vel));
+        let mut i = forward();
+        // Under the pipe: crouched (a slide at speed).
+        let under = c.feet.z < -11.5 && c.feet.z > -15.0;
+        i.crouch_held = under;
+        i.crouch_pressed = under && c.feet.z > -11.7;
+        if !jumped && c.feet.z < -23.6 {
+            jumped = true;
+            i.jump_pressed = true;
+        }
+        if jumped {
+            i.move_axis.x = 0.4;
+        }
+        if c.feet.z < -38.0 {
+            i.move_axis = Vec2::ZERO;
+        }
+        i
+    });
+    assert!((c.feet.y - ROOF_B).abs() < 0.05 && c.feet.z < -34.0, "didn't make gap 1: {}\n{}", c.feet, log.iter().skip(200).step_by(4).cloned().collect::<Vec<_>>().join("\n"));
+    // Blue on the billboard's white back.
+    walk(&mut sim, &mut c, Vec3::new(5.0, ROOF_B, -52.0), 6.0);
+    walk(&mut sim, &mut c, Vec3::new(5.0, ROOF_B, -59.5), 6.0);
+    walk(&mut sim, &mut c, Vec3::new(0.0, ROOF_B, -60.5), 6.0);
+    aim(&mut c, Vec3::new(0.0, 4.0, BILLBOARD_Z));
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "no blue on the billboard");
+    let blue = sim.portal(PortalColor::Blue).unwrap();
+    assert_eq!(blue.normal, Vec3::NEG_Z);
+    // Up the water tower.
+    walk(&mut sim, &mut c, Vec3::new(5.0, ROOF_B, -59.5), 6.0);
+    walk(&mut sim, &mut c, Vec3::new(5.0, ROOF_B, -52.0), 6.0);
+    walk(&mut sim, &mut c, Vec3::new(-4.0, ROOF_B, -41.0), 6.0);
+    c.yaw = 0.0; // facing -Z, at the ladder
+    c.pitch = 0.0;
+    run(&mut sim, &mut c, 12.0, |_, c| if c.feet.y > TOWER_TOP - 0.1 && c.state == State::Ground { Input::default() } else { forward() });
+    assert!((c.feet.y - TOWER_TOP).abs() < 0.05, "not up the tower: {} ({})", c.feet, c.state.name());
+    // Orange on the patch below, and off the edge into it.
+    walk(&mut sim, &mut c, Vec3::new(-2.2, TOWER_TOP, -46.0), 4.0);
+    aim(&mut c, Vec3::new(1.6, ROOF_B, -46.0));
+    assert!(sim.fire(PortalColor::Orange, Aim::of(&c)), "no orange on the patch");
+    c.yaw = -std::f32::consts::FRAC_PI_2; // facing +X, out over the edge
+    c.pitch = -0.3;
+    let mut log = Vec::new();
+    let ev = run(&mut sim, &mut c, 5.0, |sim, c| {
+        log.push(format!("{} {} {} env {:?}", c.state.name(), c.feet, c.vel, sim.player_env));
+        let mut i = Input::default();
+        if c.feet.y > TOWER_TOP - 0.2 && c.feet.x < -1.9 && c.state == State::Ground {
+            i = forward();
+        }
+        // Roll the landing: crouch as the roof comes up.
+        if c.state == State::Air && c.vel.y < 0.0 && c.feet.y < ROOF_C + 1.2 && c.feet.z < -68.0 {
+            i.crouch_pressed = true;
+            i.crouch_held = true;
+        }
+        i
+    });
+    let died = ev.iter().any(|e| matches!(e, SimEvent::PlayerDied));
+    assert!(!died && (c.feet.y - ROOF_C).abs() < 0.05 && c.feet.z < -72.0, "no fling to roof C: {} died {died}\n{}", c.feet, log.iter().step_by(6).cloned().collect::<Vec<_>>().join("\n"));
+    walk(&mut sim, &mut c, Vec3::new(0.0, ROOF_C, -98.0), 8.0);
+    assert!(sim.complete);
 }
