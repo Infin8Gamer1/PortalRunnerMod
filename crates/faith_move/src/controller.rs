@@ -12,7 +12,7 @@ use crate::tuning::Tuning;
 use crate::vault::{self, Vault};
 pub use crate::climb::{ClimbStart, ClimbStep, Ladder};
 pub use crate::airbarge::AirBargePhase;
-use crate::world::{closest_on_segment, column_top, find_ledge, move_axis, slide_move, probe_wall, tops_below, trace_box, trace_wall, Aabb, Body, Fixture, WallHit, WithDoors, World};
+use crate::world::{closest_on_segment, column_top, find_ledge, move_axis, slide_move, probe_wall, tops_below, trace_box, trace_wall, Aabb, Body, Fixture, Gel, WallHit, WithDoors, World};
 
 /// One frame of player input. Buttons are "pressed this frame" edges plus
 /// "held" levels; `look` is the mouse/stick delta in radians.
@@ -305,6 +305,13 @@ pub enum Event {
     MeleeHit { target: u32, damage: f32, momentum: Vec3, kind: MeleeKind },
     /// Melee during the air 180 (TdMove_180TurnInAir.HandleMoveAction(MA_Melee)): Taunt.
     Taunt,
+    /// The host moved her through a portal ([`Controller::teleport`]): the view turned by
+    /// `yaw_delta`, so anything keeping its own copy of her yaw should turn it too.
+    Teleport { yaw_delta: f32 },
+    /// Bounced off repulsion gel (`wall`: off a wall rather than a floor or ceiling).
+    GelBounce { wall: bool },
+    /// Thrown by the host (an aerial faith plate: [`Controller::launch`]).
+    Launched,
 }
 
 /// Camera output: where to put the first-person view this frame.
@@ -549,6 +556,8 @@ pub struct Controller {
     springboard: Option<SpringRunIn>,
     /// Seconds since grabbing the current ledge.
     pub(crate) hang_time: f32,
+    /// Crouch held this frame: repulsion gel doesn't bounce you while you hold it.
+    crouch_held: bool,
 }
 
 const SUBSTEP: f32 = 1.0 / 120.0;
@@ -643,7 +652,57 @@ impl Controller {
             doors_open: Vec::new(),
             soft_brace: false,
             doors: Vec::new(),
+            crouch_held: false,
         }
+    }
+
+    /// Put her somewhere else at once, keeping her momentum: going through a portal. `feet`,
+    /// `vel`, `yaw` and `pitch` are already carried through it by the host. Whatever move she
+    /// was in ends (she's in the air) unless `keep_ground` (walking through a wall portal onto
+    /// the floor beyond); the fall is measured from here.
+    pub fn teleport(&mut self, feet: Vec3, vel: Vec3, yaw: f32, pitch: f32, keep_ground: bool) {
+        let yaw_delta = yaw - self.yaw;
+        self.feet = feet;
+        self.vel = vel;
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-1.48, 1.48);
+        self.slide_yaw += yaw_delta;
+        let grounded = keep_ground && matches!(self.state, State::Ground | State::Slide { .. });
+        if !grounded {
+            self.state = State::Air;
+            self.crouched = false;
+            self.coiled = false;
+        }
+        self.turn = None;
+        self.look_at = None;
+        self.springboard = None;
+        self.wall_turned = false;
+        self.dodging = false;
+        self.turned_in_air = false;
+        self.shimmy = None;
+        self.climbed_this_air = false;
+        self.last_wall_normal = None;
+        self.takeoff = Takeoff::Other;
+        self.chain_wallruns = 0;
+        self.fall_peak = self.body_y();
+        self.last_jump_at = feet;
+        self.events.push(Event::Teleport { yaw_delta });
+    }
+
+    /// Throw her (an aerial faith plate): into the air at `vel`, whatever she was doing.
+    pub fn launch(&mut self, vel: Vec3) {
+        self.vel = vel;
+        self.state = State::Air;
+        self.crouched = false;
+        self.coiled = false;
+        self.turn = None;
+        self.springboard = None;
+        self.dodging = false;
+        self.takeoff = Takeoff::Other;
+        self.jumped_since_ground = true;
+        self.melee_no_input = false;
+        self.fall_peak = self.body_y();
+        self.events.push(Event::Launched);
     }
 
     /// Move everything by `d`: a host re-centring its coordinates near the player (floats lose
@@ -722,6 +781,7 @@ impl Controller {
             input.strafe_raw = input.move_axis.x.clamp(-1.0, 1.0);
         }
         input.move_axis = input.move_axis.clamp_length_max(1.0);
+        self.crouch_held = input.crouch_held;
 
         // Doors are solid until knocked open.
         let fixtures = world.fixtures();
@@ -1205,7 +1265,7 @@ impl Controller {
                 return;
             }
             if self.try_stand(world) {
-                self.ground_jump();
+                self.ground_jump(world);
                 // Don't lose this substep's movement on takeoff.
                 self.integrate(dt, world, false);
                 return;
@@ -1234,8 +1294,26 @@ impl Controller {
             turn: self.frame_turn,
         };
         let mut h = horiz(self.vel);
-        let accel = tu.loco.controller_accel(&mut self.run, &ri, &mut h, dt);
-        let h = tu.loco.calc_velocity(h, accel, dt, speed_mod, tu.loco.ground_friction);
+        let before = h.length();
+        let mut accel = tu.loco.controller_accel(&mut self.run, &ri, &mut h, dt);
+        // Propulsion gel: a higher top speed and a hard push along the stick.
+        let mut cap_mod = speed_mod;
+        if world.gel(self.feet, Vec3::Y) == Gel::Speed && !self.crouched {
+            let dir = (ri.forward * ri.a_forward + ri.right * ri.a_strafe).normalize_or_zero();
+            accel += dir * tu.gel_speed_accel;
+            cap_mod = speed_mod * (tu.gel_speed_max / tu.loco.ground_speed).max(1.0);
+        }
+        let mut h = tu.loco.calc_velocity(h, accel, dt, cap_mod, tu.loco.ground_friction);
+        // Coming down from a fling faster than she can run: skid the excess off.
+        if let Some(decel) = tu.overspeed_decel {
+            let cap = tu.loco.ground_speed * cap_mod;
+            if before > cap {
+                let keep = (before - decel * dt).max(cap);
+                if h.length() < keep {
+                    h = h.normalize_or_zero() * keep;
+                }
+            }
+        }
         self.vel = Vec3::new(h.x, 0.0, h.z);
         self.sprint_charge = (self.run.energy / (tu.loco.ground_speed - tu.loco.max_base)).clamp(0.0, 1.0);
 
@@ -1248,11 +1326,18 @@ impl Controller {
 
     /// Jump off the ground (TdMove_Jump.StartMove): remember the speed you jumped with, and
     /// add JumpAddXY along the way you face if you're already moving that way.
-    fn ground_jump(&mut self) {
+    fn ground_jump(&mut self, world: &dyn World) {
         let fwd = forward(self.yaw);
         self.pre_jump_momentum = self.horizontal_speed();
         if fwd.dot(self.vel) > uu_per_s(10.0) {
             self.vel += fwd * self.tuning.jump_add_forward;
+        }
+        if world.gel(self.feet, Vec3::Y) == Gel::Bounce {
+            // Repulsion gel: a far higher jump, and no landing penalty after it.
+            self.jump(self.tuning.gel_bounce_jump);
+            self.takeoff = Takeoff::Other;
+            self.events.push(Event::GelBounce { wall: false });
+            return;
         }
         self.jump(self.tuning.jump_speed);
         self.takeoff = Takeoff::Jump;
@@ -1448,7 +1533,7 @@ impl Controller {
         // Coyote jump.
         if self.jump_buffer > 0.0 && !self.jumped_since_ground && self.air_time < tu.coyote_time {
             if !self.crouched && !self.coiled {
-                self.ground_jump();
+                self.ground_jump(world);
             }
         }
 
@@ -2433,7 +2518,7 @@ impl Controller {
             return;
         }
         if self.jump_buffer > 0.0 {
-            self.ground_jump();
+            self.ground_jump(world);
             self.integrate(dt, world, false);
             return;
         }
@@ -2713,10 +2798,20 @@ impl Controller {
             }
         }
         self.feet = a;
-        // What we ran into takes the velocity going into it.
+        // What we ran into takes the velocity going into it; repulsion gel on a wall throws it
+        // back instead (in the air, unless she's holding crouch).
         for n in hit {
             let into = self.vel.dot(n);
-            if into < 0.0 {
+            let mid = self.feet + Vec3::Y * body.height * 0.5 - n * body.reach_toward(n);
+            if into < -0.5 && !on_ground && !self.crouch_held && world.gel(mid, n) == Gel::Bounce {
+                let tu = &self.tuning;
+                let out = (-into).max(tu.gel_wall_bounce);
+                self.vel += n * (out - into);
+                self.vel.y = self.vel.y.max(0.0) + tu.gel_wall_lift;
+                self.state = State::Air;
+                self.fall_peak = self.body_y();
+                self.events.push(Event::GelBounce { wall: true });
+            } else if into < 0.0 {
                 self.vel -= n * into;
             }
         }
@@ -2727,7 +2822,23 @@ impl Controller {
         if hy.blocked {
             self.vel.y = 0.0;
             if d.y < 0.0 && !on_ground {
-                self.land(-vy_before, world);
+                let tu = &self.tuning;
+                if -vy_before > tu.gel_bounce_threshold && !self.crouch_held && world.gel(self.feet, Vec3::Y) == Gel::Bounce {
+                    // Repulsion gel: back up as fast as she came down (at least the minimum),
+                    // and none of the landing: no roll, no hard landing, no fall damage.
+                    self.vel.y = (-vy_before * tu.gel_bounce_restitution).max(tu.gel_bounce_min);
+                    self.state = State::Air;
+                    self.takeoff = Takeoff::Other;
+                    self.climbed_this_air = false;
+                    self.last_wall_normal = None;
+                    self.fall_peak = self.body_y();
+                    self.events.push(Event::GelBounce { wall: false });
+                } else {
+                    self.land(-vy_before, world);
+                }
+            } else if d.y > 0.0 && vy_before > 0.5 && !self.crouch_held && world.gel(self.feet + Vec3::Y * body.height, Vec3::NEG_Y) == Gel::Bounce {
+                self.vel.y = -vy_before;
+                self.events.push(Event::GelBounce { wall: false });
             }
         }
 

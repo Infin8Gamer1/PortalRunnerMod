@@ -352,6 +352,26 @@ pub struct Tuning {
     pub auto_step_up_max: f32,
     /// ME: TdMove_MeleeCrouch.SpeedModifier = 0.2 / guess for standing
     pub melee_speed: f32,
+
+    // ---------------------------------------------------------------- portals and gel
+    // Not Mirror's Edge: hosts with portals and Portal 2's gels (see `World::gel`).
+    /// Landing faster than GroundSpeed (out of a portal fling), shed the excess at this rate
+    /// (m/s²) instead of being clamped to GroundSpeed at once. None: Mirror's Edge's clamp.
+    pub overspeed_decel: Option<f32>,
+    /// Repulsion gel: the least you bounce up at (m/s), however softly you land on it.
+    pub gel_bounce_min: f32,
+    /// Repulsion gel: how much of the landing speed comes back (1 = as high as you fell).
+    pub gel_bounce_restitution: f32,
+    /// Repulsion gel: a jump off it launches at this (m/s).
+    pub gel_bounce_jump: f32,
+    /// Repulsion gel on a wall: pushed off it at least this fast (m/s), and lifted by this.
+    pub gel_wall_bounce: f32,
+    pub gel_wall_lift: f32,
+    /// Landing slower than this (m/s) on repulsion gel doesn't bounce (walking onto it).
+    pub gel_bounce_threshold: f32,
+    /// Propulsion gel: top speed (m/s) and the extra acceleration (m/s²) along your input.
+    pub gel_speed_max: f32,
+    pub gel_speed_accel: f32,
 }
 
 /// Unreal units (cm) to metres.
@@ -520,6 +540,15 @@ impl Default for Tuning {
             air_barge_clips: [1.0, 0.6, 0.8],
             climb_curves: None,
             auto_step_up: false,
+            overspeed_decel: None,
+            gel_bounce_min: 7.5,
+            gel_bounce_restitution: 1.0,
+            gel_bounce_jump: 11.0,
+            gel_wall_bounce: 6.0,
+            gel_wall_lift: 4.0,
+            gel_bounce_threshold: 2.0,
+            gel_speed_max: 17.0,
+            gel_speed_accel: 16.0,
             auto_step_up_max: uu(48.0),
             melee_speed: 0.4,
         }

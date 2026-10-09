@@ -33,7 +33,7 @@ pub use melee::Target;
 pub use takedown::TAKEDOWN_ANIMS;
 pub use tuning::{MeleeClips, Tuning};
 pub use vault::{Vault, VaultType, VAULT_TYPES};
-pub use world::{Aabb, Body, BoxWorld, Fixture, MeshWorld, SweepHit, World};
+pub use world::{Aabb, Body, BoxWorld, Fixture, Gel, MeshWorld, SweepHit, World};
 
 #[cfg(test)]
 mod tests;

@@ -78,6 +78,17 @@ pub enum Fixture {
     Ladder(crate::climb::Ladder),
 }
 
+/// Portal 2's paint on a surface: what it does to whoever touches it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Gel {
+    #[default]
+    None,
+    /// Repulsion gel (blue): bounces you off.
+    Bounce,
+    /// Propulsion gel (orange): run much faster on it.
+    Speed,
+}
+
 /// Where a swept box first touched something.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SweepHit {
@@ -107,6 +118,12 @@ pub trait World {
     fn is_free(&self, region: &Aabb) -> bool {
         !self.overlaps(region)
     }
+
+    /// The gel painted on the surface at `point` (on or within a few centimetres of it) that
+    /// faces `normal`. Plain worlds have none.
+    fn gel(&self, _point: Vec3, _normal: Vec3) -> Gel {
+        Gel::None
+    }
 }
 
 /// Two worlds as one: a host's still collision and what moves in it (doors, gates, drawbridges),
@@ -130,6 +147,10 @@ impl World for Layered<'_> {
 
     fn fixtures(&self) -> &[Fixture] {
         self.still.fixtures()
+    }
+
+    fn gel(&self, point: Vec3, normal: Vec3) -> Gel {
+        self.still.gel(point, normal)
     }
 }
 
@@ -329,6 +350,10 @@ impl World for WithDoors<'_> {
 
     fn fixtures(&self) -> &[Fixture] {
         self.world.fixtures()
+    }
+
+    fn gel(&self, point: Vec3, normal: Vec3) -> Gel {
+        self.world.gel(point, normal)
     }
 }
 

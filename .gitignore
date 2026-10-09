@@ -10,3 +10,8 @@ tools/me-extract/*.decomp
 settings.txt
 __pycache__/
 *.log
+
+# Assets extracted from your own Portal / Portal 2 / Mirror's Edge installs
+# (crates/portal_extract): never commit these.
+assets/extracted/
+me_path.txt

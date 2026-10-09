@@ -1,0 +1,9 @@
+[package]
+name = "aperture"
+version = "0.1.0"
+edition = "2024"
+description = "Portal-style puzzle simulation (portals, cubes, buttons, gels, lasers, bridges) on top of faith_move"
+
+[dependencies]
+glam = "0.32"
+faith_move = { path = "../faith_move" }
