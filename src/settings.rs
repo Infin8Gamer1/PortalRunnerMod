@@ -30,6 +30,24 @@ pub struct Settings {
     pub funnel: f32,
 }
 
+/// The volume sliders are perceptual: each step is the same number of decibels, and the
+/// bottom of a slider is this far below the top (then silence at 0).
+pub const VOLUME_RANGE_DB: f32 = 30.0;
+/// The loudness of everything at full master volume. The games' sounds are mastered hot,
+/// so full volume sits well below unity, leaving headroom for many sounds at once.
+pub const OUTPUT_TRIM: f32 = 0.4;
+/// Bumped when the meaning of the volume sliders changes, so old saved values are reset.
+const AUDIO_VERSION: f32 = 2.0;
+
+/// The gain for a volume slider at `s` (0..=1).
+pub fn slider_gain(s: f32) -> f32 {
+    if s <= 0.001 {
+        0.0
+    } else {
+        10f32.powf((s.min(1.0) - 1.0) * VOLUME_RANGE_DB / 20.0)
+    }
+}
+
 /// A lethal fall height at this or above means no fall kills.
 pub const LETHAL_OFF: f32 = 40.0;
 
@@ -44,7 +62,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             master: 0.8,
-            music: 0.6,
+            music: 0.8,
             effects: 1.0,
             sensitivity: 1.0,
             fov: 90.0,
@@ -58,15 +76,16 @@ impl Default for Settings {
 
 impl Settings {
     pub fn music_gain(&self) -> f32 {
-        self.master * self.music
+        OUTPUT_TRIM * slider_gain(self.master) * slider_gain(self.music)
     }
 
     pub fn effects_gain(&self) -> f32 {
-        self.master * self.effects
+        OUTPUT_TRIM * slider_gain(self.master) * slider_gain(self.effects)
     }
 
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
+        let mut audio_version = 1.0;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let Ok(v) = v.trim().parse::<f32>() else { continue };
@@ -80,8 +99,14 @@ impl Settings {
                 "lethal_fall" => s.lethal_fall = v,
                 "portal_depth" => s.portal_depth = v,
                 "funnel" => s.funnel = v,
+                "audio" => audio_version = v,
                 _ => {}
             }
+        }
+        // Volumes saved for the old linear sliders mean something else now.
+        if audio_version < AUDIO_VERSION {
+            let d = Settings::default();
+            (s.master, s.music, s.effects) = (d.master, d.music, d.effects);
         }
         for (i, r) in ROWS.iter().enumerate() {
             let v = r.get(&s).clamp(r.min, r.max);
@@ -92,8 +117,8 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# Portal Runner settings\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\nhard_land = {:.1}\nlethal_fall = {:.1}\nportal_depth = {:.0}\nfunnel = {:.0}\n",
-            self.master, self.music, self.effects, self.sensitivity, self.fov, self.hard_land, self.lethal_fall, self.portal_depth, self.funnel
+            "# Portal Runner settings\naudio = {:.0}\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\nhard_land = {:.1}\nlethal_fall = {:.1}\nportal_depth = {:.0}\nfunnel = {:.0}\n",
+            AUDIO_VERSION, self.master, self.music, self.effects, self.sensitivity, self.fov, self.hard_land, self.lethal_fall, self.portal_depth, self.funnel
         )
     }
 
@@ -390,10 +415,31 @@ mod tests {
     fn round_trips_and_clamps() {
         let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0 };
         assert_eq!(Settings::parse(&s.to_text()), s);
-        let wild = Settings::parse("master = 7\nfov = 10\nnonsense\nmusic = x");
+        let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");
         assert_eq!(wild.master, 1.0);
         assert_eq!(wild.fov, 70.0);
         assert_eq!(wild.music, Settings::default().music);
+    }
+
+    #[test]
+    fn old_linear_volumes_are_reset() {
+        let old = Settings::parse("master = 0.2\nmusic = 0.3\nfov = 100");
+        assert_eq!(old.master, Settings::default().master);
+        assert_eq!(old.music, Settings::default().music);
+        assert_eq!(old.fov, 100.0);
+    }
+
+    #[test]
+    fn volume_is_perceptual() {
+        assert_eq!(slider_gain(0.0), 0.0);
+        assert!((slider_gain(1.0) - 1.0).abs() < 1e-6);
+        // Each tenth of the slider is the same step in decibels.
+        let r1 = slider_gain(0.9) / slider_gain(0.8);
+        let r2 = slider_gain(0.4) / slider_gain(0.3);
+        assert!((r1 - r2).abs() < 1e-4);
+        // The defaults land about where the old linear sliders were comfortable (~20%).
+        let fx = Settings::default().effects_gain();
+        assert!((0.15..0.25).contains(&fx), "{fx}");
     }
 
     #[test]

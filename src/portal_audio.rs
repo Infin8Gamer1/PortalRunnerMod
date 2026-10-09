@@ -21,7 +21,13 @@ pub struct PortalAudio {
     /// The last time a cube hit something (so a pile of cubes doesn't machine-gun).
     last_hit: f32,
     time: f32,
+    /// When each sound last started, so one that fires many times a frame (gel splats,
+    /// cubes piling up) plays once rather than stacking into a roar.
+    recent: std::collections::HashMap<AssetId<AudioSource>, f32>,
 }
+
+/// The same sound doesn't start again within this long (s).
+const RETRIGGER: f32 = 0.06;
 
 pub fn setup(mut commands: Commands) {
     commands.insert_resource(PortalAudio::default());
@@ -56,10 +62,11 @@ pub fn play(
     let sim = &game.sim;
     // Distance falloff by hand (the listener moves through portals).
     let at_volume = |p: Vec3, v: f32| v * fx * (1.0 / (1.0 + (p.distance(ear) / 8.0).powi(2))).max(0.08);
-    let one_shot = |commands: &mut Commands, h: Option<Handle<AudioSource>>, volume: f32, speed: f32| {
+    let mut plays: Vec<(Handle<AudioSource>, f32, f32)> = vec![];
+    let mut one_shot = |_: &mut Commands, h: Option<Handle<AudioSource>>, volume: f32, speed: f32| {
         if let Some(h) = h {
             if volume > 0.001 {
-                commands.spawn((AudioPlayer::new(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(speed)));
+                plays.push((h, volume, speed));
             }
         }
     };
@@ -128,6 +135,16 @@ pub fn play(
         }
     }
 
+    for (h, volume, speed) in plays {
+        let now = st.time;
+        if st.recent.get(&h.id()).is_some_and(|t| now - t < RETRIGGER) {
+            continue;
+        }
+        st.recent.insert(h.id(), now);
+        let v = volume * ex.gain(&h);
+        commands.spawn((AudioPlayer::new(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(v)).with_speed(speed)));
+    }
+
     // ---- loops: their volume follows what's near.
     let indoor = sim.level.indoor;
     let near_portal = sim.portals.iter().flatten().map(|p| p.center.distance(ear)).fold(f32::INFINITY, f32::min);
@@ -146,7 +163,7 @@ pub fn play(
         ("fall_wind", fall * 0.6),
     ];
     for (name, v) in wants {
-        let vol = v * fx;
+        let vol = v * fx * ex.sound(name).map(|h| ex.gain(&h)).unwrap_or(1.0);
         let existing = st.loops.iter().find(|(n, _)| *n == name).map(|(_, e)| *e);
         match existing {
             Some(e) => {

@@ -17,6 +17,48 @@ pub struct Extracted {
     pub root: Option<PathBuf>,
     /// Sounds by name (their files' stems), each with its variations.
     pub sounds: HashMap<String, Handle<AudioSource>>,
+    /// Each sound's loudness correction: the games' files are all normalised to peak at full
+    /// scale, so a hum and a click come out equally loud. This brings each one's average
+    /// level down to [`TARGET_DB`] (never up).
+    pub gains: HashMap<AssetId<AudioSource>, f32>,
+}
+
+/// The average (RMS) level every sound is brought down to, in dB below full scale.
+pub const TARGET_DB: f32 = -20.0;
+
+/// The RMS level of a 16-bit PCM WAV file in dBFS, if it is one.
+pub fn wav_rms_db(bytes: &[u8]) -> Option<f32> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut at = 12;
+    let mut bits = 0u16;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().ok()?) as usize;
+        let body = bytes.get(at + 8..(at + 8 + len).min(bytes.len()))?;
+        if id == b"fmt " && body.len() >= 16 {
+            if u16::from_le_bytes([body[0], body[1]]) != 1 {
+                return None;
+            }
+            bits = u16::from_le_bytes([body[14], body[15]]);
+        } else if id == b"data" {
+            if bits != 16 || body.len() < 2 {
+                return None;
+            }
+            let n = body.len() / 2;
+            let sum: f64 = body.chunks_exact(2).map(|c| (i16::from_le_bytes([c[0], c[1]]) as f64 / 32768.0).powi(2)).sum();
+            let rms = (sum / n as f64).sqrt().max(1e-6);
+            return Some(20.0 * rms.log10() as f32);
+        }
+        at += 8 + len + (len & 1);
+    }
+    None
+}
+
+/// The gain that brings a sound at `db` down to [`TARGET_DB`].
+pub fn normalising_gain(db: f32) -> f32 {
+    10f32.powf(((TARGET_DB - db) / 20.0).min(0.0)).max(0.1)
 }
 
 /// Where the extracted assets are: `PORTAL_RUNNER_ASSETS`, else `assets/extracted` here or
@@ -69,6 +111,11 @@ impl Extracted {
         self.sounds.get(name).cloned()
     }
 
+    /// A sound's loudness correction (1 for anything not measured).
+    pub fn gain(&self, h: &Handle<AudioSource>) -> f32 {
+        self.gains.get(&h.id()).copied().unwrap_or(1.0)
+    }
+
     /// Every sound whose name starts with `prefix` (its numbered variations).
     pub fn sounds_like(&self, prefix: &str) -> Vec<Handle<AudioSource>> {
         let mut v: Vec<(&String, &Handle<AudioSource>)> = self.sounds.iter().filter(|(k, _)| k.starts_with(prefix)).collect();
@@ -80,6 +127,7 @@ impl Extracted {
 pub fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     let root = find_root();
     let mut sounds = HashMap::new();
+    let mut gains = HashMap::new();
     match &root {
         Some(r) => {
             info!("Extracted Portal assets: {}", r.display());
@@ -92,12 +140,52 @@ pub fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
                     }
                     let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else { continue };
                     if let Ok(bytes) = std::fs::read(&p) {
-                        sounds.insert(stem.to_string(), sources.add(AudioSource { bytes: Arc::from(bytes.into_boxed_slice()) }));
+                        let db = wav_rms_db(&bytes);
+                        let h = sources.add(AudioSource { bytes: Arc::from(bytes.into_boxed_slice()) });
+                        if let Some(db) = db {
+                            gains.insert(h.id(), normalising_gain(db));
+                        }
+                        sounds.insert(stem.to_string(), h);
                     }
                 }
             }
         }
         None => info!("No extracted Portal assets (run `cargo run --release -p portal_extract`): using stand-ins"),
     }
-    commands.insert_resource(Extracted { root, sounds });
+    commands.insert_resource(Extracted { root, sounds, gains });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wav(samples: &[i16]) -> Vec<u8> {
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut b = b"RIFF".to_vec();
+        b.extend((36 + data.len() as u32).to_le_bytes());
+        b.extend(b"WAVEfmt ");
+        b.extend(16u32.to_le_bytes());
+        b.extend([1, 0, 1, 0]);
+        b.extend(44100u32.to_le_bytes());
+        b.extend(88200u32.to_le_bytes());
+        b.extend([2, 0, 16, 0]);
+        b.extend(b"data");
+        b.extend((data.len() as u32).to_le_bytes());
+        b.extend(data);
+        b
+    }
+
+    #[test]
+    fn measures_and_normalises_loudness() {
+        let loud = wav(&[i16::MAX, i16::MIN].repeat(500));
+        let db = wav_rms_db(&loud).unwrap();
+        assert!(db.abs() < 0.1, "{db}");
+        assert!((normalising_gain(db) - 0.1).abs() < 0.01);
+        let quiet = wav(&[1000, -1000].repeat(500));
+        let db = wav_rms_db(&quiet).unwrap();
+        assert!(db < TARGET_DB);
+        // Quiet sounds are never boosted.
+        assert_eq!(normalising_gain(db), 1.0);
+        assert_eq!(wav_rms_db(b"not a wav"), None);
+    }
 }
