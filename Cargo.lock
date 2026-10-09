@@ -4351,6 +4351,7 @@ dependencies = [
  "bevy",
  "faith_anim",
  "faith_move",
+ "half",
  "me_assets",
 ]
 

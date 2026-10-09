@@ -17,6 +17,10 @@ pub struct Capture {
     frame: u32,
     step: usize,
     wait: u32,
+    /// Hold the script (real time) while new shaders compile: at the start, and after a map
+    /// loads. Frames run far faster than 60 a second here, so frame counts alone can shoot
+    /// before the renderer's ready (a black frame).
+    hold_until: Option<std::time::Instant>,
 }
 
 pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
@@ -26,7 +30,7 @@ pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
         game.locked = true;
         // Every frame is 1/60 s of game time, however fast it renders: scripts count frames.
         commands.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / 60.0)));
-        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0 });
+        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)) });
     }
 }
 
@@ -454,6 +458,9 @@ pub fn run(
     }
     let acts = script(&cap.script);
     game.scripted = Some(MoveInput::default());
+    if cap.hold_until.is_some_and(|t| std::time::Instant::now() < t) {
+        return;
+    }
     if cap.wait > 0 {
         cap.wait -= 1;
         if let Some(Act::Hold(i, _)) = acts.get(cap.step) {
@@ -503,6 +510,7 @@ pub fn run(
         }
         Act::Map(i) => {
             game.pending = Some(*i);
+            cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(1500));
         }
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Launch(v) => game.ctrl.launch(*v),

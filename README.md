@@ -109,7 +109,9 @@ In pages: **Audio** (master, music, effects), **Controls** (mouse sensitivity, f
 funnel**; **Skid delay off speed gel**; **Chamber timer**), **Display** (window: windowed,
 borderless or fullscreen; window size; VSync; a frame-rate cap; brightness; **Speed FOV
 increase**, **Speed lines**, **Portal gun model**) and **Graphics** (anti-aliasing: off, FXAA,
-SMAA, MSAA 4x or TAA; sharpening; the portal views' resolution; shadow quality). They apply at
+SMAA, MSAA 4x or TAA; sharpening; the portal views' resolution; shadow quality; **Bounce light
+(GI)**, a one-bounce irradiance volume baked per chamber as it loads; **Bloom**; **Ambient
+occlusion**, which needs MSAA off). They apply at
 once and are saved to `settings.txt` where you run the game. (`PORTAL_NOVSYNC=1` still forces
 VSync off.)
 
@@ -143,6 +145,7 @@ src/hud.rs              crosshair, hints, messages, timer, debug readout
 src/menu.rs             title, pause, chamber select, settings pages, controls
 src/speed_fx.rs         speed FOV kick, speed lines, skid dust
 src/graphics.rs         applying the display and graphics settings, the frame-rate cap
+src/gi.rs               bounce light: baking each chamber's irradiance volume
 src/fonts.rs            the UI font (Inter from the system, if it's there)
 src/progress.rs         best times and the last chamber, saved
 src/portal_audio.rs     Portal's sounds

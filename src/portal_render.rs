@@ -187,7 +187,8 @@ impl Plugin for PortalRenderPlugin {
 }
 
 fn target_image(size: UVec2) -> Image {
-    let mut img = Image::new_target_texture(size.x.max(1), size.y.max(1), TextureFormat::Rgba8UnormSrgb, None);
+    // Linear HDR: the player's camera tonemaps the portal's view along with everything else.
+    let mut img = Image::new_target_texture(size.x.max(1), size.y.max(1), TextureFormat::Rgba16Float, None);
     img.asset_usage = RenderAssetUsages::RENDER_WORLD;
     img
 }

@@ -10,6 +10,7 @@ mod capture;
 mod chamber;
 mod extracted;
 mod fonts;
+mod gi;
 mod graphics;
 mod gun;
 mod hud;
@@ -70,6 +71,7 @@ fn main() {
     .add_plugins(portal_render::PortalRenderPlugin)
     .add_plugins(speed_fx::SpeedFxPlugin)
     .add_plugins(graphics::GraphicsPlugin)
+    .init_resource::<gi::GiState>()
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
@@ -102,6 +104,7 @@ fn main() {
         speed_fx::update,
         chamber::update,
         me_props::spawn_for_level,
+        gi::update,
         props::tag_parts,
         props::animate,
         viewmodel::animate,
@@ -238,11 +241,12 @@ fn load_first_level(
     camera: Query<Entity, With<PlayerCamera>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
+    settings: Res<settings::Settings>,
 ) {
     let g = &mut *game;
     g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
-    light_for(&g.sim.level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
+    light_for(&g.sim.level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient, settings.bounce_light > 0.0);
     g.flash = None;
 }
 
@@ -255,6 +259,7 @@ fn light_for(
     commands: &mut Commands,
     clear: &mut ClearColor,
     ambient: &mut GlobalAmbientLight,
+    gi: bool,
 ) {
     if let Ok((mut l, mut tf)) = sun.single_mut() {
         if level.indoor {
@@ -267,13 +272,15 @@ fn light_for(
             *tf = Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y);
         }
     }
+    // A flat fill on top of the bounce light (gi.rs), which does most of the work when it's on.
+    let flat = if gi { 0.3 } else { 1.0 };
     if level.indoor {
         clear.0 = Color::srgb(0.04, 0.04, 0.05);
-        ambient.brightness = 520.0;
+        ambient.brightness = 520.0 * flat;
         ambient.color = Color::srgb(0.92, 0.95, 1.0);
     } else {
         clear.0 = Color::srgb(0.62, 0.78, 0.93);
-        ambient.brightness = 650.0;
+        ambient.brightness = 650.0 * flat;
         ambient.color = Color::srgb(0.85, 0.92, 1.0);
     }
     if let Some(cam) = camera {
@@ -406,7 +413,7 @@ fn switch_level(
     g.level = level.greybox();
     g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
-    light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
+    light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient, settings.bounce_light > 0.0);
     let cp = &level.checkpoints[0];
     g.ctrl.spawn = cp.spawn;
     g.ctrl.spawn_yaw = cp.yaw;

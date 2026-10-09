@@ -1,6 +1,7 @@
 //! The display and graphics settings, applied: window mode and size, VSync, a frame-rate
 //! cap, brightness, anti-aliasing (on the player's camera and, matched to it, the portal and
-//! viewmodel cameras), sharpening, the portal views' resolution and the sun's shadows.
+//! viewmodel cameras), sharpening, HDR with bloom and ambient occlusion, the portal views'
+//! resolution and the sun's shadows (indoors too: the chambers' dim fill light).
 
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,10 @@ use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::anti_alias::smaa::Smaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
-use bevy::camera::Exposure;
+use bevy::camera::{Exposure, Hdr};
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::pbr::ScreenSpaceAmbientOcclusion;
+use bevy::post_process::bloom::Bloom;
 use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::prelude::*;
@@ -109,7 +113,8 @@ fn apply(
     let aa = Aa::from_setting(settings.anti_aliasing);
     let sharpen = (settings.sharpening * 4.0).round() as i32;
     let ev = (settings.brightness * 4.0).round() as i32;
-    let cams = (aa, sharpen, ev);
+    let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
+    let cams = (aa, sharpen, ev * 100 + fx);
     if applied.cameras != Some(cams) || !new_cameras.is_empty() {
         applied.cameras = Some(cams);
         // Brighter is a lower exposure value.
@@ -117,7 +122,16 @@ fn apply(
         for e in &main {
             let mut ec = commands.entity(e);
             ec.remove::<(Fxaa, Smaa, TemporalAntiAliasing, TemporalJitter, MipBias, DepthPrepass, MotionVectorPrepass, ContrastAdaptiveSharpening)>();
-            ec.insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure));
+            ec.remove::<(Bloom, ScreenSpaceAmbientOcclusion, bevy::core_pipeline::prepass::NormalPrepass)>();
+            // HDR, tonemapped once here (the portal views arrive linear), with bloom.
+            ec.insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface));
+            if settings.bloom > 0.0 {
+                ec.insert(Bloom { intensity: 0.15 * settings.bloom, ..Bloom::NATURAL });
+            }
+            // SSAO needs MSAA off.
+            if settings.ssao > 0.5 && aa != Aa::Msaa {
+                ec.insert(ScreenSpaceAmbientOcclusion::default());
+            }
             match aa {
                 Aa::Fxaa => {
                     ec.insert(Fxaa::default());
@@ -136,16 +150,19 @@ fn apply(
         }
         // The portal views are drawn into the player's view before its post-processing, so
         // FXAA, SMAA and TAA smooth them too; with MSAA they need their own.
+        // They render linear HDR (no tonemapping), which the player's camera tonemaps.
         for e in &portals {
-            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure));
+            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::None));
         }
-        // The arms and the gun draw over the finished picture: always multisampled.
+        // The arms and the gun draw over the player's picture, into the same HDR texture
+        // (a camera with a different format or sampling would start from its own, black, one
+        // and copy that over everything).
         for e in &overlays {
-            commands.entity(e).insert((Msaa::Sample4, exposure));
+            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface));
         }
     }
 
-    // ---- the sun's shadows (outdoors; indoors the lamps light the chambers)
+    // ---- the sun's shadows
     let quality = settings.shadows.round() as i32;
     let outdoor = !game.sim.level.indoor;
     if applied.shadows != Some((quality, outdoor)) {
@@ -155,8 +172,9 @@ fn apply(
             3 => 4096,
             _ => 2048,
         };
+        let _ = outdoor;
         for mut l in &mut sun {
-            l.shadow_maps_enabled = outdoor && quality > 0;
+            l.shadow_maps_enabled = quality > 0;
         }
     }
 }
