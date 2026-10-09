@@ -148,7 +148,7 @@ pub fn setup(
         alpha_mode: AlphaMode::Add,
         ..default()
     });
-    commands.spawn((HoldBeam, Mesh3d(meshes.add(Cylinder::new(0.012, 1.0))), MeshMaterial3d(beam_mat), Transform::default(), Visibility::Hidden, NotShadowCaster));
+    commands.spawn((HoldBeam, Mesh3d(meshes.add(Cylinder::new(0.005, 1.0))), MeshMaterial3d(beam_mat), Transform::default(), Visibility::Hidden, NotShadowCaster));
     commands.insert_resource(GunState {
         recoil: 0.0,
         sway: Vec2::ZERO,

@@ -884,7 +884,7 @@ impl Sim {
             let into = -v.dot(p.normal);
             // Only heading into it fast, and mostly along its normal (it's below her, or she
             // is flying at a wall one).
-            if into < 3.0 || into < v.length() * 0.6 {
+            if into < 2.0 || into < v.length() * 0.5 {
                 continue;
             }
             let dist = p.signed_distance(center);
@@ -894,7 +894,7 @@ impl Sim {
             let t = dist / into;
             let at = center + v * t;
             let l = p.to_local(at);
-            let (mx, my) = (p.half.x + 1.2, p.half.y + 1.2);
+            let (mx, my) = (p.half.x + 2.0, p.half.y + 2.0);
             if l.x.abs() > mx || l.y.abs() > my {
                 continue;
             }
@@ -1022,6 +1022,31 @@ impl Sim {
                 }
             }
             _ => {
+                // A cube just off the aim (Portal's pick-up is forgiving): the nearest one close
+                // to the line of sight, within reach, with nothing in between.
+                let reach = USE_REACH + CUBE_HALF;
+                let near_cube = self
+                    .props
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.alive && p.fizzle.is_none())
+                    .filter_map(|(i, p)| {
+                        let (d, _) = geom::segment_point(aim.eye, aim.eye + aim.dir * reach, p.pos);
+                        let ahead = (p.pos - aim.eye).dot(aim.dir);
+                        (d < CUBE_HALF + 0.4 && ahead > 0.0).then_some((d, i))
+                    })
+                    .filter(|(_, i)| {
+                        let to = self.props[*i].pos - aim.eye;
+                        let len = to.length();
+                        self.raycast(aim.eye, to / len, len - CUBE_HALF, Mask { props: false, fizzlers: false, ..Mask::SOLID }).is_none()
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((_, i)) = near_cube {
+                    self.held = Some(i);
+                    self.held_far = 0.0;
+                    self.events.push(SimEvent::PickUp { id: self.props[i].id });
+                    return;
+                }
                 // A pedestal button is easy to miss by a hair: anything close in front counts.
                 let near = self.pedestals.iter().position(|p| {
                     let top = p.at + Vec3::Y * 1.0;
@@ -1204,7 +1229,7 @@ impl Sim {
     /// for a cube still on her side, which pulls it in) and the same point carried through
     /// (for a cube already on the other side).
     fn hold_target(&self, aim: Aim, skip: usize) -> (Vec3, Quat, Option<(Vec3, Quat)>) {
-        let dist = 1.7;
+        let dist = 2.0;
         let mask = Mask { skip_prop: Some(skip), fizzlers: false, ..Mask::SOLID };
         let rot = Quat::from_rotation_y(aim.yaw);
         if let Some(h) = self.raycast(aim.eye, aim.dir, dist, Mask { portals: true, ..mask }) {

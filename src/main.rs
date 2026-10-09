@@ -44,12 +44,23 @@ fn main() {
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {
-                primary_window: Some(Window { title: "Portal Runner".into(), resolution: (1600, 900).into(), ..default() }),
+                primary_window: Some(Window {
+                    title: "Portal Runner".into(),
+                    resolution: (1600, 900).into(),
+                    // PORTAL_NOVSYNC=1: uncapped, for measuring.
+                    present_mode: if std::env::var_os("PORTAL_NOVSYNC").is_some() {
+                        bevy::window::PresentMode::AutoNoVsync
+                    } else {
+                        bevy::window::PresentMode::AutoVsync
+                    },
+                    ..default()
+                }),
                 ..default()
             })
             .set(AssetPlugin { file_path: asset_dir, ..default() }),
     )
     .add_plugins(portal_render::PortalRenderPlugin)
+    .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
     .add_systems(

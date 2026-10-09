@@ -102,7 +102,7 @@ pub fn setup(mut commands: Commands) {
         TextColor(Color::srgb(1.0, 0.55, 0.1)),
         shadow,
         TextLayout::justify(Justify::Center),
-        Node { position_type: PositionType::Absolute, top: percent(62.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() },
+        Node { position_type: PositionType::Absolute, top: percent(58.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() },
     ));
     commands.spawn((
         HudHint,
@@ -111,7 +111,7 @@ pub fn setup(mut commands: Commands) {
         ink.clone(),
         shadow,
         TextLayout::justify(Justify::Center),
-        Node { position_type: PositionType::Absolute, bottom: px(48.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() },
+        Node { position_type: PositionType::Absolute, top: percent(70.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() },
     ));
     commands.spawn((
         HudTitle,
@@ -120,7 +120,7 @@ pub fn setup(mut commands: Commands) {
         ink.clone(),
         shadow,
         TextLayout::justify(Justify::Center),
-        Node { position_type: PositionType::Absolute, top: percent(22.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() },
+        Node { position_type: PositionType::Absolute, top: percent(12.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() },
     ));
     commands.spawn((
         HudHelp,
@@ -152,6 +152,7 @@ pub fn setup(mut commands: Commands) {
 #[allow(clippy::type_complexity)]
 pub fn update(
     game: Res<Game>,
+    diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     me: Option<Res<crate::me_viewmodel::MeArms>>,
     menu: Res<settings::Menu>,
     mut texts: ParamSet<(
@@ -173,9 +174,10 @@ pub fn update(
         let anim = me.as_ref().filter(|m| m.active).map(|m| format!("   [{}]", m.current_anim())).unwrap_or_default();
         let cp = sim.level.checkpoints.get(sim.checkpoint).map(|c| c.name).unwrap_or("");
         t.0 = format!(
-            "{}{}\n{:.1} m/s  ({:.0} km/h)\nTime {}{}\n{} - {}\nSprint",
+            "{}{}   {:.0} fps\n{:.1} m/s  ({:.0} km/h)\nTime {}{}\n{} - {}\nSprint",
             c.state.name(),
             anim,
+            diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0),
             speed,
             speed * 3.6,
             fmt_time(game.timer),
