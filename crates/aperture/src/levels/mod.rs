@@ -5,13 +5,23 @@ use faith_move::{greybox, moves, rooftops, springboard};
 use crate::level::Level;
 
 mod arena;
+pub mod c01_portals;
+pub mod c02_momentum;
+pub mod c03_hard_light;
+pub mod kit;
 
 pub use arena::arena;
+pub use c01_portals::chamber01;
+pub use c02_momentum::chamber02;
+pub use c03_hard_light::chamber03;
 
 /// Every map, in the order the game cycles through them.
 pub fn all() -> Vec<(&'static str, fn() -> Level)> {
     vec![
-        ("Test Arena", arena as fn() -> Level),
+        ("Proving Grounds", arena as fn() -> Level),
+        ("Chamber 01", chamber01),
+        ("Chamber 02", chamber02),
+        ("Chamber 03", chamber03),
         ("Rooftops (ME)", || Level::from_greybox(&rooftops::rooftops())),
         ("Moves (ME)", || Level::from_greybox(&moves::moves())),
         ("Springboard (ME)", || Level::from_greybox(&springboard::springboard())),

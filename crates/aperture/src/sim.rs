@@ -735,15 +735,13 @@ impl Sim {
                 }
             }
         }
-        // Clear in front (no wall sticking out over it, no door, no bridge across it).
+        // Clear in front (no wall sticking out over it, no closed door). A light bridge
+        // running into the wall is fine: that's how you send one through a portal.
         let front = collide::local_box(p, Vec3::new(-p.half.x + 0.05, -p.half.y + 0.05, 0.02), Vec3::new(p.half.x - 0.05, p.half.y - 0.05, 0.3));
         if self.statics.iter().any(|s| s.b.overlaps(&front)) {
             return false;
         }
         if self.doors.iter().any(|d| d.solid() && d.b.overlaps(&front)) {
-            return false;
-        }
-        if self.bridges.iter().any(|b| b.segs.iter().any(|s| s.aabb.overlaps(&front))) {
             return false;
         }
         // Not over the other portal.
@@ -961,10 +959,10 @@ impl Sim {
         ctrl.teleport(feet, vel, yaw, pitch, keep_ground);
         self.roll = roll;
         self.events.push(SimEvent::Teleported { entered, roll });
-        // What she's carrying comes along, if it was on her side.
+        // What she's carrying comes along, if it was still beside her on this side.
         if let Some(h) = self.held {
             let p = &mut self.props[h];
-            if link.from.signed_distance(p.pos) > -CUBE_HALF {
+            if link.from.signed_distance(p.pos) > -CUBE_HALF && p.pos.distance(eye) < 3.0 {
                 p.pos = link.point(p.pos);
                 p.vel = link.dir(p.vel);
                 p.rot = link.quat() * p.rot;
@@ -1201,30 +1199,32 @@ impl Sim {
         id
     }
 
-    /// Where a held cube should be: in front of her eye, through a portal if she's looking
-    /// into one, and not inside a wall.
-    fn hold_target(&self, aim: Aim, skip: usize) -> (Vec3, Quat) {
+    /// Where a held cube should be: in front of her eye, and not inside a wall. Looking into
+    /// a portal, there are two answers: the point straight ahead (behind the portal's surface,
+    /// for a cube still on her side, which pulls it in) and the same point carried through
+    /// (for a cube already on the other side).
+    fn hold_target(&self, aim: Aim, skip: usize) -> (Vec3, Quat, Option<(Vec3, Quat)>) {
         let dist = 1.7;
         let mask = Mask { skip_prop: Some(skip), fizzlers: false, ..Mask::SOLID };
-        let mut rot = Quat::from_rotation_y(aim.yaw);
-        let mut o = aim.eye;
-        let mut d = aim.dir;
-        let mut left = dist;
-        // Through a portal she's looking into.
-        if let Some(h) = self.raycast(o, d, left, Mask { portals: true, ..mask }) {
+        let rot = Quat::from_rotation_y(aim.yaw);
+        if let Some(h) = self.raycast(aim.eye, aim.dir, dist, Mask { portals: true, ..mask }) {
             if let HitWhat::Portal(c) = h.what {
                 let link = self.link(c).unwrap();
-                left -= h.t;
-                rot = link.quat() * rot;
-                d = link.dir(d);
-                o = link.point(h.point) + d * 0.01;
+                let left = dist - h.t;
+                let d = link.dir(aim.dir);
+                let o = link.point(h.point) + d * 0.01;
+                let t = match self.raycast(o, d, left + CUBE_HALF, mask) {
+                    Some(h2) => (h2.t - CUBE_HALF * 1.2).max(0.0),
+                    None => left,
+                };
+                return (aim.eye + aim.dir * dist, rot, Some((o + d * t, link.quat() * rot)));
             }
         }
-        let t = match self.raycast(o, d, left + CUBE_HALF, mask) {
+        let t = match self.raycast(aim.eye, aim.dir, dist + CUBE_HALF, mask) {
             Some(h) => (h.t - CUBE_HALF * 1.2).max(0.0),
-            None => left,
+            None => dist,
         };
-        (o + d * t, rot)
+        (aim.eye + aim.dir * t, rot, None)
     }
 
     fn update_props(&mut self, dt: f32, aim: Aim, player_box: Aabb) {
@@ -1234,7 +1234,13 @@ impl Sim {
             if !self.props[h].alive || self.props[h].fizzle.is_some() {
                 self.held = None;
             } else {
-                let (target, rot) = self.hold_target(aim, h);
+                let (near, near_rot, far) = self.hold_target(aim, h);
+                let pos = self.props[h].pos;
+                // Whichever side of the portal the cube is on.
+                let (target, rot) = match far {
+                    Some((f, fr)) if f.distance(pos) < near.distance(pos) => (f, fr),
+                    _ => (near, near_rot),
+                };
                 let p = &mut self.props[h];
                 let to = target - p.pos;
                 p.vel = (to * 14.0).clamp_length_max(25.0);

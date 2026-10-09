@@ -273,3 +273,266 @@ fn walking_onto_a_floor_portal_drops_her_in() {
     });
     assert!(ev.iter().any(|e| matches!(e, SimEvent::Teleported { .. })), "walked over it:\n{}", log.iter().step_by(6).cloned().collect::<Vec<_>>().join("\n"));
 }
+
+// ------------------------------------------------------------------ solving the chambers
+
+/// Turn her to look at `target`.
+fn aim(c: &mut Controller, target: Vec3) {
+    let (yaw, pitch) = crate::portal::yaw_pitch(target - c.view().eye);
+    c.yaw = yaw;
+    c.pitch = pitch;
+}
+
+/// Walk to `target` (feet, horizontally), steering straight at it. Returns the events, and
+/// panics if she doesn't get there in `secs`.
+fn walk_to(sim: &mut Sim, c: &mut Controller, target: Vec3, secs: f32) -> Vec<SimEvent> {
+    let mut reached = false;
+    let ev = run(sim, c, secs, |_, c| {
+        let d = Vec3::new(target.x - c.feet.x, 0.0, target.z - c.feet.z);
+        if d.length() < 0.35 || reached {
+            reached = true;
+            return Input::default();
+        }
+        Input { move_axis: Vec2::new(0.0, if d.length() < 1.5 { 0.5 } else { 1.0 }), ..Default::default() }
+    });
+    let _ = ev.len();
+    ev
+}
+
+/// Steer: the yaw that faces `target` from her feet.
+fn face(c: &mut Controller, target: Vec3) {
+    let d = target - c.feet;
+    c.yaw = (-d.x).atan2(-d.z);
+}
+
+fn walk(sim: &mut Sim, c: &mut Controller, target: Vec3, secs: f32) -> Vec<SimEvent> {
+    let mut events = Vec::new();
+    let mut t = 0.0;
+    let mut log = std::collections::VecDeque::new();
+    while t < secs {
+        log.push_back(format!("{} {} {}", c.state.name(), c.feet, c.vel));
+        if log.len() > 30 {
+            log.pop_front();
+        }
+        face(c, target);
+        let d = Vec3::new(target.x - c.feet.x, 0.0, target.z - c.feet.z);
+        if d.length() < 0.35 {
+            break;
+        }
+        let i = Input { move_axis: Vec2::new(0.0, if d.length() < 1.5 { 0.5 } else { 1.0 }), ..Default::default() };
+        sim.events.clear();
+        sim.step_player(c, &i, DT);
+        sim.step(DT, c);
+        events.extend(sim.events.iter().copied());
+        t += DT;
+    }
+    let d = Vec3::new(target.x - c.feet.x, 0.0, target.z - c.feet.z);
+    assert!(d.length() < 0.6, "didn't reach {target}: at {} ({})\n{}", c.feet, c.state.name(), log.iter().step_by(3).cloned().collect::<Vec<_>>().join("\n"));
+    events
+}
+
+fn settle(sim: &mut Sim, c: &mut Controller, secs: f32) -> Vec<SimEvent> {
+    run(sim, c, secs, |_, _| Input::default())
+}
+
+/// Walk forward (the way she faces) until she goes through a portal.
+fn walk_through(sim: &mut Sim, c: &mut Controller, secs: f32) {
+    let mut through = false;
+    let ev = run(sim, c, secs, |sim, _| {
+        through |= sim.events.iter().any(|e| matches!(e, SimEvent::Teleported { .. }));
+        if through { Input::default() } else { forward() }
+    });
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::Teleported { .. })), "didn't go through a portal: at {} ({})", c.feet, c.state.name());
+}
+
+#[test]
+fn chamber01_can_be_solved() {
+    use crate::levels::c01_portals::*;
+    let (mut sim, mut c) = start(crate::levels::chamber01());
+    let _ = walk_to;
+    walk(&mut sim, &mut c, Vec3::new(5.0, 0.0, -6.0), 6.0);
+    settle(&mut sim, &mut c, 0.3);
+    // Blue high on the wall above the ledge, orange down here on the right wall.
+    aim(&mut c, Vec3::new(-7.0, 8.6, -12.5));
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "blue didn't open");
+    let blue = sim.portal(PortalColor::Blue).unwrap();
+    assert!(blue.center.y - blue.half.y >= LEDGE_TOP - 0.01, "blue below the ledge top: {}", blue.center);
+    aim(&mut c, Vec3::new(7.0, 1.0, -6.0));
+    assert!(sim.fire(PortalColor::Orange, Aim::of(&c)), "orange didn't open");
+    // Through orange, out of blue onto the ledge.
+    aim(&mut c, Vec3::new(7.0, 1.66, -6.0));
+    c.pitch = 0.0;
+    walk_through(&mut sim, &mut c, 3.0);
+    settle(&mut sim, &mut c, 1.5);
+    assert!((c.feet.y - LEDGE_TOP).abs() < 0.05, "not on the ledge: {}", c.feet);
+    // Pick up the cube.
+    aim(&mut c, glam::Vec3::from(CUBE));
+    sim.use_key(Aim::of(&c));
+    assert!(sim.held.is_some(), "no cube: at {}, cube {}", c.feet, sim.props[0].pos);
+    // Blue again, low on the wall behind her, and back through it with the cube.
+    let z = c.feet.z;
+    aim(&mut c, Vec3::new(-7.0, LEDGE_TOP + 0.6, z));
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "low blue didn't open");
+    c.pitch = 0.0;
+    walk_through(&mut sim, &mut c, 3.0);
+    settle(&mut sim, &mut c, 0.8);
+    assert!(c.feet.y.abs() < 0.05 && c.feet.x > 4.0, "not back down: {}", c.feet);
+    assert!(sim.held.is_some(), "lost the cube on the way");
+    // Onto the button.
+    walk(&mut sim, &mut c, Vec3::new(BUTTON[0], 0.0, BUTTON[2] + 1.9), 6.0);
+    aim(&mut c, Vec3::new(BUTTON[0], 0.4, BUTTON[2]));
+    settle(&mut sim, &mut c, 0.6);
+    sim.use_key(Aim::of(&c));
+    let ev = settle(&mut sim, &mut c, 1.5);
+    assert!(sim.buttons[0].pressed, "cube at {}", sim.props[0].pos);
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::DoorOpening { .. })) || sim.doors[0].open > 0.9);
+    // Out through the door, the grill, to the exit.
+    walk(&mut sim, &mut c, Vec3::new(0.0, 0.0, -16.0), 6.0);
+    let ev = walk(&mut sim, &mut c, Vec3::new(0.0, 0.0, -25.0), 6.0);
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PortalsCleared)), "the grill didn't clear the portals");
+    walk(&mut sim, &mut c, Vec3::new(0.0, 0.0, -30.0), 6.0);
+    assert!(sim.complete, "not finished at {}", c.feet);
+}
+
+#[test]
+fn chamber02_can_be_solved() {
+    use crate::levels::c02_momentum::*;
+    let (mut sim, mut c) = start(crate::levels::chamber02());
+    // Blue on the floor below.
+    walk(&mut sim, &mut c, Vec3::new(0.0, TOWER_TOP, 0.1), 4.0);
+    aim(&mut c, Vec3::new(0.0, 0.0, -6.0));
+    let a = Aim::of(&c);
+    let tr = sim.trace(a.eye, a.dir, 200.0, crate::sim::Mask::SHOT, 4);
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "no blue: feet {} trace {:?}", c.feet, tr);
+    assert!(!sim.fire(PortalColor::Orange, Aim::of(&c)), "orange fired with a blue-only gun");
+    // Off the edge.
+    c.pitch = -0.3;
+    let mut log = Vec::new();
+    let ev = run(&mut sim, &mut c, 3.5, |sim, c| {
+        log.push(format!("{} {} {}", c.state.name(), c.feet, c.vel));
+        if c.feet.z > -0.5 && c.feet.y > TOWER_TOP - 0.5 && sim.player_env.is_none() { forward() } else { Input::default() }
+    });
+    let died = ev.iter().any(|e| matches!(e, SimEvent::PlayerDied));
+    assert!(!died && ev.iter().any(|e| matches!(e, SimEvent::Teleported { .. })), "no fling:\n{}", log.iter().step_by(5).cloned().collect::<Vec<_>>().join("\n"));
+    assert!((c.feet.y - LANDING_TOP).abs() < 0.05 && c.feet.z < -14.0 && c.feet.z > -35.0, "landed at {}", c.feet);
+    // The wallrun across the last gap.
+    walk(&mut sim, &mut c, Vec3::new(WALL_X - 0.5, LANDING_TOP, -17.0), 8.0);
+    c.yaw = 0.0;
+    c.pitch = 0.0;
+    let mut jumped = false;
+    let mut log = Vec::new();
+    run(&mut sim, &mut c, 5.0, |_, c| {
+        log.push(format!("{} {} {}", c.state.name(), c.feet, c.vel));
+        let mut i = forward();
+        if !jumped && c.feet.z < -34.3 {
+            jumped = true;
+            i.jump_pressed = true;
+        }
+        if jumped {
+            // A little towards the wall (ME finds no wall dead parallel to it).
+            i.move_axis.x = 0.4;
+        }
+        if c.feet.z < -46.0 {
+            i.move_axis = Vec2::ZERO;
+        }
+        i
+    });
+    assert!((c.feet.y - LANDING_TOP).abs() < 0.05 && c.feet.z < -44.0, "didn't make the gap: {}\n{}", c.feet, log.iter().skip(118).step_by(3).cloned().collect::<Vec<_>>().join("\n"));
+    walk(&mut sim, &mut c, Vec3::new(0.0, LANDING_TOP, -48.0), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(0.0, LANDING_TOP, -54.0), 4.0);
+    assert!(sim.complete);
+}
+
+#[test]
+fn chamber03_can_be_solved() {
+    use crate::levels::c03_hard_light::*;
+    let (mut sim, mut c) = start(crate::levels::chamber03());
+    settle(&mut sim, &mut c, 0.2);
+    assert_eq!(sim.bridges[0].segs.len(), 1);
+    // Blue where the bridge meets the right wall, orange on the wall behind the start.
+    walk(&mut sim, &mut c, Vec3::new(6.0, 0.0, 1.0), 4.0);
+    aim(&mut c, Vec3::new(10.0, 1.0, BRIDGE_Z));
+    assert!(sim.fire(PortalColor::Blue, Aim::of(&c)), "no blue");
+    aim(&mut c, Vec3::new(-2.0, 1.2, 6.0));
+    assert!(sim.fire(PortalColor::Orange, Aim::of(&c)), "no orange");
+    settle(&mut sim, &mut c, 0.2);
+    let segs = &sim.bridges[0].segs;
+    assert_eq!(segs.len(), 2, "the bridge didn't go through: {segs:?}");
+    assert!(segs[1].b.z < -30.0 && (segs[1].a.y - BRIDGE_Y).abs() < 0.05, "{:?}", segs[1]);
+    // Onto the bridge from the side, and across.
+    walk(&mut sim, &mut c, Vec3::new(0.5, 0.0, 2.5), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(-2.0, BRIDGE_Y, 2.5), 3.0);
+    assert!((c.feet.y - BRIDGE_Y).abs() < 0.05, "not on the bridge: {}", c.feet);
+    walk(&mut sim, &mut c, Vec3::new(-2.0, BRIDGE_Y, -21.0), 8.0);
+    // The faith plate up to the balcony.
+    walk(&mut sim, &mut c, Vec3::new(PLATE[0] - 1.4, 0.0, PLATE[2]), 4.0);
+    face(&mut c, glam::Vec3::from(PLATE));
+    let mut launched = false;
+    let ev = run(&mut sim, &mut c, 3.0, |sim, _| {
+        launched |= sim.events.iter().any(|e| matches!(e, SimEvent::PlateLaunch { .. }));
+        if launched { Input::default() } else { Input { move_axis: Vec2::new(0.0, 0.5), ..Default::default() } }
+    });
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PlateLaunch { .. })), "no launch");
+    assert!((c.feet.y - BALCONY_TOP).abs() < 0.05, "not on the balcony: {}", c.feet);
+    aim(&mut c, glam::Vec3::from(CUBE));
+    sim.use_key(Aim::of(&c));
+    assert!(sim.held.is_some(), "no cube");
+    // Down, and into the laser facing the catcher.
+    walk(&mut sim, &mut c, Vec3::new(-4.0, 0.0, -22.3), 5.0);
+    settle(&mut sim, &mut c, 0.5);
+    walk(&mut sim, &mut c, Vec3::new(-4.0, 0.0, -22.3), 2.0);
+    c.yaw = 0.0;
+    aim(&mut c, Vec3::new(-4.0, 0.45, -24.0));
+    c.yaw = 0.0;
+    settle(&mut sim, &mut c, 0.8);
+    sim.use_key(Aim::of(&c));
+    settle(&mut sim, &mut c, 1.5);
+    assert!(sim.catchers[0].lit, "catcher dark: cube {} path {:?}", sim.props[0].pos, sim.lasers[0].path);
+    assert!(sim.doors[0].open > 0.9);
+    // Round the faith plate (or it throws her back up), then over the laser to the door.
+    walk(&mut sim, &mut c, Vec3::new(-1.0, 0.0, -22.9), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(5.5, 0.0, -22.9), 4.0);
+    c.yaw = 0.0;
+    let mut jumped = false;
+    run(&mut sim, &mut c, 1.5, |_, c| {
+        let mut i = forward();
+        if !jumped && c.feet.z < -23.0 {
+            jumped = true;
+            i.jump_pressed = true;
+        }
+        if c.feet.z < -27.0 {
+            i.move_axis = Vec2::ZERO;
+        }
+        i
+    });
+    assert!(sim.burn < 0.5, "burned crossing the laser: {}", sim.burn);
+    walk(&mut sim, &mut c, Vec3::new(5.5, 0.0, -30.0), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(5.5, 0.0, -36.0), 4.0);
+    assert!(sim.complete, "not out: {}", c.feet);
+}
+
+#[test]
+#[ignore]
+fn debug_bridge_step_off() {
+    use crate::levels::c03_hard_light::*;
+    let (mut sim, mut c) = start(crate::levels::chamber03());
+    settle(&mut sim, &mut c, 0.2);
+    walk(&mut sim, &mut c, Vec3::new(6.0, 0.0, 1.0), 4.0);
+    aim(&mut c, Vec3::new(10.0, 1.0, BRIDGE_Z));
+    sim.fire(PortalColor::Blue, Aim::of(&c));
+    aim(&mut c, Vec3::new(-2.0, 1.2, 6.0));
+    sim.fire(PortalColor::Orange, Aim::of(&c));
+    settle(&mut sim, &mut c, 0.2);
+    walk(&mut sim, &mut c, Vec3::new(0.5, 0.0, 2.5), 4.0);
+    walk(&mut sim, &mut c, Vec3::new(-2.0, BRIDGE_Y, 2.5), 3.0);
+    walk(&mut sim, &mut c, Vec3::new(-2.0, BRIDGE_Y, -21.0), 8.0);
+    eprintln!("after bridge walk: {} {} {}", c.state.name(), c.feet, c.vel);
+    face(&mut c, Vec3::new(2.0, 0.0, -21.5));
+    for _ in 0..60 {
+        face(&mut c, Vec3::new(2.0, 0.0, -21.5));
+        let i = Input { move_axis: Vec2::new(0.0, 1.0), ..Default::default() };
+        sim.step_player(&mut c, &i, DT);
+        sim.step(DT, &c);
+        eprintln!("{} {} {} env {:?}", c.state.name(), c.feet, c.vel, sim.player_env);
+    }
+}
