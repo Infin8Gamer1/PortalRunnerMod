@@ -150,6 +150,7 @@ src/audio.rs            Mirror's Edge's sounds (Faith Runner)
 src/me_viewmodel.rs     Faith's Mirror's Edge body (Faith Runner)
 src/body3p.rs           her third-person body, seen through portals (and her shadow)
 src/props.rs            Portal 2's models for the puzzle pieces
+src/me_props.rs         Mirror's Edge's props and ladders, from the install
 src/settings.rs         the settings and their pages
 src/capture.rs          scripted screenshot runs (see below)
 docs/faith-runner.md    Faith Runner's own README: every move, in detail

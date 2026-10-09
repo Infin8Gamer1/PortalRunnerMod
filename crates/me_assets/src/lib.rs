@@ -21,7 +21,6 @@ pub mod pose;
 pub mod props;
 pub mod skeletal;
 pub mod sound;
-#[cfg(feature = "prologue")]
 pub mod staticmesh;
 pub mod texture;
 
@@ -36,8 +35,7 @@ pub use pose::{Pose, Skinner, TrackMap};
 pub use level::{Level, LevelMesh, Placed, Spawn};
 pub use morph::MorphTarget;
 pub use skeletal::SkeletalMesh;
-#[cfg(feature = "prologue")]
-pub use staticmesh::StaticMesh;
+pub use staticmesh::{StaticMesh, StaticSection};
 pub use sound::{Cue, SoundBank, Wave};
 pub use texture::Rgba;
 
@@ -241,22 +239,75 @@ pub fn cooked_pc(path: &Path) -> Option<PathBuf> {
 }
 
 fn slots(pkgs: &mut Packages, pkg: &Rc<Package>, mesh: &SkeletalMesh, max_texture: u32) -> Vec<MaterialSlot> {
-    mesh.materials
+    slots_for(pkgs, pkg, &mesh.materials, max_texture)
+}
+
+/// Each material's textures (diffuse, normal, specular) by its texture parameters, its
+/// parent's (for an instance that inherits them), or its own texture-sample expressions
+/// (for a plain material).
+fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_texture: u32) -> Vec<MaterialSlot> {
+    materials
         .iter()
         .map(|&m| {
             let material = pkg.object_name(m).to_string();
-            let mut read = |pick: &dyn Fn(&str) -> bool| {
-                let (mp, mi) = pkgs.resolve(pkg, m)?;
-                let tex = material_textures(&mp, mi).into_iter().find(|(n, _)| pick(&n.to_ascii_lowercase()))?.1;
-                let (tp, ti) = pkgs.resolve(&mp, tex)?;
+            let textures = all_textures(pkgs, pkg, m);
+            let read = |pick: &dyn Fn(&str) -> bool| {
+                let (tp, ti) = textures.iter().find(|(name, _, _)| pick(name)).map(|(_, p, i)| (p.clone(), *i))?;
                 texture::read_texture(&tp, &tp.exports[ti].name, max_texture).ok()
             };
-            let diffuse = read(&|n| n.contains("diffuse"));
-            let normal = read(&|n| n.contains("normal"));
-            let specular = read(&|n| n.contains("spec") && !n.contains("tile"));
+            let mut diffuse = read(&|n| n.contains("diffuse") || n.ends_with("_d") || n.contains("_d_") || n.ends_with("_c"));
+            let normal = read(&|n| n.contains("normal") || n.ends_with("_n"));
+            let specular = read(&|n| (n.contains("spec") || n.ends_with("_s")) && !n.contains("tile"));
+            if diffuse.is_none() {
+                // Anything that isn't a normal or specular map.
+                diffuse = read(&|n| !(n.contains("normal") || n.ends_with("_n") || n.contains("spec") || n.ends_with("_s") || n.contains("mask")));
+            }
             MaterialSlot { material, diffuse, normal, specular }
         })
         .collect()
+}
+
+/// A material's textures: (name, lowercased with its parameter name, package, export).
+fn all_textures(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> Vec<(String, Rc<Package>, usize)> {
+    let mut out = vec![];
+    let mut next = Some((pkg.clone(), m));
+    for _ in 0..4 {
+        let Some((p, obj)) = next.take() else { break };
+        let Some((mp, mi)) = pkgs.resolve(&p, obj) else { break };
+        for (pname, tex) in material_textures(&mp, mi) {
+            if let Some((tp, ti)) = pkgs.resolve(&mp, tex) {
+                let name = format!("{} {}", pname, tp.exports[ti].name).to_ascii_lowercase();
+                out.push((name, tp, ti));
+            }
+        }
+        // A plain material: the textures its expressions sample.
+        let me_index = mi as i32 + 1;
+        for e in &mp.exports {
+            if e.outer == me_index && mp.class_name(e).contains("TextureSample") {
+                if let Ok(props) = props::Props::read(&mp, e) {
+                    if let Some(tex) = props.object(&mp, "Texture") {
+                        if let Some((tp, ti)) = pkgs.resolve(&mp, tex) {
+                            out.push((tp.exports[ti].name.to_ascii_lowercase(), tp, ti));
+                        }
+                    }
+                }
+            }
+        }
+        // An instance inherits what it doesn't set from its parent.
+        let parent = props::Props::read(&mp, &mp.exports[mi]).ok().and_then(|pr| pr.object(&mp, "Parent"));
+        next = parent.map(|par| (mp.clone(), par));
+    }
+    out
+}
+
+/// One of Mirror's Edge's static meshes (`name` in package `package`) and its materials'
+/// textures, read from the install.
+pub fn load_static_mesh(pkgs: &mut Packages, package: &str, name: &str, max_texture: u32) -> Result<(StaticMesh, Vec<MaterialSlot>)> {
+    let pkg = pkgs.get(package)?;
+    let mesh = StaticMesh::read(&pkg, name)?;
+    let mats: Vec<i32> = mesh.sections.iter().map(|s| s.material).collect();
+    let slots = slots_for(pkgs, &pkg, &mats, max_texture);
+    Ok((mesh, slots))
 }
 
 /// A material instance's texture parameters: (parameter name, texture

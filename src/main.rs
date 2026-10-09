@@ -13,6 +13,7 @@ mod fonts;
 mod graphics;
 mod gun;
 mod hud;
+mod me_props;
 mod me_viewmodel;
 mod menu;
 mod portal_audio;
@@ -86,6 +87,7 @@ fn main() {
             viewmodel::setup,
             me_viewmodel::setup,
             body3p::setup,
+            me_props::setup,
             gun::setup,
             menu::setup,
             audio::setup,
@@ -99,6 +101,7 @@ fn main() {
         play,
         speed_fx::update,
         chamber::update,
+        me_props::spawn_for_level,
         props::tag_parts,
         props::animate,
         viewmodel::animate,
@@ -157,6 +160,8 @@ pub struct Game {
     pub reaction: faith_move::reaction::ReactionTime,
     /// Seconds since dying (for the fade).
     pub died: f32,
+    /// Bumped each time a chamber is (re)loaded.
+    pub loads: u64,
 }
 
 #[derive(Component)]
@@ -218,6 +223,7 @@ fn setup_world(mut commands: Commands) {
         look: Default::default(),
         reaction: Default::default(),
         died: 99.0,
+        loads: 0,
     });
 }
 
@@ -234,6 +240,7 @@ fn load_first_level(
     mut ambient: ResMut<GlobalAmbientLight>,
 ) {
     let g = &mut *game;
+    g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
     light_for(&g.sim.level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     g.flash = None;
@@ -397,6 +404,7 @@ fn switch_level(
     g.sim = Sim::new(level.clone());
     g.sim.funnel = settings.funnel > 0.5;
     g.level = level.greybox();
+    g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
     light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     let cp = &level.checkpoints[0];

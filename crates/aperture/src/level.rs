@@ -222,6 +222,24 @@ pub struct Level {
     pub indoor: bool,
     /// Ceiling lamps (indoor): positions.
     pub lamps: Vec<Vec3>,
+    /// Mirror's Edge's props, for dressing (drawn from the player's install when it's there).
+    pub me_props: Vec<MeProp>,
+}
+
+/// One of Mirror's Edge's static meshes placed in a level: drawn only, no collision (give it a
+/// `solid` where it should block). Without the game installed it isn't drawn at all.
+#[derive(Clone, Debug)]
+pub struct MeProp {
+    /// The package (`P_Ventilation`) and the StaticMesh in it (`S_ACUnit_05`).
+    pub package: &'static str,
+    pub mesh: &'static str,
+    /// Where its origin goes, and its turn about the vertical (radians).
+    pub at: Vec3,
+    pub yaw: f32,
+    pub scale: f32,
+    /// A solid that blocks where it stands and stands in for it without the game (its box
+    /// is hidden when the prop is drawn).
+    pub stand_in: Option<Aabb>,
 }
 
 impl Level {
@@ -242,6 +260,7 @@ impl Level {
             kill_y: -30.0,
             indoor: true,
             lamps: Vec::new(),
+            me_props: Vec::new(),
         }
     }
 
@@ -254,6 +273,23 @@ impl Level {
     }
 
     /// A painted marking (no collision).
+    /// A Mirror's Edge prop: `mesh` from `package`, its origin at `at`, turned `yaw_deg` (see
+    /// [`MeProp`]).
+    pub fn me_prop(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32) -> &mut Self {
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), yaw: yaw_deg.to_radians(), scale: 1.0, stand_in: None });
+        self
+    }
+
+    /// A Mirror's Edge prop that's in the way: a `Prop` solid from `a` to `b` blocks there,
+    /// drawn as a plain box when the game isn't installed and hidden behind the prop when it
+    /// is.
+    pub fn me_prop_solid(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32, a: [f32; 3], b: [f32; 3]) -> &mut Self {
+        self.solid(Mat::Prop, a, b);
+        let stand_in = Some(Aabb::new(Vec3::from(a).min(Vec3::from(b)), Vec3::from(a).max(Vec3::from(b))));
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), yaw: yaw_deg.to_radians(), scale: 1.0, stand_in });
+        self
+    }
+
     pub fn decor(&mut self, mat: Mat, a: [f32; 3], b: [f32; 3]) -> &mut Self {
         self.decor.push((Aabb::new(Vec3::from(a), Vec3::from(b)), mat));
         self

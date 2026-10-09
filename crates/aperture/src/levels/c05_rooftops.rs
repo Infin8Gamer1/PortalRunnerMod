@@ -56,6 +56,26 @@ pub fn chamber05() -> Level {
     l.checkpoint("Roof C", [-10.0, ROOF_C, -104.0], [10.0, ROOF_C + 3.0, -72.0], [0.0, ROOF_C, -90.0], 0.0);
     l.exit([-3.0, ROOF_C, -100.0], [3.0, ROOF_C + 3.0, -96.0]);
 
+    // ---- Rooftop clutter: Mirror's Edge's own props when the game's installed (plain boxes
+    // when it isn't), round the edges, off the way across.
+    const V: &str = "P_Ventilation";
+    const R: &str = "P_Rooftops";
+    const MT: &str = "P_Maintenance";
+    // Roof A.
+    l.me_prop_solid(V, "S_ACUnit_05", [-5.0, 0.0, 1.0], 0.0, [-5.44, 0.0, 0.58], [-4.7, 1.44, 1.44]);
+    l.me_prop_solid(V, "S_AirVent_01", [4.5, 0.0, 6.0], 0.0, [4.37, 0.0, 5.87], [4.63, 1.12, 6.13]);
+    l.me_prop_solid(R, "S_RooftopBoxes_01a", [5.6, 0.0, -3.0], 0.0, [5.25, 0.0, -3.01], [5.63, 1.69, -2.04]);
+    l.me_prop_solid(R, "S_HatchRooftop_01", [-4.0, 0.0, -18.0], 0.0, [-5.0, 0.0, -19.0], [-3.0, 1.17, -17.0]);
+    l.me_prop_solid(MT, "S_Crate_02", [-5.0, 0.0, -10.0], 0.0, [-5.64, 0.0, -11.15], [-4.37, 1.35, -8.86]);
+    // Roof B.
+    l.me_prop_solid(V, "S_ACUnit_05", [4.8, ROOF_B, -38.0], 0.0, [4.36, ROOF_B, -38.42], [5.1, ROOF_B + 1.44, -37.56]);
+    l.me_prop_solid(MT, "S_Barrel_02", [-5.0, ROOF_B, -60.0], 0.0, [-5.32, ROOF_B, -60.32], [-4.68, ROOF_B + 1.01, -59.68]);
+    l.me_prop_solid(MT, "S_Barrel_02", [-4.1, ROOF_B, -60.6], 40.0, [-4.42, ROOF_B, -60.92], [-3.78, ROOF_B + 1.01, -60.28]);
+    // Roof C.
+    l.me_prop_solid(V, "S_ACRooftop_01", [8.5, ROOF_C, -80.0], 0.0, [5.9, ROOF_C, -80.04], [8.54, ROOF_C + 4.55, -75.76]);
+    l.me_prop_solid("P_Commercial", "S_BillboardRound_01", [-8.0, ROOF_C, -85.0], 0.0, [-8.97, ROOF_C, -85.97], [-7.03, ROOF_C + 3.36, -84.03]);
+    l.me_prop_solid(R, "S_Cistern_01", [-8.0, ROOF_C, -95.0], 0.0, [-8.61, ROOF_C, -95.84], [-4.83, ROOF_C + 1.87, -94.27]);
+
     l.hint([-6.0, 0.0, -24.0], [6.0, 3.0, 8.0], "Vault the unit, slide under the pipe, run the red billboard over the gap.");
     l.hint([-6.0, ROOF_B, -62.0], [6.0, ROOF_B + 3.0, -50.0], "The billboard's back is white. Blue there. Then up the water tower.");
     l.hint([-6.0, TOWER_TOP, -48.0], [-2.0, TOWER_TOP + 3.0, -44.0], "Orange on the white patch below. Jump. Crouch just before you land to roll.");

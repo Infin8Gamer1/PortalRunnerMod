@@ -51,6 +51,8 @@ pub fn chamber06() -> Level {
 | `repaint(mat, a, b)` | Change the material of every solid inside a box (a strip of black across a white wall). |
 | `decor(mat, a, b)` | A painted box with no collision. |
 | `lamp(at)` / `kit::lamps(...)` | Ceiling lights (indoors). |
+| `me_prop(package, mesh, at, yaw)` | A Mirror's Edge static mesh (`"P_Ventilation", "S_ACUnit_05"`), drawn from the player's install; no collision. |
+| `me_prop_solid(package, mesh, at, yaw, a, b)` | The same, with a `Prop` solid `a`-`b` that blocks there (and is drawn instead when the game isn't installed). `cargo run -p me_assets --example list_exports -- <package> StaticMesh` lists a package's meshes; `--example mesh_sizes` gives their sizes. |
 
 Materials (`Mat`): **White** (takes portals), **Black** (doesn't), **Glass** (see-through,
 blocks shots and lasers), **Grate** (blocks people and cubes; shots and lasers pass),

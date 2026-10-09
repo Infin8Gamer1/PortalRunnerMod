@@ -270,6 +270,29 @@ fn script(name: &str) -> Vec<Act> {
             Hold(MoveInput::default(), 12),
             Shot("b03_jumping"),
         ],
+        // Mirror's Edge's props on Chamber 05's roofs, and its ladder.
+        "meprops" => vec![
+            Map(5),
+            Wait(90),
+            Look(20.0, -8.0),
+            Wait(10),
+            Shot("m01_roof_a"),
+            Look(-160.0, -10.0),
+            Wait(10),
+            Shot("m02_roof_a_back"),
+            Teleport(Vec3::new(-3.0, -2.0, -40.5)),
+            Look(10.0, 15.0),
+            Wait(20),
+            Shot("m03_ladder"),
+            Teleport(Vec3::new(0.0, -2.0, -36.0)),
+            Look(0.0, -5.0),
+            Wait(20),
+            Shot("m04_roof_b"),
+            Teleport(Vec3::new(0.0, -4.0, -74.0)),
+            Look(0.0, -5.0),
+            Wait(20),
+            Shot("m05_roof_c"),
+        ],
         "menu" => {
             use crate::menu::Screen;
             use crate::settings::Page;

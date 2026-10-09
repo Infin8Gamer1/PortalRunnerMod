@@ -416,6 +416,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             Owner::Level(_) | Owner::Emitter | Owner::Catcher(_) => {
                 let mat = if matches!(s.owner, Owner::Level(_)) { mat_for(m, s.mat) } else { m.metal.clone() };
                 let e = geom(commands, meshes.add(box_mesh(&s.b)), mat, Transform::default());
+                // A Mirror's Edge prop's stand-in (hidden when the prop's drawn).
+                if let Some(k) = l.me_props.iter().position(|p| p.stand_in.is_some_and(|b| (b.min - s.b.min).length() < 0.01 && (b.max - s.b.max).length() < 0.01)) {
+                    commands.entity(e).insert(crate::me_props::StandIn(k));
+                }
                 if s.mat == Mat::Glass {
                     commands.entity(e).insert(NotShadowCaster);
                 }
@@ -439,7 +443,11 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
                 for (a, b, thick) in lad.rods() {
                     let len = a.distance(b);
                     let rot = Quat::from_rotation_arc(Vec3::Z, (b - a) / len);
-                    geom(commands, meshes.add(Cuboid::new(thick, thick, len)), m.metal.clone(), Transform::from_translation((a + b) * 0.5).with_rotation(rot));
+                    let e = geom(commands, meshes.add(Cuboid::new(thick, thick, len)), m.metal.clone(), Transform::from_translation((a + b) * 0.5).with_rotation(rot));
+                    // Hidden when Mirror's Edge's ladder is drawn instead.
+                    if !lad.pipe {
+                        commands.entity(e).insert(crate::me_props::StandIn(usize::MAX));
+                    }
                 }
             }
             Fixture::Door { b, n } => {
