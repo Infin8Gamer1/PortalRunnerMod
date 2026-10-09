@@ -83,6 +83,7 @@ pub fn play(
             SimEvent::PortalOpened { at, .. } => one_shot(&mut commands, pick(&ex, "portal_open", n), at_volume(at, 0.8), 1.0),
             SimEvent::PortalFailed { at, .. } => one_shot(&mut commands, ex.sound("portal_invalid"), at_volume(at, 0.8), 1.0),
             SimEvent::PortalsCleared => one_shot(&mut commands, ex.sound("portal_fizzle"), 0.7 * fx, 1.0),
+            SimEvent::PortalFizzled { at, .. } => one_shot(&mut commands, ex.sound("portal_fizzle"), at_volume(at, 0.7), 1.0),
             SimEvent::Teleported { .. } => {
                 one_shot(&mut commands, pick(&ex, "portal_enter", n), 0.5 * fx, 1.0);
                 if game.ctrl.vel.length() > 12.0 {

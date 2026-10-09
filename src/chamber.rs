@@ -582,6 +582,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     }
 }
 
+/// How far gel is drawn off its surface, at most (portal surfaces sit above it).
+pub const GEL_MAX_LIFT: f32 = 0.008;
+const _: () = assert!(GEL_MAX_LIFT < crate::portal_render::SURFACE_LIFT);
+
 /// The paint of one kind, as a mesh: a square per cell, a hair off its surface; cells at the
 /// edge of a patch are drawn smaller and turned, for a blobby edge.
 fn gel_mesh(gel: &GelMap, paint: Paint) -> Mesh {
@@ -599,7 +603,7 @@ fn gel_mesh(gel: &GelMap, paint: Paint) -> Mesh {
         let (half, turn) = if neighbours == 4 { (CELL * 0.5 + 0.01, 0.0) } else { (CELL * (0.38 + 0.12 * jitter), 0.6 * jitter) };
         let (cu, su) = (turn.cos(), turn.sin());
         let (uu, vv) = (u * cu + v * su, v * cu - u * su);
-        let lift = n * (0.006 + 0.002 * jitter);
+        let lift = n * (GEL_MAX_LIFT - 0.002 * jitter);
         let base = pos.len() as u32;
         for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
             pos.push((c + lift + uu * a * half + vv * b * half).to_array());

@@ -37,6 +37,10 @@ pub const PLAYER_LAYER: usize = 2;
 pub const SURFACE_LAYER: usize = 4;
 /// Most recursion levels there are cameras for.
 pub const MAX_DEPTH: usize = 4;
+/// How far in front of its wall a portal's surface (and its cameras' near plane) sits:
+/// above the gel painted on walls (`chamber::GEL_MAX_LIFT`), so gel neither covers the
+/// opening nor shows up flat across the view through it.
+pub const SURFACE_LIFT: f32 = 0.012;
 
 const PORTAL_SHADER: Handle<Shader> = uuid_handle!("7d3b8a1e-2f4c-4f8e-9a51-6c2e0b9d4a17");
 
@@ -392,7 +396,7 @@ pub fn update(
         // Clip at the exit portal's surface (pushed out a hair so its own wall goes too).
         let exit = sim.portal(pc.color.other()).unwrap();
         let n = exit.normal;
-        let plane_world = n.extend(-n.dot(exit.center + n * 0.004));
+        let plane_world = n.extend(-n.dot(exit.center + n * SURFACE_LIFT));
         let view_from_world = tf.to_matrix();
         let plane_view = view_from_world.transpose() * plane_world;
         if let Projection::Custom(custom) = &mut *proj {
@@ -415,7 +419,7 @@ pub fn update(
         }
     }
 
-    // Surfaces: on the portal, a hair in front of its wall.
+    // Surfaces: on the portal, a hair in front of its wall (and of any gel on it).
     for (s, mut tf, mut vis) in &mut surfaces {
         let Some(p) = sim.portal(s.color) else {
             *vis = Visibility::Hidden;
@@ -423,7 +427,7 @@ pub fn update(
         };
         let show = s.level <= depth;
         *vis = if show { Visibility::Inherited } else { Visibility::Hidden };
-        tf.translation = p.center + p.normal * 0.004;
+        tf.translation = p.center + p.normal * SURFACE_LIFT;
         tf.rotation = p.rotation();
         let open = (p.age / 0.25).clamp(0.0, 1.0);
         let open = 1.0 - (1.0 - open).powi(3);
@@ -447,7 +451,7 @@ pub fn update(
         let l = p.to_local(main_tf.translation);
         let near_it = linked && l.z < 0.15 && l.z > -0.55 && l.x.abs() < p.half.x && l.y.abs() < p.half.y;
         *vis = if near_it { Visibility::Inherited } else { Visibility::Hidden };
-        tf.translation = p.center + p.normal * 0.004;
+        tf.translation = p.center + p.normal * SURFACE_LIFT;
         tf.rotation = p.rotation();
         if let Some(mut m) = mats.get_mut(&render.tunnel_mats[tn.color.index()]) {
             m.uniform.params = Vec4::new(1.0, t, 1.0, 1.0);

@@ -215,6 +215,29 @@ fn repulsion_gel_bounces_and_propulsion_gel_is_fast() {
 }
 
 #[test]
+fn conversion_gel_takes_a_portal_until_it_is_washed_off() {
+    let mut l = flat();
+    l.solid(Mat::Black, [-5.0, 0.0, -6.5], [5.0, 4.0, -6.0]);
+    let (mut sim, mut c) = start(l);
+    let mut aim = Aim::of(&c);
+    aim.dir = Vec3::new(0.0, 0.0, -1.0);
+    assert!(!sim.fire(PortalColor::Blue, aim), "black metal took a portal");
+    sim.gel.add(crate::gel::Splat { p: Vec3::new(0.0, 1.6, -6.0), n: Vec3::Z, r: 1.8, paint: Paint::Portal });
+    assert!(sim.fire(PortalColor::Blue, aim), "conversion gel didn't take a portal");
+    run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+    assert!(sim.portal(PortalColor::Blue).is_some(), "fizzled on its own");
+    // Other gel painted beside it doesn't matter.
+    sim.gel.add(crate::gel::Splat { p: Vec3::new(4.0, 0.5, -6.0), n: Vec3::Z, r: 0.4, paint: Paint::Bounce });
+    run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+    assert!(sim.portal(PortalColor::Blue).is_some());
+    // Washing the gel under it closes it.
+    sim.gel.add(crate::gel::Splat { p: Vec3::new(0.0, 1.0, -6.0), n: Vec3::Z, r: 0.5, paint: Paint::Water });
+    let ev = run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+    assert!(sim.portal(PortalColor::Blue).is_none(), "still open on bare black metal");
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PortalFizzled { color: PortalColor::Blue, .. })));
+}
+
+#[test]
 fn an_emancipation_grill_clears_portals_and_vaporises_cubes() {
     let mut l = flat();
     l.fizzler([-2.0, 0.0, -4.1], [2.0, 3.0, -3.9], Inputs::always());

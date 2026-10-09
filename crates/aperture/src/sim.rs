@@ -219,6 +219,9 @@ pub enum SimEvent {
     PortalFailed { color: PortalColor, at: Vec3, normal: Vec3 },
     /// Both portals closed (an emancipation grill).
     PortalsCleared,
+    /// One portal closed because the surface under it stopped taking portals (the
+    /// conversion gel it was on was washed off or painted over).
+    PortalFizzled { color: PortalColor, at: Vec3 },
     /// Faith went in through `entered`: and the roll she's left with.
     Teleported { entered: PortalColor, roll: f32 },
     PropTeleported { id: u32, at: Vec3 },
@@ -326,6 +329,8 @@ pub struct Sim {
     /// The prop Faith is carrying (index into `props`).
     pub held: Option<usize>,
     held_far: f32,
+    /// The paint's version when the portals were last checked against it.
+    portals_checked_at: u64,
     pub player_env: Option<PortalColor>,
     pub checkpoint: usize,
     pub gun: Gun,
@@ -369,6 +374,7 @@ impl Sim {
             signals: vec![false; level.signal_count()],
             held: None,
             held_far: 0.0,
+            portals_checked_at: 0,
             player_env: None,
             checkpoint: 0,
             gun: level.gun,
@@ -482,6 +488,22 @@ impl Sim {
         self.portals = [None, None];
         self.rebuild_carved();
         self.player_env = None;
+    }
+
+    /// Close any portal whose surface no longer takes portals.
+    fn fizzle_unsupported_portals(&mut self) {
+        for c in PortalColor::BOTH {
+            let Some(p) = self.portals[c.index()] else { continue };
+            if !self.surface_holds(&p) {
+                self.portals[c.index()] = None;
+                self.rebuild_carved();
+                self.player_env = None;
+                for prop in &mut self.props {
+                    prop.env = None;
+                }
+                self.events.push(SimEvent::PortalFizzled { color: c, at: p.center });
+            }
+        }
     }
 
     fn rebuild_carved(&mut self) {
@@ -720,20 +742,30 @@ impl Sim {
         None
     }
 
+    /// Samples over a portal's outline.
+    fn outline_samples(p: &Portal) -> impl Iterator<Item = Vec3> + '_ {
+        let (r, u) = (p.right(), p.up);
+        let (sx, sy) = (4, 6);
+        (0..=sx).flat_map(move |i| {
+            (0..=sy).map(move |j| {
+                let a = (i as f32 / sx as f32 * 2.0 - 1.0) * (p.half.x - 0.02);
+                let b = (j as f32 / sy as f32 * 2.0 - 1.0) * (p.half.y - 0.02);
+                p.center + r * a + u * b
+            })
+        })
+    }
+
+    /// Whether the surface all over a portal's outline takes portals.
+    fn surface_holds(&self, p: &Portal) -> bool {
+        Self::outline_samples(p).all(|q| self.portalable_at(q, p.normal))
+    }
+
     fn portal_fits(&self, p: &Portal, other: Option<&Portal>) -> bool {
         let n = p.normal;
         let (r, u) = (p.right(), p.up);
         // Every sample over the outline: on a portal surface, open in front.
-        let (sx, sy) = (4, 6);
-        for i in 0..=sx {
-            for j in 0..=sy {
-                let a = (i as f32 / sx as f32 * 2.0 - 1.0) * (p.half.x - 0.02);
-                let b = (j as f32 / sy as f32 * 2.0 - 1.0) * (p.half.y - 0.02);
-                let q = p.center + r * a + u * b;
-                if !self.portalable_at(q, n) || self.solid_at(q + n * 0.03) {
-                    return false;
-                }
-            }
+        if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && !self.solid_at(q + n * 0.03)) {
+            return false;
         }
         // Clear in front (no wall sticking out over it, no closed door). A light bridge
         // running into the wall is fine: that's how you send one through a portal.
@@ -1495,6 +1527,10 @@ impl Sim {
             }
         }
         self.blobs = keep;
+        if self.gel.version != self.portals_checked_at {
+            self.portals_checked_at = self.gel.version;
+            self.fizzle_unsupported_portals();
+        }
     }
 
     fn update_lasers(&mut self) {
