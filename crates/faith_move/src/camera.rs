@@ -191,6 +191,11 @@ impl CameraFx {
         }
     }
 
+    /// The view turned by `d` at once (a portal): not a turn to lean into.
+    pub fn shift_yaw(&mut self, d: f32) {
+        self.last_yaw += d;
+    }
+
     /// Add screen shake (0..1). Big events stack up to 1.
     pub fn add_trauma(&mut self, amount: f32) {
         self.trauma = (self.trauma + amount).min(1.0);

@@ -133,7 +133,7 @@ fn carrying_a_cube_onto_a_button_opens_the_door() {
     sim.use_key(Aim::of(&c));
     assert!(sim.held.is_some(), "didn't pick it up");
     // Carry it to the button, drop it there.
-    run(&mut sim, &mut c, 4.0, |_, c| if c.feet.z > -4.6 { forward() } else { Input::default() });
+    run(&mut sim, &mut c, 4.0, |_, c| if c.feet.z > -4.2 { forward() } else { Input::default() });
     sim.use_key(Aim::of(&c));
     let ev = run(&mut sim, &mut c, 2.0, |_, _| Input::default());
     assert!(sim.buttons[0].pressed, "cube at {}", sim.props[0].pos);
@@ -157,8 +157,8 @@ fn a_cube_goes_through_portals() {
 #[test]
 fn a_reflector_cube_turns_a_laser_into_the_catcher() {
     let mut l = flat();
-    l.laser([0.0, 0.33, -10.0], [0.0, 0.0, 1.0], Inputs::always());
-    l.catcher(0, [8.0, 0.4, 0.0], [-1.0, 0.0, 0.0]);
+    l.laser([0.0, 0.45, -10.0], [0.0, 0.0, 1.0], Inputs::always());
+    l.catcher(0, [8.0, 0.45, 0.0], [-1.0, 0.0, 0.0]);
     l.door(Inputs::on(0), [-1.0, 0.0, 12.0], [1.0, 3.0, 12.5]);
     l.cube(CubeKind::Reflector, [0.0, 0.7, 0.0]);
     let (mut sim, mut c) = start(l);
@@ -257,4 +257,19 @@ fn every_chamber_builds() {
         use faith_move::World;
         assert!(!sim.player_world().overlaps(&c.body().aabb(c.feet + Vec3::Y * 0.02)), "{name}: spawn inside a wall at {}", cp.spawn);
     }
+}
+
+#[test]
+fn walking_onto_a_floor_portal_drops_her_in() {
+    let mut l = flat();
+    l.solid(Mat::White, [19.5, 0.0, -10.0], [20.0, 6.0, 10.0]);
+    let (mut sim, mut c) = start(l);
+    sim.set_portal(PortalColor::Blue, Some(Portal::new(Vec3::new(0.0, 0.0, -4.0), Vec3::Y, Vec3::NEG_Z)));
+    sim.set_portal(PortalColor::Orange, Some(Portal::new(Vec3::new(20.0, 3.0, 0.0), Vec3::X, Vec3::Y)));
+    let mut log = Vec::new();
+    let ev = run(&mut sim, &mut c, 2.0, |sim, c| {
+        log.push(format!("{} {} {:?} env {:?}", c.state.name(), c.feet, c.vel, sim.player_env));
+        forward()
+    });
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::Teleported { .. })), "walked over it:\n{}", log.iter().step_by(6).cloned().collect::<Vec<_>>().join("\n"));
 }

@@ -1,0 +1,11 @@
+[package]
+name = "portal_extract"
+version = "0.1.0"
+edition = "2024"
+description = "Copies what Portal Runner uses out of your own Portal / Portal 2 installs: sounds, textures (VTF to PNG) and models (MDL to glTF)"
+
+[dependencies]
+vtf = "0.4"
+vmdl = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"

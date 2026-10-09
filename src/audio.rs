@@ -142,9 +142,11 @@ pub fn play(
     audio.fx_gain = settings.effects_gain();
     let music_gain = settings.music_gain();
     // Loops that are already playing follow the sliders right away.
+    // Rooftop wind outdoors only (test chambers have their own hum).
+    let outdoors = !game.sim.level.indoor;
     if let Some(e) = audio.ambient {
         if let Ok(mut s) = sinks.get_mut(e) {
-            s.set_volume(Volume::Linear(0.35 * audio.fx_gain));
+            s.set_volume(Volume::Linear(if outdoors { 0.35 * audio.fx_gain } else { 0.0 }));
         }
     }
     if let Some(e) = audio.music {
@@ -163,8 +165,8 @@ pub fn play(
         audio.run(&mut commands, &mut sinks, cmd);
     }
 
-    // ---- time-trial music while the clock runs
-    match (game.timer.is_some(), audio.music) {
+    // ---- Mirror's Edge's time-trial music out on the roofs
+    match (outdoors, audio.music) {
         (true, None) => {
             if audio.has("A_M_TimeTrial.Cues.Music") {
                 if let Some(cmd) = audio.director.play("A_M_TimeTrial.Cues.Music", 0.0) {

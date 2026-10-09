@@ -20,10 +20,10 @@ use crate::portal::{carry_view, Link, Portal, PortalColor, PORTAL_HALF};
 /// Faith's gravity (faith_move's measured 16.4 m/s²): cubes fall the same.
 pub const GRAVITY: f32 = 16.4;
 /// Half a cube's size.
-pub const CUBE_HALF: f32 = 0.33;
+pub const CUBE_HALF: f32 = 0.45;
 /// The top of a floor button's base above the floor.
 pub const BUTTON_TOP: f32 = 0.12;
-pub const BUTTON_RADIUS: f32 = 0.7;
+pub const BUTTON_RADIUS: f32 = 0.85;
 /// A faith plate's top above the floor.
 pub const PLATE_TOP: f32 = 0.08;
 pub const PLATE_HALF: f32 = 0.75;
@@ -386,7 +386,7 @@ impl Sim {
                 Item::FloorButton { sig, at, cube_only } => {
                     let i = sim.buttons.len();
                     statics.push(Static {
-                        b: Aabb::new(at + Vec3::new(-0.8, 0.0, -0.8), at + Vec3::new(0.8, BUTTON_TOP, 0.8)),
+                        b: Aabb::new(at + Vec3::new(-0.95, 0.0, -0.95), at + Vec3::new(0.95, BUTTON_TOP, 0.95)),
                         mat: Mat::Prop,
                         owner: Owner::Button(i),
                     });
@@ -772,6 +772,8 @@ impl Sim {
         let mut env = self.player_env;
         collide::update_env(&mut env, &self.portals, linked, center, half, ctrl.vel, dt);
         self.player_env = env;
+        // Dropping into a floor (or ceiling) portal: its rim isn't a ledge to vault onto.
+        ctrl.air_moves_off = env.and_then(|c| self.portals[c.index()]).is_some_and(|p| p.normal.y.abs() > 0.5);
 
         if self.funnel && linked && ctrl.state == faith_move::State::Air {
             self.funnel_into_portals(ctrl, dt);
@@ -1202,7 +1204,7 @@ impl Sim {
     /// Where a held cube should be: in front of her eye, through a portal if she's looking
     /// into one, and not inside a wall.
     fn hold_target(&self, aim: Aim, skip: usize) -> (Vec3, Quat) {
-        let dist = 1.5;
+        let dist = 1.7;
         let mask = Mask { skip_prop: Some(skip), fizzlers: false, ..Mask::SOLID };
         let mut rot = Quat::from_rotation_y(aim.yaw);
         let mut o = aim.eye;

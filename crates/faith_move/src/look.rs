@@ -100,6 +100,11 @@ pub struct LookLimiter {
 }
 
 impl LookLimiter {
+    /// The view turned by `d` at once (a portal): the limits turn with it.
+    pub fn shift_yaw(&mut self, d: f32) {
+        self.entry_yaw += d;
+    }
+
     pub fn apply(&mut self, c: &mut Controller, dt: f32) {
         let kind = std::mem::discriminant(&c.state);
         if self.kind != Some(kind) {

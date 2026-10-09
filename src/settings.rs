@@ -1,5 +1,6 @@
-//! The launch menu: volume (master / music / effects), mouse sensitivity and
-//! field of view. It opens when the game starts and again on Esc, and saves
+//! The launch menu: volume (master / music / effects), mouse sensitivity, field
+//! of view, Mirror's Edge's fall heights (hard landing, lethal), and the portals'
+//! recursion depth and funnel. It opens when the game starts and again on Esc, and saves
 //! to `settings.txt` next to where you run the game.
 //!
 //! Keyboard: ↑/↓ pick a row, ←/→ change it, Enter plays. Or click the − / +
@@ -19,11 +20,39 @@ pub struct Settings {
     pub sensitivity: f32,
     /// Horizontal field of view in degrees (Mirror's Edge uses 90).
     pub fov: f32,
+    /// Falls this high (m) are a hard landing unless you roll (Mirror's Edge: 5.3).
+    pub hard_land: f32,
+    /// Falls this high (m) kill (Mirror's Edge: 10). At the top of the range: off.
+    pub lethal_fall: f32,
+    /// How many portals deep you can see through portals (1-4).
+    pub portal_depth: f32,
+    /// Steer into portals you fall at (Portal's funnel): 1 on, 0 off.
+    pub funnel: f32,
+}
+
+/// A lethal fall height at this or above means no fall kills.
+pub const LETHAL_OFF: f32 = 40.0;
+
+impl Settings {
+    /// The lethal fall height for the movement (huge when it's off).
+    pub fn lethal_height(&self) -> f32 {
+        if self.lethal_fall >= LETHAL_OFF { 1.0e6 } else { self.lethal_fall }
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { master: 0.8, music: 0.6, effects: 1.0, sensitivity: 1.0, fov: 90.0 }
+        Settings {
+            master: 0.8,
+            music: 0.6,
+            effects: 1.0,
+            sensitivity: 1.0,
+            fov: 90.0,
+            hard_land: 5.3,
+            lethal_fall: 10.0,
+            portal_depth: 3.0,
+            funnel: 1.0,
+        }
     }
 }
 
@@ -47,6 +76,10 @@ impl Settings {
                 "effects" => s.effects = v,
                 "sensitivity" => s.sensitivity = v,
                 "fov" => s.fov = v,
+                "hard_land" => s.hard_land = v,
+                "lethal_fall" => s.lethal_fall = v,
+                "portal_depth" => s.portal_depth = v,
+                "funnel" => s.funnel = v,
                 _ => {}
             }
         }
@@ -59,8 +92,8 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# Faith Runner settings\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\n",
-            self.master, self.music, self.effects, self.sensitivity, self.fov
+            "# Portal Runner settings\nmaster = {:.2}\nmusic = {:.2}\neffects = {:.2}\nsensitivity = {:.2}\nfov = {:.0}\nhard_land = {:.1}\nlethal_fall = {:.1}\nportal_depth = {:.0}\nfunnel = {:.0}\n",
+            self.master, self.music, self.effects, self.sensitivity, self.fov, self.hard_land, self.lethal_fall, self.portal_depth, self.funnel
         )
     }
 
@@ -104,7 +137,7 @@ fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
 }
 
-const ROWS: [Row; 5] = [
+const ROWS: [Row; 9] = [
     Row { label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -118,6 +151,34 @@ const ROWS: [Row; 5] = [
         show: |v| format!("{v:.2}x"),
     },
     Row { label: "Field of view", min: 70.0, max: 110.0, step: 1.0, get: |s| s.fov, put: |s, v| s.fov = v, show: |v| format!("{v:.0} deg") },
+    Row {
+        label: "Hard landing from",
+        min: 2.0,
+        max: 30.0,
+        step: 0.5,
+        get: |s| s.hard_land,
+        put: |s, v| s.hard_land = v,
+        show: |v| format!("{v:.1} m"),
+    },
+    Row {
+        label: "Lethal fall from",
+        min: 5.0,
+        max: LETHAL_OFF,
+        step: 1.0,
+        get: |s| s.lethal_fall,
+        put: |s, v| s.lethal_fall = v,
+        show: |v| if v >= LETHAL_OFF { "Off".to_string() } else { format!("{v:.0} m") },
+    },
+    Row { label: "Portal recursion", min: 1.0, max: 4.0, step: 1.0, get: |s| s.portal_depth, put: |s, v| s.portal_depth = v, show: |v| format!("{v:.0}") },
+    Row {
+        label: "Portal funnel",
+        min: 0.0,
+        max: 1.0,
+        step: 1.0,
+        get: |s| s.funnel,
+        put: |s, v| s.funnel = v,
+        show: |v| if v > 0.5 { "On".to_string() } else { "Off".to_string() },
+    },
 ];
 
 #[derive(Resource)]
@@ -150,7 +211,7 @@ const BTN_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.22);
 pub fn setup(mut commands: Commands) {
     let settings = Settings::load();
     // Screenshot capture runs straight through without the menu.
-    let open = std::env::var_os("FAITH_CAPTURE").is_none() && std::env::var_os("FAITH_CAPTURE_TOUR").is_none();
+    let open = std::env::var_os("PORTAL_CAPTURE").is_none();
     let font = |px_: f32| TextFont { font_size: px_.into(), ..default() };
     let white = TextColor(Color::srgb(0.95, 0.95, 0.95));
     let dim = TextColor(Color::srgba(0.95, 0.95, 0.95, 0.55));
@@ -182,7 +243,7 @@ pub fn setup(mut commands: Commands) {
                 BackgroundColor(PANEL),
             ))
             .with_children(|panel| {
-                panel.spawn((Text::new("FAITH RUNNER"), font(34.0), TextColor(RED)));
+                panel.spawn((Text::new("PORTAL RUNNER"), font(34.0), TextColor(RED)));
                 panel.spawn((Text::new("Settings"), font(18.0), dim.clone(), Node { margin: UiRect::bottom(px(12.0)), ..default() }));
                 for (i, r) in ROWS.iter().enumerate() {
                     panel
@@ -327,7 +388,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_clamps() {
-        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0 };
+        let s = Settings { master: 0.35, music: 0.0, effects: 0.9, sensitivity: 1.25, fov: 100.0, hard_land: 6.5, lethal_fall: 14.0, portal_depth: 2.0, funnel: 0.0 };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("master = 7\nfov = 10\nnonsense\nmusic = x");
         assert_eq!(wild.master, 1.0);

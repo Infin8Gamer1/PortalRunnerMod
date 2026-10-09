@@ -2,7 +2,7 @@
 members = [".", "crates/*"]
 
 [package]
-name = "faith-runner"
+name = "portal-runner"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,7 +10,8 @@ edition = "2024"
 faith_move = { path = "crates/faith_move" }
 me_assets = { path = "crates/me_assets" }
 faith_anim = { path = "crates/faith_anim" }
-bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav"] }
+aperture = { path = "crates/aperture" }
+bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav", "mp3", "png"] }
 
 # Fast-ish dev builds: optimize dependencies, keep our code debuggable.
 [features]

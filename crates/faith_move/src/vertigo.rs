@@ -62,7 +62,7 @@ impl Controller {
 
     /// The walking edge check's vertigo half, before the step.
     pub(crate) fn try_vertigo(&mut self, world: &dyn World) -> bool {
-        if self.vertigo_redo > 0.0 || self.crouched {
+        if self.vertigo_redo > 0.0 || self.crouched || self.air_moves_off {
             return false;
         }
         let h = horiz(self.vel);

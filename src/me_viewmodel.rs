@@ -31,6 +31,7 @@ use me_assets::{FaithArms, MaterialSlot, SkeletalMesh, Skinner};
 
 use faith_anim::{Driver, Rig};
 use crate::viewmodel::{Arm, ViewmodelCamera, VIEWMODEL_LAYER};
+use crate::portal_render::PLAYER_LAYER;
 use crate::{Game, PlayerCamera};
 
 /// TdPawn.Model1pFOV in DefaultGame.ini.
@@ -103,6 +104,13 @@ pub fn candidates() -> Vec<PathBuf> {
         }
     }
     v.extend(DEFAULT_PATHS.iter().map(PathBuf::from));
+    // Steam on Linux (and Steam Deck): the Windows build under Proton.
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for steam in [".local/share/Steam", ".steam/steam", ".var/app/com.valvesoftware.Steam/.local/share/Steam"] {
+            v.push(home.join(steam).join("steamapps/common/mirrors edge"));
+        }
+    }
     v
 }
 
@@ -161,7 +169,8 @@ fn spawn_part(
     let (mut positions, mut normals, mut tangents) = (vec![], vec![], vec![]);
     skinner.skin_full(mesh, globals, Mat4::IDENTITY, &mut positions, &mut normals, Some(&mut tangents));
     let uvs: Vec<[f32; 2]> = mesh.vertices.iter().map(|v| v.uv).collect();
-    let layer = if legs { RenderLayers::layer(0) } else { RenderLayers::layer(VIEWMODEL_LAYER) };
+    // The legs draw in the world, but only for her own camera (not through portals).
+    let layer = if legs { RenderLayers::layer(PLAYER_LAYER) } else { RenderLayers::layer(VIEWMODEL_LAYER) };
     let root = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
     let mut handles = vec![];
     let mut sections = vec![];
@@ -279,6 +288,12 @@ pub fn animate(
     if keys.just_pressed(KeyCode::KeyG) {
         me.rig.driver.play_idle(&game.ctrl, &me.arms);
     }
+    // Through a portal: the body turns with the view at once.
+    for e in &game.ctrl.events {
+        if let faith_move::Event::Teleport { yaw_delta } = *e {
+            me.rig.teleported(yaw_delta);
+        }
+    }
     // The body, its placement and the camera (faith_anim::Rig, as the game places them).
     let frame = me.rig.update(dt, &game.ctrl, &game.shot, &me.arms);
     let c = &game.ctrl;
@@ -286,7 +301,7 @@ pub fn animate(
     // TdMove.FirstPersonDPG: the body normally draws over the world (SDPG_Foreground, our
     // viewmodel layer); swinging and pipe climbing use SDPG_Intermediate, depth-tested against
     // the world, so the bar hides the fingers wrapped round it.
-    let arms_layer = if frame.intermediate { RenderLayers::layer(0) } else { RenderLayers::layer(VIEWMODEL_LAYER) };
+    let arms_layer = if frame.intermediate { RenderLayers::layer(PLAYER_LAYER) } else { RenderLayers::layer(VIEWMODEL_LAYER) };
     for p in me.parts.iter().filter(|p| !p.legs) {
         for &e in &p.sections {
             if let Ok(mut l) = layers.get_mut(e) {

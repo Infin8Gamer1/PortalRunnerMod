@@ -558,6 +558,9 @@ pub struct Controller {
     pub(crate) hang_time: f32,
     /// Crouch held this frame: repulsion gel doesn't bounce you while you hold it.
     crouch_held: bool,
+    /// Set by a host while she drops into a hole that isn't one (a portal in the floor): no
+    /// vaults, grabs or wall moves off its rim, and no stopping at its edge (vertigo).
+    pub air_moves_off: bool,
 }
 
 const SUBSTEP: f32 = 1.0 / 120.0;
@@ -653,6 +656,7 @@ impl Controller {
             soft_brace: false,
             doors: Vec::new(),
             crouch_held: false,
+            air_moves_off: false,
         }
     }
 
@@ -1581,6 +1585,9 @@ impl Controller {
 
     /// Checks for grabbing, climbing and wallrunning from the air.
     fn air_transitions(&mut self, input: &Input, world: &dyn World) -> bool {
+        if self.air_moves_off {
+            return false;
+        }
         let tu = self.tuning.clone();
         let body = self.body();
         let fwd = forward(self.yaw);

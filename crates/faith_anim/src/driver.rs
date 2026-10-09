@@ -1417,6 +1417,15 @@ impl Driver {
     /// (the arms) WeaponYaw / WeaponPitch / WeaponRoll make the torso trail and bank against
     /// your turns and looks; on EyeJoint CameraRoll banks the camera into a turn, scaled by
     /// speed (100..400 uu/s). Returns the camera bank.
+    /// The view turned by `d` at once (a portal): the springs that lag the yaw turn with it.
+    pub fn shift_yaw(&mut self, d: f32) {
+        for i in [0, 2, 3] {
+            if let Some(l) = &mut self.springs[i].lazy {
+                *l += d;
+            }
+        }
+    }
+
     fn apply_lazy_springs(&mut self, arms: &FaithArms, c: &Controller, dt: f32, pose: &mut Pose) -> f32 {
         // Our yaw is positive to the left; the game's to the right.
         let (yaw, pitch) = (-c.yaw, c.pitch);

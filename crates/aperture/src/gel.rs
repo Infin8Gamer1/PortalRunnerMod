@@ -1,14 +1,20 @@
 //! Portal 2's gels: blobs that fly, and the paint they leave on surfaces.
 //!
-//! Paint is a list of round splats, each flat on a surface (a point, the surface's normal, a
-//! radius). The newest splat covering a point decides what's there, so painting over paint
-//! replaces it, and cleansing water paints "nothing".
+//! Paint lives on a grid laid over every flat surface: [`CELL`]-sized squares on each plane
+//! (which way it faces, and where it is along that axis), each holding one paint. A splat of
+//! gel paints the cells within its radius; painting over paint replaces it, and cleansing
+//! water clears it.
 
 use std::collections::HashMap;
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use crate::level::Paint;
+
+/// The paint grid's cell size (metres).
+pub const CELL: f32 = 0.25;
+/// Surfaces are told apart along their normal to this (metres).
+const PLANE_STEP: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Splat {
@@ -19,95 +25,115 @@ pub struct Splat {
     pub paint: Paint,
 }
 
-/// How far a point may be off a splat's surface and still be on it.
-const ON_SURFACE: f32 = 0.12;
-const CELL: f32 = 2.0;
-/// Most splats kept; past it the oldest go.
-const MAX_SPLATS: usize = 12000;
+/// Which way a surface faces: 0..6 for +X, -X, +Y, -Y, +Z, -Z.
+fn face_of(n: Vec3) -> u8 {
+    let a = n.abs();
+    if a.x >= a.y && a.x >= a.z {
+        if n.x >= 0.0 { 0 } else { 1 }
+    } else if a.y >= a.z {
+        if n.y >= 0.0 { 2 } else { 3 }
+    } else if n.z >= 0.0 {
+        4
+    } else {
+        5
+    }
+}
+
+fn axes(face: u8) -> (usize, usize, usize) {
+    // (normal axis, u axis, v axis)
+    match face / 2 {
+        0 => (0, 2, 1),
+        1 => (1, 0, 2),
+        _ => (2, 0, 1),
+    }
+}
+
+/// A cell: face, the plane's place along the normal (in PLANE_STEPs), and its square.
+pub type CellKey = (u8, i32, i32, i32);
 
 #[derive(Clone, Debug, Default)]
 pub struct GelMap {
-    pub splats: Vec<Splat>,
-    /// Splat indices by grid cell (every cell a splat's disc touches).
-    grid: HashMap<(i32, i32, i32), Vec<u32>>,
+    pub cells: HashMap<CellKey, Paint>,
     /// Bumped whenever the paint changes (for redrawing it).
     pub version: u64,
 }
 
-fn cell_of(p: Vec3) -> (i32, i32, i32) {
-    ((p.x / CELL).floor() as i32, (p.y / CELL).floor() as i32, (p.z / CELL).floor() as i32)
-}
-
 impl GelMap {
     pub fn clear(&mut self) {
-        self.splats.clear();
-        self.grid.clear();
+        self.cells.clear();
         self.version += 1;
     }
 
-    /// Paint a splat. A splat of the same paint almost on top of an existing one adds
-    /// nothing.
+    fn key(p: Vec3, n: Vec3) -> CellKey {
+        let f = face_of(n);
+        let (a, u, v) = axes(f);
+        ((f), (p[a] / PLANE_STEP).round() as i32, (p[u] / CELL).floor() as i32, (p[v] / CELL).floor() as i32)
+    }
+
+    /// The middle of a cell, on its surface, and the surface's normal.
+    pub fn cell_center(k: &CellKey) -> (Vec3, Vec3) {
+        let (f, plane, i, j) = *k;
+        let (a, u, v) = axes(f);
+        let mut c = Vec3::ZERO;
+        c[a] = plane as f32 * PLANE_STEP;
+        c[u] = (i as f32 + 0.5) * CELL;
+        c[v] = (j as f32 + 0.5) * CELL;
+        let mut n = Vec3::ZERO;
+        n[a] = if f % 2 == 0 { 1.0 } else { -1.0 };
+        (c, n)
+    }
+
+    /// The in-plane axes of a cell's surface.
+    pub fn cell_axes(k: &CellKey) -> (Vec3, Vec3) {
+        let (_, u, v) = axes(k.0);
+        let (mut uu, mut vv) = (Vec3::ZERO, Vec3::ZERO);
+        uu[u] = 1.0;
+        vv[v] = 1.0;
+        (uu, vv)
+    }
+
+    /// Paint a splat: every cell whose middle is within its radius.
     pub fn add(&mut self, s: Splat) {
-        if self.covers_same(&s) {
-            return;
-        }
-        if self.splats.len() >= MAX_SPLATS {
-            let keep: Vec<Splat> = self.splats.split_off(MAX_SPLATS / 4);
-            self.splats = keep;
-            self.rebuild();
-        }
-        let i = self.splats.len() as u32;
-        self.splats.push(s);
-        self.index(i);
-        self.version += 1;
-    }
-
-    fn covers_same(&self, s: &Splat) -> bool {
-        // The newest splat at its centre is the same paint and reaches well past it.
-        self.query(s.p, s.n).is_some_and(|(idx, paint)| paint == s.paint && {
-            let o = &self.splats[idx];
-            o.p.distance(s.p) + s.r * 0.55 < o.r
-        })
-    }
-
-    fn index(&mut self, i: u32) {
-        let s = self.splats[i as usize];
-        let lo = cell_of(s.p - Vec3::splat(s.r));
-        let hi = cell_of(s.p + Vec3::splat(s.r));
-        for x in lo.0..=hi.0 {
-            for y in lo.1..=hi.1 {
-                for z in lo.2..=hi.2 {
-                    self.grid.entry((x, y, z)).or_default().push(i);
+        let f = face_of(s.n);
+        let (a, u, v) = axes(f);
+        let plane = (s.p[a] / PLANE_STEP).round() as i32;
+        let r = s.r;
+        let (i0, i1) = (((s.p[u] - r) / CELL).floor() as i32, ((s.p[u] + r) / CELL).floor() as i32);
+        let (j0, j1) = (((s.p[v] - r) / CELL).floor() as i32, ((s.p[v] + r) / CELL).floor() as i32);
+        let mut changed = false;
+        for i in i0..=i1 {
+            for j in j0..=j1 {
+                let cu = (i as f32 + 0.5) * CELL - s.p[u];
+                let cv = (j as f32 + 0.5) * CELL - s.p[v];
+                if cu * cu + cv * cv > r * r {
+                    continue;
+                }
+                let k = (f, plane, i, j);
+                if s.paint == Paint::Water {
+                    changed |= self.cells.remove(&k).is_some();
+                } else if self.cells.insert(k, s.paint) != Some(s.paint) {
+                    changed = true;
                 }
             }
         }
-    }
-
-    fn rebuild(&mut self) {
-        self.grid.clear();
-        for i in 0..self.splats.len() as u32 {
-            self.index(i);
+        if changed {
+            self.version += 1;
         }
-        self.version += 1;
     }
 
-    /// The newest splat covering `p` on a surface facing `n`: its index and paint.
-    pub fn query(&self, p: Vec3, n: Vec3) -> Option<(usize, Paint)> {
-        let ids = self.grid.get(&cell_of(p))?;
-        ids.iter().rev().map(|&i| (i as usize, &self.splats[i as usize])).find_map(|(i, s)| {
-            let d = p - s.p;
-            let off = d.dot(s.n);
-            let lateral = (d - s.n * off).length();
-            (s.n.dot(n) > 0.9 && off.abs() < ON_SURFACE && lateral <= s.r).then_some((i, s.paint))
-        })
-    }
-
-    /// The paint at `p` on a surface facing `n` (water counts as none).
+    /// The paint at `p` on a surface facing `n`.
     pub fn paint_at(&self, p: Vec3, n: Vec3) -> Option<Paint> {
-        match self.query(p, n) {
-            Some((_, Paint::Water)) | None => None,
-            Some((_, paint)) => Some(paint),
+        if self.cells.is_empty() {
+            return None;
         }
+        let (f, plane, i, j) = Self::key(p, n);
+        // The point may sit a little off the surface (a body resting on it, rounding).
+        for dp in [0, -1, 1] {
+            if let Some(&paint) = self.cells.get(&(f, plane + dp, i, j)) {
+                return Some(paint);
+            }
+        }
+        None
     }
 
     /// The gel at a point, for the movement.
@@ -115,37 +141,22 @@ impl GelMap {
         self.paint_at(p, n).map(|p| p.gel()).unwrap_or_default()
     }
 
-    /// Paint under a box's bottom face (anywhere under it), for whoever stands there.
-    pub fn gel_under(&self, feet: Vec3, half: f32) -> faith_move::Gel {
-        let mut best = faith_move::Gel::None;
-        for (dx, dz) in [(0.0, 0.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-            let g = self.gel_at(feet + Vec3::new(dx * half, 0.0, dz * half), Vec3::Y);
-            if g != faith_move::Gel::None {
-                best = g;
-                if dx == 0.0 {
-                    break;
-                }
-            }
-        }
-        best
-    }
-
-    /// Fill a rectangle with splats: `c` its middle, `u` and `v` its in-plane axes, `half`
-    /// its half sizes.
-    pub fn fill(&mut self, c: Vec3, n: Vec3, u: Vec3, v: Vec3, half: glam::Vec2, paint: Paint) {
-        let r = 0.55;
-        let step = 0.6;
+    /// Fill a rectangle: `c` its middle, `u` and `v` its in-plane axes, `half` its half sizes.
+    pub fn fill(&mut self, c: Vec3, n: Vec3, u: Vec3, v: Vec3, half: Vec2, paint: Paint) {
+        let step = CELL * 0.5;
         let nu = ((half.x * 2.0) / step).ceil().max(1.0) as i32;
         let nv = ((half.y * 2.0) / step).ceil().max(1.0) as i32;
         for i in 0..=nu {
             for j in 0..=nv {
                 let a = -half.x + (i as f32 / nu as f32) * half.x * 2.0;
                 let b = -half.y + (j as f32 / nv as f32) * half.y * 2.0;
-                let p = c + u * a + v * b;
-                self.splats.push(Splat { p, n, r, paint });
+                // Inset a hair so cells on the boundary belong to the rectangle.
+                let p = c + u * a.clamp(-half.x + 0.01, half.x - 0.01) + v * b.clamp(-half.y + 0.01, half.y - 0.01);
+                let k = Self::key(p, n);
+                self.cells.insert(k, paint);
             }
         }
-        self.rebuild();
+        self.version += 1;
     }
 }
 
@@ -168,12 +179,24 @@ mod tests {
         let mut g = GelMap::default();
         g.add(Splat { p: Vec3::ZERO, n: Vec3::Y, r: 1.0, paint: Paint::Bounce });
         assert_eq!(g.paint_at(Vec3::new(0.5, 0.0, 0.0), Vec3::Y), Some(Paint::Bounce));
+        assert_eq!(g.paint_at(Vec3::new(0.5, 0.03, 0.0), Vec3::Y), Some(Paint::Bounce), "just above it");
         assert_eq!(g.paint_at(Vec3::new(0.5, 0.0, 0.0), Vec3::X), None, "wrong facing");
         assert_eq!(g.paint_at(Vec3::new(1.5, 0.0, 0.0), Vec3::Y), None, "outside");
+        assert_eq!(g.paint_at(Vec3::new(0.5, 1.0, 0.0), Vec3::Y), None, "another floor");
         g.add(Splat { p: Vec3::new(0.4, 0.0, 0.0), n: Vec3::Y, r: 0.5, paint: Paint::Speed });
         assert_eq!(g.paint_at(Vec3::new(0.5, 0.0, 0.0), Vec3::Y), Some(Paint::Speed));
         g.add(Splat { p: Vec3::new(0.4, 0.0, 0.0), n: Vec3::Y, r: 0.5, paint: Paint::Water });
         assert_eq!(g.paint_at(Vec3::new(0.5, 0.0, 0.0), Vec3::Y), None, "washed off");
         assert_eq!(g.paint_at(Vec3::new(-0.8, 0.0, 0.0), Vec3::Y), Some(Paint::Bounce));
+    }
+
+    #[test]
+    fn a_filled_rectangle_covers_its_corners() {
+        let mut g = GelMap::default();
+        g.fill(Vec3::new(0.0, 0.0, 0.0), Vec3::Y, Vec3::X, Vec3::Z, Vec2::new(2.0, 1.0), Paint::Speed);
+        for p in [Vec3::new(-1.95, 0.0, -0.95), Vec3::new(1.95, 0.0, 0.95), Vec3::ZERO] {
+            assert_eq!(g.paint_at(p, Vec3::Y), Some(Paint::Speed), "{p}");
+        }
+        assert_eq!(g.paint_at(Vec3::new(2.4, 0.0, 0.0), Vec3::Y), None);
     }
 }

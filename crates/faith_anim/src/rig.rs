@@ -56,6 +56,14 @@ impl Rig {
         Rig { driver: Driver::new(arms), swan: Default::default(), leg_yaw: yaw, legs_turning: false, body_yaw: yaw, body_unlocking: false }
     }
 
+    /// She went through a portal and her view turned by `yaw_delta` at once: turn the body,
+    /// the legs and the lagging springs with it, so nothing swings round to catch up.
+    pub fn teleported(&mut self, yaw_delta: f32) {
+        self.leg_yaw = wrap_angle(self.leg_yaw + yaw_delta);
+        self.body_yaw = wrap_angle(self.body_yaw + yaw_delta);
+        self.driver.shift_yaw(yaw_delta);
+    }
+
     /// Animate and place everything for this frame. `shot` is this frame's camera effects
     /// (`CameraFx::update`), after the controller stepped.
     pub fn update(&mut self, dt: f32, c: &Controller, shot: &Shot, arms: &FaithArms) -> RigFrame {
