@@ -44,6 +44,9 @@ use crate::portal_render::PLAYER_LAYER;
 
 fn main() {
     let mut app = App::new();
+    // DLSS asks for an application id before the renderer starts (any fixed UUID).
+    #[cfg(feature = "dlss")]
+    app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(bevy::asset::uuid::Uuid::from_u128(0x5f0e_9a1d_7c3b_4e62_a8d4_1b9c_e2f7_6031)));
     // The asset server reads the extracted models from `assets/` (next to `extracted/`).
     let asset_dir = extracted::find_root()
         .and_then(|r| r.parent().map(|p| p.to_path_buf()))
@@ -456,7 +459,7 @@ fn play(
     game.ctrl.tuning.skid_after_speed_gel = settings.gel_skid_delay;
     game.sim.funnel = settings.funnel > 0.5;
     render.depth = (settings.portal_depth.round() as usize).clamp(1, portal_render::MAX_DEPTH);
-    render.scale = settings.portal_resolution;
+    render.scale = settings.portal_resolution * graphics::render_scale(&settings);
 
     // ---- gather input
     let mut input = MoveInput::default();

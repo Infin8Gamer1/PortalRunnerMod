@@ -30,6 +30,17 @@ when they're extracted, and stand-ins when they aren't. `--inspect <model.mdl>..
 models (parts, bones, size) instead of extracting. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
+**DLSS** (NVIDIA RTX, Vulkan) is a build option, since it needs NVIDIA's DLSS SDK (from
+https://github.com/NVIDIA/DLSS, under NVIDIA's licence) and the Vulkan SDK's headers:
+
+```
+DLSS_SDK=/path/to/DLSS VULKAN_SDK=/usr cargo run --release --features dlss
+```
+
+Then Settings > Graphics > DLSS offers DLAA, Quality, Balanced, Performance and Ultra
+performance (it replaces the anti-aliasing setting, and the portal views render at its lower
+resolution too). Without the feature, or on a GPU without DLSS, the setting says so.
+
 It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were
 in, **Chambers** lists them all with your best times, and **Settings** and **Controls** are
 there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.

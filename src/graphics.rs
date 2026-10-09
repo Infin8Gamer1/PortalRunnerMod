@@ -31,6 +31,33 @@ pub const FPS_CAPS: [u32; 7] = [0, 30, 60, 120, 144, 165, 240];
 pub const WINDOW_MODES: [&str; 3] = ["Windowed", "Borderless", "Fullscreen"];
 pub const AA_MODES: [&str; 5] = ["Off", "FXAA", "SMAA", "MSAA 4x", "TAA"];
 pub const SHADOWS: [&str; 4] = ["Off", "Low", "Medium", "High"];
+/// DLSS settings, and how much of the window's resolution each renders at.
+pub const DLSS_MODES: [(&str, f32); 6] = [("Off", 1.0), ("DLAA", 1.0), ("Quality", 0.667), ("Balanced", 0.58), ("Performance", 0.5), ("Ultra perf.", 0.333)];
+
+/// Whether DLSS is usable: built in, and this GPU has it (set once the renderer's up).
+static DLSS_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn dlss_label(v: f32) -> String {
+    let name = DLSS_MODES[(v as usize).min(DLSS_MODES.len() - 1)].0;
+    if v < 0.5 {
+        name.to_string()
+    } else if !cfg!(feature = "dlss") {
+        format!("{name} (not built in)")
+    } else if !DLSS_OK.load(std::sync::atomic::Ordering::Relaxed) {
+        format!("{name} (no GPU support)")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The fraction of the window's resolution the scene renders at (DLSS upscales the rest).
+pub fn render_scale(settings: &Settings) -> f32 {
+    if dlss_on(settings) { DLSS_MODES[(settings.dlss as usize).min(DLSS_MODES.len() - 1)].1 } else { 1.0 }
+}
+
+fn dlss_on(settings: &Settings) -> bool {
+    settings.dlss >= 0.5 && DLSS_OK.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Aa {
@@ -62,6 +89,10 @@ pub struct GraphicsPlugin;
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(Last, frame_cap);
+        #[cfg(feature = "dlss")]
+        app.add_systems(PreUpdate, |ok: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>| {
+            DLSS_OK.store(ok.is_some(), std::sync::atomic::Ordering::Relaxed);
+        });
     }
 }
 
@@ -114,7 +145,10 @@ fn apply(
     let sharpen = (settings.sharpening * 4.0).round() as i32;
     let ev = (settings.brightness * 4.0).round() as i32;
     let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
-    let cams = (aa, sharpen, ev * 100 + fx);
+    let dlss = if dlss_on(&settings) { settings.dlss as i32 } else { 0 };
+    let cams = (aa, sharpen, ev * 10000 + fx * 10 + dlss);
+    // DLSS does the anti-aliasing itself.
+    let aa = if dlss > 0 { Aa::Off } else { aa };
     if applied.cameras != Some(cams) || !new_cameras.is_empty() {
         applied.cameras = Some(cams);
         // Brighter is a lower exposure value.
@@ -143,6 +177,21 @@ fn apply(
                     ec.insert(TemporalAntiAliasing::default());
                 }
                 Aa::Off | Aa::Msaa => {}
+            }
+            #[cfg(feature = "dlss")]
+            {
+                use bevy::anti_alias::dlss::{Dlss, DlssPerfQualityMode};
+                ec.remove::<Dlss>();
+                if dlss > 0 {
+                    let perf_quality_mode = match dlss {
+                        1 => DlssPerfQualityMode::Dlaa,
+                        2 => DlssPerfQualityMode::Quality,
+                        3 => DlssPerfQualityMode::Balanced,
+                        4 => DlssPerfQualityMode::Performance,
+                        _ => DlssPerfQualityMode::UltraPerformance,
+                    };
+                    ec.insert(Dlss { perf_quality_mode, ..default() });
+                }
             }
             if settings.sharpening > 0.01 {
                 ec.insert(ContrastAdaptiveSharpening { enabled: true, sharpening_strength: settings.sharpening, denoise: false });
@@ -179,11 +228,20 @@ fn apply(
     }
 }
 
-/// Through a portal the view jumps: TAA's history would smear the old view over the new.
-fn reset_taa_on_teleport(game: Res<Game>, mut taa: Query<&mut TemporalAntiAliasing, With<PlayerCamera>>) {
+/// Through a portal the view jumps: TAA's (and DLSS's) history would smear the old view
+/// over the new.
+fn reset_taa_on_teleport(
+    game: Res<Game>,
+    mut taa: Query<&mut TemporalAntiAliasing, With<PlayerCamera>>,
+    #[cfg(feature = "dlss")] mut dlss: Query<&mut bevy::anti_alias::dlss::Dlss, With<PlayerCamera>>,
+) {
     if game.sim.events.iter().any(|e| matches!(e, aperture::SimEvent::Teleported { .. })) {
         for mut t in &mut taa {
             t.reset = true;
+        }
+        #[cfg(feature = "dlss")]
+        for mut d in &mut dlss {
+            d.reset = true;
         }
     }
 }

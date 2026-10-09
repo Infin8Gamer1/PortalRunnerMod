@@ -61,6 +61,9 @@ pub struct Settings {
     pub bloom: f32,
     /// Screen-space ambient occlusion (not with MSAA): 1 on, 0 off.
     pub ssao: f32,
+    /// NVIDIA DLSS (`graphics::DLSS_MODES`; 0 off). Only in builds with the `dlss` feature, on
+    /// a GPU that has it.
+    pub dlss: f32,
 }
 
 /// The volume sliders are perceptual: each step is the same number of decibels, and the
@@ -121,6 +124,7 @@ impl Default for Settings {
             bounce_light: 1.0,
             bloom: 0.3,
             ssao: 1.0,
+            dlss: 0.0,
         }
     }
 }
@@ -224,7 +228,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 27] = [
+const ROWS: [Row; 28] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -381,6 +385,17 @@ const ROWS: [Row; 27] = [
         show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) },
     },
     Row { key: "bloom", page: Page::Graphics, label: "Bloom", min: 0.0, max: 1.0, step: 0.1, get: |s| s.bloom, put: |s, v| s.bloom = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
+    Row {
+        key: "dlss",
+        page: Page::Graphics,
+        label: "DLSS",
+        min: 0.0,
+        max: (crate::graphics::DLSS_MODES.len() - 1) as f32,
+        step: 1.0,
+        get: |s| s.dlss,
+        put: |s, v| s.dlss = v,
+        show: |v| crate::graphics::dlss_label(v),
+    },
     Row { key: "ssao", page: Page::Graphics, label: "Ambient occlusion", min: 0.0, max: 1.0, step: 1.0, get: |s| s.ssao, put: |s, v| s.ssao = v, show: on_off },
     Row { key: "fov_kick", page: Page::Display, label: "Speed FOV increase", min: 0.0, max: 1.5, step: 0.25, get: |s| s.fov_kick, put: |s, v| s.fov_kick = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
     Row { key: "speed_lines", page: Page::Display, label: "Speed lines", min: 0.0, max: 1.0, step: 1.0, get: |s| s.speed_lines, put: |s, v| s.speed_lines = v, show: on_off },
@@ -457,6 +472,7 @@ mod tests {
             bounce_light: 0.5,
             bloom: 0.8,
             ssao: 0.0,
+            dlss: 3.0,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         let wild = Settings::parse("audio = 2\nmaster = 7\nfov = 10\nnonsense\nmusic = x");
