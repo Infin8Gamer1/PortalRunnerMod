@@ -70,6 +70,7 @@ pub struct ChamberMats {
     pub white_floor: Handle<StandardMaterial>,
     pub black_floor: Handle<StandardMaterial>,
     pub glass: Handle<StandardMaterial>,
+    pub frosted: Handle<StandardMaterial>,
     pub grate: Handle<StandardMaterial>,
     pub runner: Handle<StandardMaterial>,
     pub prop: Handle<StandardMaterial>,
@@ -193,6 +194,9 @@ fn cube_texture(accent: [u8; 3]) -> Image {
     image(N, data, false)
 }
 
+/// Portal's glass textures: one tile per 3.25 m (512 texels at Portal's usual quarter-unit
+/// scale).
+const GLASS_TILE: f32 = 3.25;
 /// Goo's texture: one tile per 4 m.
 const GOO_TILE: f32 = 0.25;
 /// How fast it drifts (texture tiles a second) and which way, as Portal's `TextureScroll` does.
@@ -330,14 +334,42 @@ pub fn setup(
         black: materials.add(pbr(&mut images, "black_panel", tiled(std(Color::srgb(0.75, 0.75, 0.78), Some(black_tex), 0.45, 0.4)))),
         white_floor: materials.add(pbr(&mut images, "white_floor", tiled(std(Color::srgb(1.0, 1.0, 1.0), Some(white_floor_tex), 0.8, 0.0)))),
         black_floor: materials.add(pbr(&mut images, "black_floor", tiled(std(Color::srgb(0.8, 0.8, 0.82), Some(black_floor_tex), 0.5, 0.4)))),
+        // Portal's observation glass: clear, faintly blue, ribbed (its normal map), and
+        // refracting what's behind (screen-space transmission). Drawn forward, so it's left
+        // out of the ray-traced scene: light goes through it.
         glass: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.65, 0.85, 0.95, 0.18),
-            alpha_mode: AlphaMode::Blend,
-            perceptual_roughness: 0.05,
-            reflectance: 0.6,
+            base_color: Color::srgb(0.82, 0.89, 0.94),
+            specular_transmission: 0.95,
+            thickness: 0.02,
+            ior: 1.5,
+            perceptual_roughness: 0.03,
+            normal_map_texture: extracted.texture_data("glass_normal").map(|t| images.add(t)),
+            uv_transform: bevy::math::Affine2::from_scale(Vec2::splat(1.0 / GLASS_TILE)),
+            opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
             double_sided: true,
             cull_mode: None,
             ..default()
+        }),
+        // Frosted: Portal's frosted panes (clear bands through them), blended over.
+        frosted: materials.add(match extracted.texture("glass_frosted") {
+            Some(t) => StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(images.add(t)),
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 0.35,
+                uv_transform: bevy::math::Affine2::from_scale(Vec2::splat(1.0 / GLASS_TILE)),
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            },
+            None => StandardMaterial {
+                base_color: Color::srgba(0.75, 0.8, 0.8, 0.6),
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 0.35,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            },
         }),
         grate: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -422,6 +454,7 @@ fn mat_for(m: &ChamberMats, mat: Mat) -> Handle<StandardMaterial> {
         Mat::White => m.white.clone(),
         Mat::Black => m.black.clone(),
         Mat::Glass => m.glass.clone(),
+        Mat::Frosted => m.frosted.clone(),
         Mat::Grate => m.grate.clone(),
         Mat::Runner => m.runner.clone(),
         Mat::Prop => m.prop.clone(),
@@ -473,7 +506,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
                 if let Some(k) = l.me_props.iter().position(|p| p.stand_in.is_some_and(|b| (b.min - s.b.min).length() < 0.01 && (b.max - s.b.max).length() < 0.01)) {
                     commands.entity(e).insert(crate::me_props::StandIn(k));
                 }
-                if s.mat == Mat::Glass {
+                if s.mat.glass() {
                     commands.entity(e).insert(NotShadowCaster);
                 }
             }

@@ -38,3 +38,32 @@ pub fn grill_door_z(l: &mut Level, z: f32, y: f32, x0: f32, x1: f32, w: f32, h: 
     let xm = (x0 + x1) * 0.5;
     l.fizzler([xm - 0.05, y, z - w * 0.5], [xm + 0.05, y + h, z + w * 0.5], Inputs::always());
 }
+
+/// Which way a wall runs: along X (its faces are at fixed z) or along Z (fixed x).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Along {
+    X,
+    Z,
+}
+
+/// An observation room behind a chamber wall, as Portal has over its chambers: a window `w`
+/// wide and `h` high, its sill at `y` and its middle at `c` along the wall, through a wall
+/// whose faces are at `face` (the chamber's side) and `back`; a dark room `depth` deep behind,
+/// lit. Clear glass, or `frosted`.
+#[allow(clippy::too_many_arguments)]
+pub fn observation_room(l: &mut Level, along: Along, c: f32, y: f32, face: f32, back: f32, w: f32, h: f32, depth: f32, frosted: bool) {
+    // (u along the wall, v up, d through it.)
+    let at = |u: f32, v: f32, d: f32| match along {
+        Along::X => [u, v, d],
+        Along::Z => [d, v, u],
+    };
+    let n = (back - face).signum();
+    let (u0, u1) = (c - w * 0.5, c + w * 0.5);
+    let far = back + n * depth;
+    let (floor, ceiling) = (y - 1.0, y + h + 0.8);
+    l.room(at(u0 - 0.5, floor, back.min(far)), at(u1 + 0.5, ceiling, back.max(far)), 0.3, Mat::Black, Mat::Black, Mat::Black);
+    l.cut(at(u0, y, face - n * 0.01), at(u1, y + h, back + n * 0.31));
+    let mid = (face + back) * 0.5;
+    l.solid(if frosted { Mat::Frosted } else { Mat::Glass }, at(u0, y, mid - 0.015), at(u1, y + h, mid + 0.015));
+    l.lamp(at(c, ceiling, back + n * depth * 0.5));
+}

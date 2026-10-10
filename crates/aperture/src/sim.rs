@@ -588,7 +588,7 @@ impl Sim {
         let dd = d * max;
         let reach = Aabb::new(o.min(o + dd) - Vec3::splat(0.01), o.max(o + dd) + Vec3::splat(0.01));
         for (i, s) in self.statics.iter().enumerate() {
-            if !s.b.overlaps(&reach) || (s.mat == Mat::Grate && !mask.grates) || (s.mat == Mat::Glass && !mask.glass) {
+            if !s.b.overlaps(&reach) || (s.mat == Mat::Grate && !mask.grates) || (s.mat.glass() && !mask.glass) {
                 continue;
             }
             if let Some((t, n)) = ray_aabb(o, d, &s.b) {

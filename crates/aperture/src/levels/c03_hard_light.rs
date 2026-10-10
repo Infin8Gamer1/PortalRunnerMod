@@ -59,6 +59,8 @@ pub fn chamber03() -> Level {
     l.door(Inputs::on(0), [4.0, 0.0, -32.6], [7.0, 3.0, -32.4]);
     l.wire(0, &[[-4.0, 0.03, -31.97], [-3.0, 0.03, -31.97], [3.9, 0.03, -31.97]]);
     kit::exit_room(&mut l, (2.5, 8.5), (-39.0, -33.0), 0.0);
+    // An observation room over the far side, looking down on the goo.
+    kit::observation_room(&mut l, kit::Along::X, -3.0, 7.5, -32.0, -33.0, 5.0, 2.2, 3.5, false);
     l.cut([4.0, 0.0, -33.6], [7.0, 3.0, -32.4]);
 
     l.hint([-10.0, 0.0, -6.0], [10.0, 4.0, 6.0], "The bridge goes into a portal where it meets the wall. Point the other portal across the goo.");

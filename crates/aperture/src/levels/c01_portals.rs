@@ -30,6 +30,8 @@ pub fn chamber01() -> Level {
     // The front wall behind the spawn: black, so the first portals go where they're meant to.
     l.repaint(Mat::Black, [-7.0, 0.0, 4.0], [7.0, 10.0, 5.0]);
     l.spawn([0.0, 0.0, 1.5], 0.0);
+    // Someone's watching: an observation room high in the right-hand wall.
+    kit::observation_room(&mut l, kit::Along::Z, -10.0, 6.5, 7.0, 8.0, 6.0, 2.0, 3.5, false);
     kit::lamps(&mut l, (-7.0, 7.0), (-18.0, 4.0), 10.0, 7.0);
 
     // The ledge: black sides (no portals), too tall to climb.

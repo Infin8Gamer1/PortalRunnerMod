@@ -21,6 +21,8 @@ pub enum Mat {
     Black,
     /// Glass: solid, see-through, no portals; stops portal shots and lasers.
     Glass,
+    /// Frosted glass: the same, but you can only make out shapes through it.
+    Frosted,
     /// Grating: solid to people and cubes, but shots and lasers go through.
     Grate,
     /// Mirror's Edge red: the way to go. No portals.
@@ -40,6 +42,11 @@ impl Mat {
         matches!(self, Mat::White | Mat::Roof | Mat::Wall)
     }
 
+    /// Glass, clear or frosted.
+    pub fn glass(self) -> bool {
+        matches!(self, Mat::Glass | Mat::Frosted)
+    }
+
     /// Whether shots and lasers go through it.
     pub fn see_through(self) -> bool {
         matches!(self, Mat::Grate)
@@ -52,7 +59,7 @@ impl Mat {
             Mat::Roof | Mat::Concrete => Look::Roof,
             Mat::Black | Mat::Grate => Look::Runner,
             Mat::Runner => Look::Runner,
-            Mat::Glass | Mat::Prop => Look::Prop,
+            Mat::Glass | Mat::Frosted | Mat::Prop => Look::Prop,
         }
     }
 }

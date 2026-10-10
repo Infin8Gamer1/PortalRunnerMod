@@ -32,7 +32,8 @@ launch animation along.
 If Portal with RTX is installed too (or passed with `--portal-rtx <dir>`), its remaster is used
 where it has one, for the ray-traced lighting: the chamber's walls and floors take its
 physically based materials (normal, roughness and metallic maps), the deadly goo its toxic
-water (glossy: under ray tracing the chamber shows in it), and Portal's own versions of
+water (glossy: under ray tracing the chamber shows in it). Observation windows use Portal's
+ribbed glass, refracting the room behind, and its frosted panes. Portal's own versions of
 the storage cube, floor and pedestal buttons, dropper iris, round chamber door and grill
 emitters replace Portal 2's, with their maps. (Portal 2's mechanics, lasers, light bridges,
 faith plates, gel, cube sockets and the reflection cube, have no Portal version and stay
@@ -217,7 +218,7 @@ The capture mode plays a scripted run and saves screenshots into the folder: scr
 `portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
 screenshot every frame), `flingfilm` (the same, falling through a floor portal),
 `cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors),
-`plate` (the faith plate throwing), `goo` (goo pits), `rtx` (close-ups of Portal with RTX's pieces) and
+`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `rtx` (close-ups of Portal with RTX's pieces) and
 `tour` (each map's start), in `src/capture.rs`. Each screenshot's line says how long frames
 really take (the game's own clock is fixed at 60 a second while capturing). `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 
