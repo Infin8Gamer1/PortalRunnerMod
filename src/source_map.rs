@@ -102,6 +102,11 @@ pub struct Lamps(pub HashSet<AssetId<StandardMaterial>>);
 const PANEL_GLOW: f32 = 6.0;
 /// A Portal light's brightness to our lumens.
 const LUMENS_PER_BRIGHTNESS: f32 = 2500.0;
+/// Under ray tracing, each light is a small glowing bulb: its radius, and how brightly it
+/// glows for each unit of Portal's brightness (about one ceiling lamp's light for an ordinary
+/// 200).
+const BULB_RADIUS: f32 = 0.1;
+const BULB_GLOW: f32 = 6.0;
 /// At most this many of a map's lights are lights here.
 const MAX_LIGHTS: usize = 96;
 
@@ -310,9 +315,15 @@ pub fn sync(
     // The map's lights, brightest first.
     let mut lights = level.lights.clone();
     lights.sort_by(|a, b| b.brightness.total_cmp(&a.brightness));
+    let bulb = crate::raytrace::active().then(|| meshes.add(Sphere::new(BULB_RADIUS).mesh().ico(1).unwrap()));
     for l in lights.iter().take(MAX_LIGHTS) {
         let color = Color::linear_rgb(l.color.x, l.color.y, l.color.z);
         let intensity = l.brightness * LUMENS_PER_BRIGHTNESS;
+        // Ray tracing lights by what glows, not by lights: a bulb where each one is.
+        if let Some(bulb) = &bulb {
+            let glow = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::from_vec3(l.color * l.brightness * BULB_GLOW), ..default() });
+            commands.spawn((ChamberGeom, Mesh3d(bulb.clone()), MeshMaterial3d(glow), Transform::from_translation(l.at), NotShadowCaster));
+        }
         match l.spot {
             Some((dir, cone)) => {
                 commands.spawn((
