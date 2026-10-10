@@ -853,7 +853,7 @@ impl Sim {
         if self.statics.iter().any(|s| s.b.overlaps(&front)) {
             return false;
         }
-        if self.doors.iter().any(|d| d.solid() && d.b.overlaps(&front)) {
+        if self.doors.iter().any(|d| d.solid() && d.b.overlaps(&front)) || self.movers.iter().any(|m| m.boxes().any(|b| b.overlaps(&front))) {
             return false;
         }
         // Not over the other portal.

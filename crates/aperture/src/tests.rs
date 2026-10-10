@@ -883,3 +883,64 @@ fn portals_chamber_00_lift_carries_her_up() {
     assert!((c.feet.y - (floor + 14.63)).abs() < 0.3, "the lift didn't take her up: {} (from {floor})", c.feet);
     assert_eq!(c.state, State::Ground);
 }
+
+/// Chamber 00's exit: into the last elevator, and its ride up ends the chamber (its path's
+/// last node changes the level).
+#[test]
+fn portals_chamber_00_exit_elevator_finishes_it() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let mut level = crate::source::level("testchmb_a_00", "00", &solids, &ents);
+    level.spawn([6.50, 15.1, 9.75], 0.0);
+    let (mut sim, mut c) = start(level);
+    let ev = run(&mut sim, &mut c, 40.0, |_, _| Input::default());
+    assert!(sim.complete, "the ride didn't end the chamber (at {})", c.feet);
+    assert!(ev.contains(&SimEvent::LevelComplete));
+}
+
+/// Portal's white walls take portals: in each map with a gun, shots from a few metres in front
+/// of its big white walls open portals on them.
+#[test]
+fn portals_maps_white_walls_take_portals() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let mut bad = Vec::new();
+    for name in &names {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        if !level.gun.blue {
+            continue;
+        }
+        let (mut sim, c) = start(level);
+        let solid = |sim: &Sim, p: Vec3| sim.statics.iter().any(|s| crate::geom::contains(&s.b, p));
+        let (mut tried, mut opened) = (0, 0);
+        let walls: Vec<_> = sim.statics.iter().filter(|s| s.mat == Mat::White).map(|s| s.b).collect();
+        for b in walls {
+            let size = b.size();
+            for n in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z] {
+                // A face at least 2 m wide and 3 m tall.
+                let wide = if n.x != 0.0 { size.z } else { size.x };
+                if wide < 2.0 || size.y < 3.0 || tried >= 40 {
+                    continue;
+                }
+                let face = b.center() + n * (if n.x != 0.0 { size.x } else { size.z }) * 0.5;
+                let eye = face + n * 3.0;
+                if solid(&sim, eye) || solid(&sim, face + n * 0.5) {
+                    continue;
+                }
+                tried += 1;
+                let aim = Aim { eye, dir: -n, yaw: c.yaw };
+                if sim.fire(PortalColor::Blue, aim) {
+                    opened += 1;
+                }
+            }
+        }
+        if tried > 0 && opened * 2 < tried {
+            bad.push(format!("{name}: {opened} of {tried} white walls took a portal"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
