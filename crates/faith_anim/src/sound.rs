@@ -211,6 +211,9 @@ pub struct Director {
     /// Looping cues started by a move (the slide scrape is one): in the game the move's code
     /// stops them when it ends, so they're stopped here when the movement state changes.
     move_loops: Vec<(u64, std::mem::Discriminant<MoveState>)>,
+    /// Looping cues started by a skid, which happens on the ground (the state doesn't change
+    /// when it ends): stopped when the skid is over.
+    skid_loops: Vec<u64>,
     run_wind: Option<(u64, f32)>,
     /// Seconds since the last landing played: ground that jitters under her (something loose
     /// she's standing on) can't fire one a frame.
@@ -220,7 +223,7 @@ pub struct Director {
 impl Director {
     /// `cues`: what's loaded (lower-case path → info).
     pub fn new(cues: HashMap<String, CueInfo>) -> Self {
-        Director { cues, rng: 0x9E37_79B9_7F4A_7C15, next_id: 1, last_phase: 0.0, move_loops: vec![], run_wind: None, since_land: 1.0 }
+        Director { cues, rng: 0x9E37_79B9_7F4A_7C15, next_id: 1, last_phase: 0.0, move_loops: vec![], skid_loops: vec![], run_wind: None, since_land: 1.0 }
     }
 
     pub fn rand(&mut self) -> f32 {
@@ -305,6 +308,9 @@ impl Director {
             out.push(SoundCmd::Stop(*id));
             false
         });
+        if !c.skidding {
+            out.extend(self.skid_loops.drain(..).map(SoundCmd::Stop));
+        }
 
         // ---- cues baked into the animations
         if anim_driven {
@@ -359,8 +365,17 @@ impl Director {
                     self.step(9, surface(false), 1.0, &c.state, out);
                 }
                 // TdMove_RumpSlide: the slide's scrape, as a slide.
-                MoveEvent::Slide | MoveEvent::RumpSlide | MoveEvent::Skid => {
+                MoveEvent::Slide | MoveEvent::RumpSlide => {
                     self.play_move("A_Character_Female_01.Body.BodySlide", 0.9, &c.state, out);
+                    self.step(11, surface(false), 1.0, &c.state, out);
+                }
+                MoveEvent::Skid => {
+                    if let Some(cmd) = self.play("A_Character_Female_01.Body.BodySlide", 0.9) {
+                        if let SoundCmd::Play { id, looping: true, .. } = cmd {
+                            self.skid_loops.push(id);
+                        }
+                        out.push(cmd);
+                    }
                     self.step(11, surface(false), 1.0, &c.state, out);
                 }
                 MoveEvent::Vault | MoveEvent::Mantle if !anim_driven => {
@@ -466,5 +481,37 @@ mod tests {
         for want in ["a_character_melee.a_female.fist_head", "a_character_melee.a_female.foot_body", "a_props_interactive.doors.door_hit"] {
             assert!(played.iter().any(|p| p == want), "{want} in {played:?}");
         }
+    }
+
+    /// The skid's scrape loops (the slide's sound), and stops when the skid does, though she
+    /// stays on the ground throughout.
+    #[test]
+    fn skid_scrape_stops_with_the_skid() {
+        let level = greybox::greybox();
+        let cp = &level.checkpoints[0];
+        let mut c = Controller::new(Tuning::default(), cp.spawn, cp.yaw);
+        let mut cues = cues();
+        cues.get_mut("a_character_female_01.body.bodyslide").unwrap().looping = true;
+        let mut d = Director::new(cues);
+        let mut frame = |c: &Controller| {
+            let mut out = vec![];
+            d.update(1.0 / 60.0, c, &[], true, 0.0, &|_| Surface::Concrete, &mut out);
+            out
+        };
+        c.skidding = true;
+        c.events = vec![MoveEvent::Skid];
+        let started = frame(&c);
+        let id = started
+            .iter()
+            .find_map(|s| match s {
+                SoundCmd::Play { id, cue, looping: true, .. } if cue.contains("bodyslide") => Some(*id),
+                _ => None,
+            })
+            .expect("the scrape plays");
+        c.events.clear();
+        assert!(!frame(&c).contains(&SoundCmd::Stop(id)), "still skidding");
+        c.skidding = false;
+        assert!(frame(&c).contains(&SoundCmd::Stop(id)), "the skid is over");
+        assert!(!frame(&c).contains(&SoundCmd::Stop(id)), "stopped once");
     }
 }
