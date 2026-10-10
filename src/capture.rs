@@ -330,6 +330,20 @@ fn script(name: &str) -> Vec<Act> {
             Look(0.0, -45.0),
             Wait(30),
             Shot("r04_floor_button_pressed"),
+            // The door, shut, then open while she stands on its button.
+            Teleport(Vec3::new(-19.5, 0.0, 10.5)),
+            Look(90.0, 0.0),
+            Wait(30),
+            Shot("r05_door"),
+            Teleport(Vec3::new(-16.0, 0.0, 8.3)),
+            Look(90.0, -5.0),
+            Wait(90),
+            Shot("r06_door_open"),
+            // The dropper's iris from below.
+            Teleport(Vec3::new(-16.0, 0.0, 19.5)),
+            Look(0.0, 55.0),
+            Wait(20),
+            Shot("r07_dropper"),
         ],
         // The faith plate at rest from two sides, then (from beside it, after it's thrown her)
         // its paddle snapping up, holding, and settling back into its pit.

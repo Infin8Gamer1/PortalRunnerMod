@@ -190,24 +190,63 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("sign_frame", "portal2", "models/props/sign_frame02/sign_frame02.mdl", 0, 0.0),
 ];
 
-/// Portal with RTX's remastered models: (our name, USD files under `gameReadyAssets` (each
-/// with a turn about X in degrees, for content built lying on its side), what to call each
-/// part by the joint or mesh it comes from (parts not listed are left out), and a turn about
-/// the vertical in degrees to line it up with the Source model it replaces). Each is written
-/// as `<name>.glb` beside the Portal and Portal 2 models; the game prefers it.
-type RtxModel = (&'static str, &'static [(&'static str, f32)], &'static [(&'static str, &'static str)], f32);
+/// Portal with RTX's remastered models: (our name, USD files under `gameReadyAssets` (each with
+/// turns in degrees about X then Z, in Source space, lining it up with the model it replaces),
+/// and what to call each part by the joint or mesh it comes from; parts not listed are left
+/// out). Each is written as `<name>.glb` beside the Portal and Portal 2 models; the game
+/// prefers it. (Remix's captures of skinned models come a quarter turn round about Z, and some
+/// meshes were built lying on their side.)
+type RtxModel = (&'static str, &'static [(&'static str, f32, f32)], &'static [(&'static str, &'static str)]);
 const RTX_MODELS: &[RtxModel] = &[
     // The Weighted Storage Cube.
-    ("rtx_storage_cube", &[("SubUSDs/SM_Prop_CompanionCube_A1_01.usd", 0.0)], &[("SM_Prop_CompanionCube_A1_01", "body")], 0.0),
-    // The pedestal button: its base, and the button that goes down. (Remix's skinned capture
-    // is a quarter turn round from the MDL.)
-    ("rtx_pedestal_button", &[("skinned/switch001.usd", 0.0)], &[("Root", "Root"), ("Button", "Button")], 90.0),
+    ("rtx_storage_cube", &[("SubUSDs/SM_Prop_CompanionCube_A1_01.usd", 0.0, 0.0)], &[("SM_Prop_CompanionCube_A1_01", "body")]),
+    // The pedestal button: its base, and the button that goes down.
+    ("rtx_pedestal_button", &[("skinned/switch001.usd", 0.0, 90.0)], &[("Root", "Root"), ("Button", "Button")]),
     // The floor button: its base, and the pad a cube or Faith presses down.
     (
         "rtx_floor_button",
-        &[("SubUSDs/SM_Fixture_Superbutton_Base.usd", 0.0), ("SubUSDs/SM_Fixture_Superbutton_Pad.usd", 90.0)],
+        &[("SubUSDs/SM_Fixture_Superbutton_Base.usd", 0.0, 0.0), ("SubUSDs/SM_Fixture_Superbutton_Pad.usd", 90.0, 0.0)],
         &[("SM_Fixture_Superbutton_Base", "base"), ("SM_Fixture_Superbutton_Pad", "button_top")],
-        0.0,
+    ),
+    // The dropper's iris: four leaves that slide apart, and the arms that work them.
+    (
+        "rtx_dropper_cover",
+        &[("skinned/box_dropper_cover.usd", 0.0, 90.0)],
+        &[
+            ("Cover_1", "Cover_1"),
+            ("Cover_2", "Cover_2"),
+            ("Cover_3", "Cover_3"),
+            ("Cover_4", "Cover_4"),
+            ("Scene_Root", "arms"),
+            ("Root", "arms"),
+            ("Arm_1_Slider", "arms"),
+            ("Arm_1_Rot1", "arms"),
+            ("Arm_1_Rot2", "arms"),
+            ("Arm_1_Rot3", "arms"),
+            ("Arm_2_Slider", "arms"),
+            ("Arm_2_Rot1", "arms"),
+            ("Arm_2_Rot2", "arms"),
+            ("Arm_2_Rot3", "arms"),
+            ("Arm_3_Slider", "arms"),
+            ("Arm_3_Rot1", "arms"),
+            ("Arm_3_Rot2", "arms"),
+            ("Arm_3_Rot3", "arms"),
+            ("Arm_4_Slider", "arms"),
+            ("Arm_4_Rot1", "arms"),
+            ("Arm_4_Rot2", "arms"),
+            ("Arm_4_Rot3", "arms"),
+        ],
+    ),
+    // Portal's round chamber door: the frame round the doorway (built lying down), and two
+    // leaves that slide apart.
+    (
+        "rtx_door",
+        &[
+            ("skinned/door_01_frame_reference.usd", -90.0, 0.0),
+            ("skinned/door_01_lftdoor_reference.usd", 0.0, 90.0),
+            ("skinned/door_01_rtdoor_reference.usd", 0.0, 90.0),
+        ],
+        &[("Door_01_Frame_wide_reference_005", "frame"), ("SM_Fixture_RoundDoor_B", "door_left"), ("SM_Fixture_RoundDoor_A", "door_right")],
     ),
 ];
 
@@ -344,8 +383,8 @@ fn main() {
     println!("  {n} models");
     if let Some(r) = &remix {
         let mut n = 0;
-        for (name, files, parts, yaw) in RTX_MODELS {
-            let to_ours = glam::Quat::from_rotation_y(yaw.to_radians()) * glam::Quat::from_mat3(&glam::Mat3::from_cols(glam::Vec3::NEG_Z, glam::Vec3::NEG_X, glam::Vec3::Y));
+        let to_ours = glam::Quat::from_mat3(&glam::Mat3::from_cols(glam::Vec3::NEG_Z, glam::Vec3::NEG_X, glam::Vec3::Y));
+        for (name, files, parts) in RTX_MODELS {
             let convert = |p: glam::Vec3| to_ours * (p * 0.0254);
             let rename = |joint: &str| parts.iter().find(|(j, _)| *j == joint).map(|(_, ours)| ours.to_string());
             match usd::convert(r, files, &convert, to_ours, &rename) {

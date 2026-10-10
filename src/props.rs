@@ -23,6 +23,8 @@ pub const NAMES: &[&str] = &[
     "rtx_storage_cube",
     "rtx_pedestal_button",
     "rtx_floor_button",
+    "rtx_dropper_cover",
+    "rtx_door",
     // Portal 2's.
     "metal_box",
     "companion_cube",
@@ -80,6 +82,8 @@ pub enum PropKind {
     Catcher(usize, bool),
     DoorUpper(usize),
     DoorLower(usize),
+    /// Portal's round door (both leaves, `door_left` and `door_right`, which slide apart).
+    DoorLeft(usize),
     Plate(usize),
     /// A cube in the pool: which prop slot, and the kind of cube this model is.
     Cube(usize, CubeKind),
@@ -171,8 +175,9 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             spawn_model(commands, scene.clone(), Transform::from_translation(p.at).with_scale(Vec3::splat(0.9)), PropKind::Pedestal(i));
         }
     }
-    // Droppers: the tube above the drop point, its iris underneath.
-    if let (Some(body), Some(cover)) = (models.get("box_dropper"), models.get("box_dropper_cover")) {
+    // Droppers: the tube above the drop point, its iris underneath (Portal with RTX remastered
+    // the iris, the same size and parts as Portal 2's, but not the tube).
+    if let (Some(body), Some((cover, _))) = (models.get("box_dropper"), models.first(&["rtx_dropper_cover", "box_dropper_cover"])) {
         r.droppers = true;
         for (i, d) in sim.droppers.iter().enumerate() {
             let tf = Transform::from_translation(d.at + Vec3::Y * (CUBE_HALF + 0.1)).with_scale(Vec3::splat(0.5));
@@ -245,8 +250,25 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             }
         }
     }
-    // Doors: Portal 2's, upper and lower halves parting vertically, fitted to the doorway.
-    if let (Some(upper), Some(lower)) = (models.get("door_upper"), models.get("door_lower")) {
+    // Doors: Portal with RTX's remaster of Portal's round door, its frame fitted to the
+    // doorway and its two leaves sliding apart into the wall.
+    if let Some(door) = models.get("rtx_door") {
+        r.doors = true;
+        for (i, d) in sim.doors.iter().enumerate() {
+            let s = d.b.size();
+            let along = if s.x >= s.z { Vec3::X } else { Vec3::Z };
+            let thick = s.x.min(s.z);
+            let normal = along.cross(Vec3::Y);
+            // The frame is 3.24 wide and 2.75 tall, from the middle of its bottom edge; the
+            // leaves are 0.37 thick.
+            let scale = Vec3::new(s.dot(along) / 3.244, s.y / 2.749, (thick / 0.37).max(0.6));
+            let at = Vec3::new(d.b.center().x, d.b.min.y, d.b.center().z);
+            let tf = Transform::from_translation(at).with_rotation(basis(along, Vec3::Y, normal)).with_scale(scale);
+            spawn_model(commands, door.clone(), tf, PropKind::DoorLeft(i));
+        }
+    }
+    // Else Portal 2's, upper and lower halves parting vertically, fitted to the doorway.
+    else if let (Some(upper), Some(lower)) = (models.get("door_upper"), models.get("door_lower")) {
         r.doors = true;
         for (i, d) in sim.doors.iter().enumerate() {
             let s = d.b.size();
@@ -433,6 +455,13 @@ pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, m
                 let open = if d.opened < 0.7 { (d.opened / 0.15).min(1.0) * (1.0 - ((d.opened - 0.5) / 0.2).clamp(0.0, 1.0)) } else { 0.0 };
                 let out = Vec3::new(p.rest.translation.x, 0.0, p.rest.translation.z).normalize_or_zero();
                 tf.translation = p.rest.translation + out * open * 1.0;
+            }
+            PropKind::DoorLeft(i) if p.name.starts_with("door_") => {
+                // Each leaf slides its own width (and a little) into the wall.
+                let d = &sim.doors[i];
+                let k = 1.0 - (1.0 - d.open).powi(2);
+                let dir = if p.name == "door_left" { -1.0 } else { 1.0 };
+                tf.translation = p.rest.translation + Vec3::X * dir * k * 1.5;
             }
             PropKind::DoorUpper(i) | PropKind::DoorLower(i) => {
                 let d = &sim.doors[i];

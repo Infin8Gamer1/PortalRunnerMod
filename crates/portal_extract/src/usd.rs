@@ -155,23 +155,24 @@ fn part_name(p: &Prim) -> String {
     }
 }
 
-/// Convert the meshes in these USD files (relative to `gameReadyAssets`, each with a turn about
-/// X in degrees for content that lies on its side) to parts, in our space by `convert` (Source
-/// inches, Z up, to ours). `rename` gives each part (named after
+/// Convert the meshes in these USD files (relative to `gameReadyAssets`, each with turns in
+/// degrees about X then Z, in Source space, to line it up with the model it replaces: some are
+/// built lying on their side, Remix's skinned captures are a quarter turn round) to parts, in
+/// our space by `convert` (Source inches, Z up, to ours). `rename` gives each part (named after
 /// its joint or prim) the name the game knows it by, or `None` to leave it out.
-pub fn convert(remix: &Remix, files: &[(&str, f32)], convert: &dyn Fn(Vec3) -> Vec3, to_ours: glam::Quat, rename: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<glb::Part>, Vec<glb::Material>), String> {
+pub fn convert(remix: &Remix, files: &[(&str, f32, f32)], convert: &dyn Fn(Vec3) -> Vec3, to_ours: glam::Quat, rename: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<glb::Part>, Vec<glb::Material>), String> {
     let mut parts: Vec<(String, Gathered)> = Vec::new();
     let mut materials: Vec<glb::Material> = Vec::new();
     let mut material_of: HashMap<(usize, String), usize> = HashMap::new();
-    for (fi, (file, stand_up)) in files.iter().enumerate() {
+    for (fi, (file, about_x, about_z)) in files.iter().enumerate() {
         let usd_dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         let stage = Stage::open(&remix.root().join(file).to_string_lossy()).map_err(|e| format!("{file}: {e}"))?;
         let root = stage.prim(sdf::Path::abs_root()).map_err(|e| e.to_string())?;
         // Skeletons first (bind transforms in our space, by joint name), then meshes.
         let mut skeletons: HashMap<String, Vec<(String, DMat4)>> = HashMap::new();
         let mut meshes: Vec<(Prim, DMat4)> = Vec::new();
-        // A file whose content lies on its side (built Y up) is stood up first.
-        let mut stack = vec![(root, DMat4::from_rotation_x((*stand_up as f64).to_radians()))];
+        let line_up = DMat4::from_rotation_z((*about_z as f64).to_radians()) * DMat4::from_rotation_x((*about_x as f64).to_radians());
+        let mut stack = vec![(root, line_up)];
         while let Some((prim, parent)) = stack.pop() {
             let world = parent * local_transform(&prim);
             let ty = prim.type_name().ok().flatten().map(|t| t.as_str().to_string()).unwrap_or_default();
@@ -182,8 +183,11 @@ pub fn convert(remix: &Remix, files: &[(&str, f32)], convert: &dyn Fn(Vec3) -> V
                             Some(Value::TokenVec(j)) => j.iter().map(|t| t.as_str().rsplit('/').next().unwrap_or_default().to_string()).collect(),
                             _ => Vec::new(),
                         };
+                        // In the skeleton's own space: Remix lines a skinned replacement up by
+                        // its skeleton, whatever transforms sit above it (the door's has a
+                        // quarter turn its points don't need).
                         let binds = match get(&prim, "bindTransforms") {
-                            Some(Value::Matrix4dVec(m)) => m.iter().map(|m| world * matrix(&m.0)).collect(),
+                            Some(Value::Matrix4dVec(m)) => m.iter().map(|m| line_up * matrix(&m.0)).collect(),
                             _ => Vec::new(),
                         };
                         skeletons.insert(prim.path().to_string(), joints.into_iter().zip(binds).collect());
@@ -272,14 +276,19 @@ pub fn convert(remix: &Remix, files: &[(&str, f32)], convert: &dyn Fn(Vec3) -> V
 
             let normal_matrix = |m: &DMat4| glam::DMat3::from_mat4(*m).inverse().transpose();
             let still_name = part_name(&mesh);
+            // A mesh named in the table is one part whatever its joints (the door's two leaves
+            // share one).
+            let whole = rename(&still_name).filter(|n| !n.is_empty()).is_some();
             // Each point's part (by its joint, or the mesh's own) and its transform, once.
             let mut part_of_name: HashMap<String, Option<usize>> = HashMap::new();
             let mut placements: Vec<(DMat4, glam::DMat3)> = Vec::new();
             let point_part: Vec<Option<(usize, usize)>> = joint_of
                 .iter()
                 .map(|joint| {
-                    let (name, place, pivot) = match joint.as_ref().and_then(|j| bind_of(j).map(|b| (j, b))) {
-                        Some((j, bind)) => (j.clone(), world * geom_bind, convert(bind.w_axis.truncate().as_vec3())),
+                    let skinned = skeleton.is_some() && joint.is_some();
+                    let (name, place, pivot) = match joint.as_ref().and_then(|j| bind_of(j).map(|b| (j, b))).filter(|_| !whole) {
+                        Some((j, bind)) => (j.clone(), line_up * geom_bind, convert(bind.w_axis.truncate().as_vec3())),
+                        None if skinned => (still_name.clone(), line_up * geom_bind, convert(line_up.w_axis.truncate().as_vec3())),
                         None => (still_name.clone(), world, convert(world.w_axis.truncate().as_vec3())),
                     };
                     let part = (*part_of_name.entry(name.clone()).or_insert_with(|| {
