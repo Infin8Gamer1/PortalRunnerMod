@@ -58,9 +58,11 @@ fn ue_dir(p: [f32; 3]) -> [f32; 3] {
 fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>) -> Parts {
     let positions: Vec<[f32; 3]> = mesh.positions.iter().map(|&p| ue(p)).collect();
     let normals: Vec<[f32; 3]> = mesh.normals.iter().map(|&n| ue_dir(n)).collect();
+    // Our axes are Unreal's mirrored, which turns cross(normal, tangent) round: so the
+    // bitangent's sign is the other way round too.
     let tangents: Vec<[f32; 4]> = mesh.tangents.iter().map(|&t| {
-        let d = ue_dir(t);
-        [d[0], d[1], d[2], 1.0]
+        let d = ue_dir([t[0], t[1], t[2]]);
+        [d[0], d[1], d[2], -t[3]]
     }).collect();
     mesh.sections
         .iter()

@@ -296,6 +296,19 @@ fn script(name: &str) -> Vec<Act> {
             Look(0.0, -5.0),
             Wait(20),
             Shot("m05_roof_c"),
+            // Close up, for the textures.
+            Teleport(Vec3::new(-3.2, 0.0, 1.0)),
+            Look(90.0, -15.0),
+            Wait(20),
+            Shot("m06_acunit"),
+            Teleport(Vec3::new(-3.0, 0.0, -14.0)),
+            Look(30.0, -20.0),
+            Wait(20),
+            Shot("m07_hatch"),
+            Teleport(Vec3::new(-2.5, -4.0, -88.0)),
+            Look(60.0, 0.0),
+            Wait(20),
+            Shot("m08_cistern"),
         ],
         "menu" => {
             use crate::menu::Screen;

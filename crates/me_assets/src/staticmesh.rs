@@ -5,7 +5,7 @@
 //! bounds (7 f32) · body setup (object) · kDOP nodes and triangles (bulk arrays) · internal
 //! version · [names, if internal version >= 17] · LODs. In LOD0: bulk data (skipped) ·
 //! sections · vertex stream (positions) · UV stream (packed tangent and normal, a colour,
-//! UVs as floats or halves) · shadow-volume stream · vertex count · indices.
+//! UV sets as floats or halves, one of them the lightmap's) · shadow-volume stream · vertex count · indices.
 
 use crate::package::{Cursor, Package};
 use crate::props::Props;
@@ -25,7 +25,8 @@ pub struct StaticMesh {
     /// Unreal units (cm), Unreal axes (Z up).
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
-    pub tangents: Vec<[f32; 3]>,
+    /// TangentX, and in w the sign Unreal gives TangentY = cross(normal, TangentX) * w.
+    pub tangents: Vec<[f32; 4]>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     pub sections: Vec<StaticSection>,
@@ -66,6 +67,9 @@ impl StaticMesh {
     pub fn read(pkg: &Package, name: &str) -> Result<Self> {
         let e = pkg.find("StaticMesh", name).ok_or_else(|| Error::Missing(format!("StaticMesh {name}")))?;
         let props = Props::read(pkg, e)?;
+        // Which UV set is the lightmap's: 0 unless the mesh says otherwise (in this version of
+        // the engine; later ones default to 1). The textures use another, if there is one.
+        let lightmap_uv = props.i32(pkg, "LightMapCoordinateIndex").unwrap_or(0).max(0) as usize;
         let mut c = Cursor::new(&pkg.data, props.end);
         let origin = c.vec3()?;
         let extent = c.vec3()?;
@@ -132,7 +136,8 @@ impl StaticMesh {
             return Err(Error::Format(format!("{nuv} UV items for {nverts} vertices")));
         }
         let uv_bytes = if full_precision { 8 } else { 4 };
-        if usize_ < 12 + uv_bytes * num_uv.min(1) {
+        let uv_set = if num_uv > 1 && lightmap_uv == 0 { 1 } else { 0 };
+        if usize_ < 12 + uv_bytes * (uv_set + 1) {
             return Err(Error::Format(format!("UV item size {usize_}")));
         }
         let mut normals = Vec::with_capacity(nverts);
@@ -140,10 +145,11 @@ impl StaticMesh {
         let mut uvs = Vec::with_capacity(nverts);
         for i in 0..nverts {
             let item = &pkg.data[uat + usize_ * i..uat + usize_ * (i + 1)];
-            tangents.push(packed_normal(&item[0..4]));
+            let [tx, ty, tz] = packed_normal(&item[0..4]);
+            tangents.push([tx, ty, tz, if item[7] >= 128 { 1.0 } else { -1.0 }]);
             normals.push(packed_normal(&item[4..8]));
             // item[8..12]: vertex colour.
-            let uv = &item[12..];
+            let uv = &item[12 + uv_set * uv_bytes..];
             uvs.push(if full_precision {
                 [f32::from_le_bytes(uv[0..4].try_into().unwrap()), f32::from_le_bytes(uv[4..8].try_into().unwrap())]
             } else {

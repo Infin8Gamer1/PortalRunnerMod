@@ -335,3 +335,19 @@ fn the_cop_and_its_disarm_clips() {
     assert!(toes.z < 0.0 && toes.z.abs() > toes.x.abs(), "toes {toes}");
     assert!(head.y > 1.4, "head {head}");
 }
+
+/// Static meshes' textures use the UV set that isn't the lightmap's (here the lightmap's is set
+/// 0 unless the mesh says otherwise): the AC unit's texture runs right to its edges, where its
+/// lightmap is padded; the wire fence, whose lightmap is set 1, keeps set 0.
+#[test]
+fn static_meshes_use_the_texture_uvs() {
+    let Some(dir) = std::env::var_os("ME_INSTALL") else { return };
+    let mut pkgs = Packages::new(&Path::new(&dir).join("TdGame/CookedPC"));
+    let low = |m: &StaticMesh| m.uvs.iter().fold(1.0f32, |a, uv| a.min(uv[0]).min(uv[1]));
+    let (ac, slots) = load_static_mesh(&mut pkgs, "P_Ventilation", "S_ACUnit_05", 64).unwrap();
+    assert!(low(&ac) < 0.01, "AC unit UVs from {}", low(&ac));
+    assert!(slots[0].diffuse.is_some());
+    assert!(ac.tangents.iter().all(|t| t[3].abs() == 1.0));
+    let (fence, _) = load_static_mesh(&mut pkgs, "P_Generic", "S_FenceGenericWire_01a", 64).unwrap();
+    assert!(low(&fence) < 0.001, "fence UVs from {}", low(&fence));
+}

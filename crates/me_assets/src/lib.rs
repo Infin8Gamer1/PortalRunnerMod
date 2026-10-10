@@ -253,7 +253,7 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             let textures = all_textures(pkgs, pkg, m);
             let read = |pick: &dyn Fn(&str) -> bool| {
                 let (tp, ti) = textures.iter().find(|(name, _, _)| pick(name)).map(|(_, p, i)| (p.clone(), *i))?;
-                texture::read_texture(&tp, &tp.exports[ti].name, max_texture).ok()
+                texture::read_texture_export(&tp, &tp.exports[ti], max_texture).ok()
             };
             let mut diffuse = read(&|n| n.contains("diffuse") || n.ends_with("_d") || n.contains("_d_") || n.ends_with("_c"));
             let normal = read(&|n| n.contains("normal") || n.ends_with("_n"));
