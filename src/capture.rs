@@ -307,7 +307,40 @@ fn script(name: &str) -> Vec<Act> {
             Wait(20),
             Shot("p12_bridge_emitter"),
         ],
-        "plate" => vec![Map(0), Wait(90), Teleport(Vec3::new(-14.0, 0.0, -0.5)), Look(0.0, -50.0), Wait(20), Shot("plate_a"), Teleport(Vec3::new(-11.0, 0.0, -4.0)), Look(90.0, -25.0), Wait(20), Shot("plate_b")],
+        // The faith plate at rest from two sides, then (from beside it, after it's thrown her)
+        // its paddle snapping up, holding, and settling back into its pit.
+        "plate" => vec![
+            Map(0),
+            Wait(90),
+            Teleport(Vec3::new(-14.0, 0.0, -0.5)),
+            Look(0.0, -40.0),
+            Wait(20),
+            Shot("plate_a"),
+            Teleport(Vec3::new(-11.0, 0.0, -4.0)),
+            Look(90.0, -25.0),
+            Wait(20),
+            Shot("plate_b"),
+            Teleport(Vec3::new(-14.0, 0.0, -4.0)),
+            Wait(2),
+            Teleport(Vec3::new(-10.5, 0.0, -5.0)),
+            Launch(Vec3::ZERO),
+            Look(75.0, -20.0),
+            Wait(1),
+            Shot("plate_c_launch"),
+            Wait(12),
+            Shot("plate_d_up"),
+            Wait(90),
+            Shot("plate_e_settling"),
+            Wait(120),
+            Shot("plate_f_rest"),
+            // Chamber 03's, which throws along -X.
+            Map(3),
+            Wait(60),
+            Teleport(Vec3::new(6.0, 0.0, -22.8)),
+            Look(85.0, -30.0),
+            Wait(20),
+            Shot("plate_g_c03"),
+        ],
         // Faith's third-person body, seen through portals: from above (a floor portal in
         // front of her, the ceiling portal over her head), then running.
         "body" => vec![

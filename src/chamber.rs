@@ -410,14 +410,23 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         (r.lasers && sim.lasers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.32)))
             || (r.bridges && sim.bridges.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.2)))
     };
+    // Faith plate models sit in pits: holes in the floor as drawn (her feet stay on the
+    // plate as before).
+    let pits: Vec<Aabb> = if r.plates { sim.plates.iter().map(crate::props::plate_pit).collect() } else { Vec::new() };
     // The chamber's boxes (and the boxes of emitters and the like).
     for s in &sim.statics {
         match s.owner {
             Owner::Level(_) if matches!(s.mat, Mat::White | Mat::Black) => {
                 // Floor tiles on top, panels on the sides and underneath.
                 let (side, top) = if s.mat == Mat::White { (&m.white, &m.white_floor) } else { (&m.black, &m.black_floor) };
-                geom(commands, meshes.add(box_faces(&s.b, |n| n.y < 0.5)), side.clone(), Transform::default());
-                geom(commands, meshes.add(box_faces(&s.b, |n| n.y >= 0.5)), top.clone(), Transform::default());
+                let mut pieces = vec![s.b];
+                for pit in &pits {
+                    pieces = pieces.iter().flat_map(|b| aperture::geom::subtract(b, pit)).collect();
+                }
+                for b in &pieces {
+                    geom(commands, meshes.add(box_faces(b, |n| n.y < 0.5)), side.clone(), Transform::default());
+                    geom(commands, meshes.add(box_faces(b, |n| n.y >= 0.5)), top.clone(), Transform::default());
+                }
             }
             Owner::Emitter if emitter_modelled(&s.b) => {}
             Owner::Catcher(_) if r.catchers => {}
@@ -523,7 +532,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     }
     let plate = meshes.add(Cuboid::new(PLATE_HALF * 2.0, PLATE_TOP, PLATE_HALF * 2.0));
     let arrow = meshes.add(Cuboid::new(0.25, 0.01, 0.9));
-    for (i, p) in sim.plates.iter().enumerate() {
+    for (i, p) in sim.plates.iter().enumerate().filter(|_| !r.plates) {
         geom(commands, meshes.add(Cuboid::new(PLATE_HALF * 2.2, 0.04, PLATE_HALF * 2.2)), m.dark.clone(), Transform::from_translation(p.at + Vec3::Y * 0.02));
         let to = p.target - p.at;
         let yaw = (-to.x).atan2(-to.z);

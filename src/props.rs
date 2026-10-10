@@ -1,11 +1,13 @@
 //! Portal's own models for the puzzle pieces (extracted by `portal_extract`): buttons,
-//! pedestal buttons, cubes, droppers, bridge and laser emitters, laser catchers
+//! pedestal buttons, cubes, droppers, faith plates, bridge and laser emitters, laser catchers
 //! and relays, emancipation grill emitters and chamber doors. Each model's moving parts are
 //! named glTF nodes (one per bone); they're found as the scene spawns and moved from the
-//! simulation's state each frame. Anything without a model keeps its stand-in.
+//! simulation's state each frame. The faith plate's launch is Portal 2's own animation, played
+//! at the simulation's clock. Anything without a model keeps its stand-in.
 
 use std::collections::HashMap;
 
+use bevy::animation::graph::AnimationNodeIndex;
 use bevy::prelude::*;
 
 use aperture::sim::{BRIDGE_HALF_WIDTH, BUTTON_TOP, CUBE_HALF};
@@ -27,6 +29,7 @@ pub const NAMES: &[&str] = &[
     "pedestal_button",
     "box_dropper",
     "box_dropper_cover",
+    "faith_plate",
     "bridge_emitter",
     "laser_emitter",
     "laser_catcher",
@@ -38,9 +41,15 @@ pub const NAMES: &[&str] = &[
     "door_frame",
 ];
 
+/// The faith plate's animations, in the order `portal_extract` writes them: thrown at an
+/// angle, and straight up.
+const PLATE_CLIPS: usize = 2;
+
 #[derive(Resource, Default)]
 pub struct PropModels {
     scenes: HashMap<&'static str, Handle<WorldAsset>>,
+    /// The faith plate's launches (angled, straight up), as an animation graph.
+    plate_launch: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; PLATE_CLIPS])>,
 }
 
 impl PropModels {
@@ -64,6 +73,7 @@ pub enum PropKind {
     Catcher(usize, bool),
     DoorUpper(usize),
     DoorLower(usize),
+    Plate(usize),
     /// A cube in the pool: which prop slot, and the kind of cube this model is.
     Cube(usize, CubeKind),
     Static,
@@ -77,7 +87,7 @@ pub struct PropPart {
     rest: Transform,
 }
 
-pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<AssetServer>) {
+pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<AssetServer>, mut graphs: ResMut<Assets<AnimationGraph>>) {
     let mut scenes = HashMap::new();
     for name in NAMES {
         if let Some(path) = extracted.model(name) {
@@ -87,7 +97,12 @@ pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<Asse
     if !scenes.is_empty() {
         info!("Portal models: {} of {}", scenes.len(), NAMES.len());
     }
-    commands.insert_resource(PropModels { scenes });
+    let plate_launch = extracted.model("faith_plate").map(|path| {
+        let clips: [Handle<AnimationClip>; PLATE_CLIPS] = std::array::from_fn(|i| assets.load(GltfAssetLabel::Animation(i).from_asset(path.clone())));
+        let (graph, nodes) = AnimationGraph::from_clips(clips);
+        (graphs.add(graph), std::array::from_fn(|i| nodes[i]))
+    });
+    commands.insert_resource(PropModels { scenes, plate_launch });
 }
 
 fn spawn_model(commands: &mut Commands, scene: Handle<WorldAsset>, tf: Transform, kind: PropKind) -> Entity {
@@ -105,6 +120,7 @@ pub struct Replaced {
     pub buttons: bool,
     pub pedestals: bool,
     pub droppers: bool,
+    pub plates: bool,
     pub bridges: bool,
     pub lasers: bool,
     pub catchers: bool,
@@ -144,8 +160,15 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             spawn_model(commands, cover.clone(), tf, PropKind::DropperCover(i));
         }
     }
-    // (Portal 2's faith plate is left out: its bind pose has the paddle sunk in its pit,
-    // and only its animation raises it; the stand-in plate is used.)
+    // Faith plates: Portal 2's, its paddle on the plate and thrown towards the target. Like
+    // Portal 2's, the plate lies square to the room, so it's turned to whichever way is
+    // nearest.
+    if let (Some(scene), Some(_)) = (models.get("faith_plate"), &models.plate_launch) {
+        r.plates = true;
+        for (i, p) in sim.plates.iter().enumerate() {
+            spawn_model(commands, scene.clone(), plate_transform(p), PropKind::Plate(i));
+        }
+    }
     // Light bridge emitters, on the emitter's face, as wide as the bridge.
     if let Some(scene) = models.get("bridge_emitter") {
         r.bridges = true;
@@ -222,6 +245,40 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
     r
 }
 
+/// Which way a faith plate's model lies: its front (-Z, the way the paddle throws) along
+/// whichever of the room's four directions is nearest its target's.
+fn plate_facing(p: &aperture::sim::Plate) -> Quat {
+    let to = p.target - p.at;
+    let yaw = (-to.x).atan2(-to.z);
+    Quat::from_rotation_y((yaw / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2)
+}
+
+/// Portal 2's faith plate: its frame's half size (a 64 by 128 inch hole in the floor, the
+/// mechanism in a pit below it), and the middle of its paddle, in the model.
+const PLATE_FRAME_HALF: Vec2 = Vec2::new(0.8128, 1.6256);
+const PLATE_PADDLE: Vec3 = Vec3::new(0.03, 0.0, 0.33);
+
+/// Where a faith plate's model goes: its paddle on the plate, its frame level with the floor.
+fn plate_transform(p: &aperture::sim::Plate) -> Transform {
+    let r = plate_facing(p);
+    Transform::from_translation(p.at - r * PLATE_PADDLE).with_rotation(r)
+}
+
+/// The hole a faith plate's model needs in the floor it's set in (a little wider than its
+/// frame, so the floor's edge doesn't fight the frame's walls).
+pub fn plate_pit(p: &aperture::sim::Plate) -> faith_move::Aabb {
+    let tf = plate_transform(p);
+    let h = (tf.rotation * Vec3::new(PLATE_FRAME_HALF.x, 0.0, PLATE_FRAME_HALF.y)).abs() + Vec3::new(0.005, 0.0, 0.005);
+    let c = tf.translation;
+    faith_move::Aabb::new(Vec3::new(c.x - h.x, c.y - 2.0, c.z - h.z), Vec3::new(c.x + h.x, c.y + 0.01, c.z + h.z))
+}
+
+/// Which launch a plate plays: straight up when its target's (nearly) over it.
+fn plate_clip(p: &aperture::sim::Plate) -> usize {
+    let to = p.target - p.at;
+    if Vec2::new(to.x, to.z).length() < 1.0 { 1 } else { 0 }
+}
+
 /// A right and up for something facing `dir` (up is world up unless it faces straight up or
 /// down).
 fn frame_for(dir: Vec3) -> (Vec3, Vec3) {
@@ -259,6 +316,57 @@ pub fn tag_parts(
                 commands.entity(e).insert(PropPart { kind: *kind, name: name.as_str().to_string(), rest: *tf });
                 break;
             }
+        }
+    }
+}
+
+/// A faith plate model's animation player, and which plate it's for.
+#[derive(Component)]
+pub struct PlatePlayer(usize);
+
+/// Give each faith plate's animation player (on its model's root, as the scene spawns) the
+/// launch animations.
+pub fn tag_plate_players(
+    mut commands: Commands,
+    added: Query<Entity, Added<AnimationPlayer>>,
+    parents: Query<&ChildOf>,
+    roots: Query<&PropKind>,
+    models: Res<PropModels>,
+) {
+    let Some((graph, _)) = &models.plate_launch else { return };
+    for e in &added {
+        let mut cur = e;
+        for _ in 0..8 {
+            let Ok(p) = parents.get(cur) else { break };
+            cur = p.parent();
+            if let Ok(PropKind::Plate(i)) = roots.get(cur) {
+                commands.entity(e).insert((AnimationGraphHandle(graph.clone()), PlatePlayer(*i)));
+                break;
+            }
+        }
+    }
+}
+
+/// Pose each faith plate at its launch animation's time since it last fired (its last frame,
+/// at rest, once that's past). The simulation's clock drives it, so it pauses with the game.
+pub fn animate_plates(game: Res<Game>, models: Res<PropModels>, clips: Res<Assets<AnimationClip>>, graphs: Res<Assets<AnimationGraph>>, mut players: Query<(&PlatePlayer, &mut AnimationPlayer)>) {
+    let Some((graph, nodes)) = &models.plate_launch else { return };
+    let Some(graph) = graphs.get(graph) else { return };
+    for (pp, mut player) in &mut players {
+        let Some(plate) = game.sim.plates.get(pp.0) else { continue };
+        let node = nodes[plate_clip(plate)];
+        let Some(clip) = graph.get(node).and_then(|n| match &n.node_type {
+            AnimationNodeType::Clip(h) => clips.get(h),
+            _ => None,
+        }) else {
+            continue;
+        };
+        if !player.is_playing_animation(node) {
+            player.stop_all();
+            player.start(node).pause();
+        }
+        if let Some(active) = player.animation_mut(node) {
+            active.set_seek_time(plate.fired.clamp(0.0, clip.duration()));
         }
     }
 }

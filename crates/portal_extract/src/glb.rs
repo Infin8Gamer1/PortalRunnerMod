@@ -1,6 +1,6 @@
 //! A minimal glTF binary (.glb) writer: a root node with a child node per part (each its own
 //! mesh, placed at its pivot so it can be moved or turned about it), a primitive per material,
-//! each material's texture embedded as PNG.
+//! each material's texture embedded as PNG, and any animations as keyframes on the parts.
 
 use serde_json::{json, Value};
 
@@ -22,13 +22,21 @@ pub struct Part {
     pub prims: Vec<(Vec<u32>, usize)>,
 }
 
+/// An animation: keyframe times, and each moving part's place (relative to the root) at each.
+pub struct Clip {
+    pub name: String,
+    pub times: Vec<f32>,
+    /// (part index, translation and rotation per keyframe).
+    pub tracks: Vec<(usize, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
+}
+
 fn pad4(buf: &mut Vec<u8>, byte: u8) {
     while buf.len() % 4 != 0 {
         buf.push(byte);
     }
 }
 
-pub fn write(parts: &[Part], mats: &[Material]) -> Vec<u8> {
+pub fn write(parts: &[Part], mats: &[Material], clips: &[Clip]) -> Vec<u8> {
     let mut bin: Vec<u8> = Vec::new();
     let mut views: Vec<Value> = Vec::new();
     let mut accessors: Vec<Value> = Vec::new();
@@ -107,6 +115,37 @@ pub fn write(parts: &[Part], mats: &[Material]) -> Vec<u8> {
         meshes.push(json!({"name": part.name, "primitives": primitives}));
         nodes.push(json!({"name": part.name, "mesh": meshes.len() - 1, "translation": part.pivot}));
     }
+    let mut animations: Vec<Value> = Vec::new();
+    for clip in clips {
+        let mut floats = |bin: &mut Vec<u8>, values: &[f32], kind: &str, n: usize| -> usize {
+            pad4(bin, 0);
+            let start = bin.len();
+            for f in values {
+                bin.extend_from_slice(&f.to_le_bytes());
+            }
+            views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start}));
+            let mut a = json!({"bufferView": views.len() - 1, "componentType": 5126, "count": values.len() / n, "type": kind});
+            if kind == "SCALAR" {
+                let (lo, hi) = values.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+                a["min"] = json!([lo]);
+                a["max"] = json!([hi]);
+            }
+            accessors.push(a);
+            accessors.len() - 1
+        };
+        let input = floats(&mut bin, &clip.times, "SCALAR", 1);
+        let mut samplers = Vec::new();
+        let mut channels = Vec::new();
+        for (part, translations, rotations) in &clip.tracks {
+            let t = floats(&mut bin, &translations.concat(), "VEC3", 3);
+            let r = floats(&mut bin, &rotations.concat(), "VEC4", 4);
+            for (output, path) in [(t, "translation"), (r, "rotation")] {
+                samplers.push(json!({"input": input, "output": output, "interpolation": "LINEAR"}));
+                channels.push(json!({"sampler": samplers.len() - 1, "target": {"node": part + 1, "path": path}}));
+            }
+        }
+        animations.push(json!({"name": clip.name, "samplers": samplers, "channels": channels}));
+    }
     pad4(&mut bin, 0);
 
     let mut doc = json!({
@@ -120,6 +159,9 @@ pub fn write(parts: &[Part], mats: &[Material]) -> Vec<u8> {
         "accessors": accessors,
         "materials": materials,
     });
+    if !animations.is_empty() {
+        doc["animations"] = json!(animations);
+    }
     if !images.is_empty() {
         doc["images"] = json!(images);
         doc["textures"] = json!(textures);

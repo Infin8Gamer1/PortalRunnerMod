@@ -24,10 +24,11 @@ cargo run --release
 
 The extractor finds the games in the usual Steam folders (Linux and Windows); otherwise pass
 `--portal <dir>` and `--portal2 <dir>`. Run it again after pulling changes that add models: the
-puzzle pieces (buttons, cube sockets, pedestal buttons, cubes, droppers, chamber doors, grill
-emitters, laser emitters, catchers and relays, light bridge emitters) use Portal 2's models
-when they're extracted, and stand-ins when they aren't. `--inspect <model.mdl>...` describes
-models (parts, bones, size) instead of extracting. Mirror's Edge is found the same way, or set
+puzzle pieces (buttons, cube sockets, pedestal buttons, cubes, droppers, faith plates, chamber
+doors, grill emitters, laser emitters, catchers and relays, light bridge emitters) use Portal
+2's models when they're extracted, and stand-ins when they aren't. The faith plate brings its
+launch animation along. `--inspect <model.mdl>...` describes models (parts, bones, size,
+animations) instead of extracting. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
 **DLSS** (NVIDIA RTX, Vulkan) is a build option, since it needs NVIDIA's DLSS SDK, which you
@@ -170,8 +171,8 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   level.rs                the level description and its builder
   levels/                 the chambers (kit.rs: shared pieces)
   tests.rs                the mechanics, and each chamber beaten by script
-crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB) out of
-                        your Portal and Portal 2 VPKs
+crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
+                        their animations) out of your Portal and Portal 2 VPKs
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces

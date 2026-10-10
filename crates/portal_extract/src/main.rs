@@ -9,6 +9,7 @@
 //! Without arguments it looks in the usual Steam folders. Nothing it writes is part of the
 //! project: run it on your own machine, against your own copies of the games.
 
+mod anim;
 mod glb;
 mod vpk;
 
@@ -185,6 +186,13 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("sign_frame", "portal2", "models/props/sign_frame02/sign_frame02.mdl", 0, 0.0),
 ];
 
+/// Animations to bring along: (our model name, [(the MDL's animation, our name for it)]). A
+/// model with any is drawn as its `@idle` animation poses it (its bind pose if it has none).
+const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
+    // The paddle snapping up to throw, holding, then settling back into its pit.
+    ("faith_plate", &[("@angled", "angled"), ("@straightup", "straightup")]),
+];
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = arg(&args, "--out").unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted"));
@@ -272,7 +280,8 @@ fn main() {
             missing.push(*name);
             continue;
         };
-        match convert_model(g, &games, path, *skin, *turn) {
+        let anims = ANIMATIONS.iter().find(|(n, _)| n == name).map(|(_, a)| *a).unwrap_or_default();
+        match convert_model(g, &games, path, *skin, *turn, anims) {
             Ok(bytes) => {
                 std::fs::write(out.join("models").join(format!("{name}.glb")), bytes).expect("write model");
                 n += 1;
@@ -331,8 +340,14 @@ fn inspect(games: &[Game], mdl_path: &str) {
         println!("  material {i}: {}", t.name);
     }
     println!("  skins: {}", model.skin_tables().count());
-    for a in model.animations() {
-        println!("  animation {:?}", a.name);
+    let bones: Vec<&vmdl::mdl::Bone> = model.bones().collect();
+    match anim::read(&mdl, &bones) {
+        Ok(anims) => {
+            for a in &anims {
+                println!("  animation {:?}: {} frames at {} fps", a.name, a.frames.len(), a.fps);
+            }
+        }
+        Err(e) => println!("  animations unreadable: {e}"),
     }
 }
 
@@ -364,10 +379,6 @@ fn vmt_base_texture(text: &str) -> Option<String> {
 fn convert_point(p: [f32; 3]) -> [f32; 3] {
     const M: f32 = 0.0254;
     [-p[1] * M, p[2] * M, -p[0] * M]
-}
-
-fn convert_dir(p: [f32; 3]) -> [f32; 3] {
-    [-p[1], p[2], -p[0]]
 }
 
 /// A material's look, from its VMT: the base texture (following `include`s, for Portal 2's
@@ -430,16 +441,16 @@ fn vmt_value(text: &str, key: &str) -> Option<String> {
 
 /// Each bone's place in the model's bind pose (Source space), from its pose-to-bone matrix.
 fn bone_transforms(model: &vmdl::Model) -> Vec<glam::Vec3> {
+    pose_to_bone(model).iter().map(|m| m.inverse().translation.into()).collect()
+}
+
+/// Each bone's pose-to-bone matrix: from the model's bind pose into the bone's own space.
+fn pose_to_bone(model: &vmdl::Model) -> Vec<glam::Affine3A> {
     model
         .bones()
         .map(|b| {
             let m: [[f32; 4]; 3] = bytemuck::cast(b.pose_to_bone);
-            let rot = glam::Mat3::from_cols(
-                glam::Vec3::new(m[0][0], m[1][0], m[2][0]),
-                glam::Vec3::new(m[0][1], m[1][1], m[2][1]),
-                glam::Vec3::new(m[0][2], m[1][2], m[2][2]),
-            );
-            glam::Affine3A::from_mat3_translation(rot, glam::Vec3::new(m[0][3], m[1][3], m[2][3])).inverse().translation.into()
+            glam::Affine3A::from_cols_array(&[m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2], m[0][3], m[1][3], m[2][3]])
         })
         .collect()
 }
@@ -451,9 +462,12 @@ fn root_turn(model: &vmdl::Model, p: [f32; 3]) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
 
-/// Convert a model (with skin `skin`) to glTF: a part per bone that moves any of it.
-fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32) -> Result<Vec<u8>, String> {
-    let turn = glam::Quat::from_rotation_z(turn_deg.to_radians());
+/// Convert a model (with skin `skin`) to glTF: a part per bone that moves any of it, and the
+/// animations `anims` names ((the MDL's name, ours)) as keyframes on those parts.
+fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32, anims: &[(&str, &str)]) -> Result<Vec<u8>, String> {
+    // Source space to ours (see `convert_point`), then the extra turn.
+    let to_ours = glam::Quat::from_rotation_z(turn_deg.to_radians()) * glam::Quat::from_mat3(&glam::Mat3::from_cols(glam::Vec3::NEG_Z, glam::Vec3::NEG_X, glam::Vec3::Y));
+    let convert = |p: glam::Vec3| to_ours * (p * 0.0254);
     let read = |p: &str| game.read(p).or_else(|| all.iter().find_map(|g| g.read(p)));
     let mdl = read(mdl_path).ok_or("no .mdl")?;
     let stem = mdl_path.trim_end_matches(".mdl");
@@ -464,19 +478,56 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
         vmdl::Vtx::read(&vtx).map_err(|e| e.to_string())?,
         vmdl::Vvd::read(&vvd).map_err(|e| e.to_string())?,
     );
-    let bones = bone_transforms(&model);
     let names: Vec<String> = model.bones().map(|b| b.name.clone()).collect();
+    let bone_count = names.len();
     let vertices = model.vertices();
     let bone_of = |i: usize| -> usize {
-        vertices[i].bone_weights.weights().max_by(|a, b| a.weight.total_cmp(&b.weight)).map(|w| w.bone_id as usize).unwrap_or(0).min(bones.len().saturating_sub(1))
+        vertices[i].bone_weights.weights().max_by(|a, b| a.weight.total_cmp(&b.weight)).map(|w| w.bone_id as usize).unwrap_or(0).min(bone_count.saturating_sub(1))
     };
+
+    // Where each bone rests, and what takes a bind-pose vertex of its to where it rests. A
+    // still model is as its bind pose has it (turned upright the way `vmdl` sees it); one that
+    // moves, as its own animations pose it.
+    let parents: Vec<i32> = model.bones().map(|b| b.parent).collect();
+    let (rest, skinning, clips_src) = if anims.is_empty() {
+        let root = |p: glam::Vec3| glam::Vec3::from(root_turn(&model, p.to_array()));
+        let rest: Vec<glam::Affine3A> = bone_transforms(&model).into_iter().map(|t| glam::Affine3A::from_translation(root(t))).collect();
+        (rest, None, Vec::new())
+    } else {
+        let bones: Vec<&vmdl::mdl::Bone> = model.bones().collect();
+        let mut decoded = anim::read(&mdl, &bones)?;
+        let to_bone = pose_to_bone(&model);
+        let rest = match decoded.iter().find(|a| a.name.eq_ignore_ascii_case("@idle")) {
+            Some(idle) => idle.world(0, &parents),
+            None => to_bone.iter().map(|m| m.inverse()).collect(),
+        };
+        let skinning: Vec<glam::Affine3A> = rest.iter().zip(&to_bone).map(|(r, m)| *r * *m).collect();
+        let mut clips = Vec::new();
+        for (theirs, ours) in anims {
+            let i = decoded.iter().position(|a| a.name.eq_ignore_ascii_case(theirs)).ok_or_else(|| format!("no animation {theirs}"))?;
+            clips.push((decoded.swap_remove(i), *ours));
+        }
+        (rest, Some(skinning), clips)
+    };
+    let place = |b: usize, p: [f32; 3]| -> glam::Vec3 {
+        match &skinning {
+            Some(s) => convert(s[b].transform_point3(p.into())),
+            None => convert(root_turn(&model, p).into()),
+        }
+    };
+    let place_dir = |b: usize, n: [f32; 3]| -> glam::Vec3 {
+        match &skinning {
+            Some(s) => to_ours * s[b].transform_vector3(n.into()).normalize_or_zero(),
+            None => to_ours * glam::Vec3::from(root_turn(&model, n)),
+        }
+    };
+    let pivot_of = |b: usize| -> glam::Vec3 { convert(rest.get(b).map(|t| t.translation.into()).unwrap_or_default()) };
 
     let skin_table = model.skin_tables().nth(skin).or_else(|| model.skin_tables().next());
     let mut materials: Vec<glb::Material> = Vec::new();
     let mut material_of: HashMap<i32, usize> = HashMap::new();
     // Parts by bone: (local vertices, global -> local, triangles by material).
     let mut parts: HashMap<usize, (Vec<([f32; 3], [f32; 3], [f32; 2])>, HashMap<usize, u32>, HashMap<usize, Vec<u32>>)> = HashMap::new();
-    let pivot_of = |b: usize| -> [f32; 3] { (turn * glam::Vec3::from(convert_point(root_turn(&model, bones.get(b).map(|t| t.to_array()).unwrap_or([0.0; 3]))))).to_array() };
     for mesh in model.meshes() {
         let m = mesh.material_index();
         let mat = match material_of.get(&m) {
@@ -502,9 +553,9 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
                 for &g in &[t[0], t[2], t[1]] {
                     let local = *remap.entry(g).or_insert_with(|| {
                         let v = &vertices[g];
-                        let p = (turn * glam::Vec3::from(convert_point(root_turn(&model, v.position.into())))).to_array();
-                        let n = (turn * glam::Vec3::from(convert_dir(root_turn(&model, v.normal.into())))).to_array();
-                        verts.push(([p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]], n, v.texture_coordinates));
+                        let p = place(b, v.position.into()) - pivot;
+                        let n = place_dir(b, v.normal.into());
+                        verts.push((p.to_array(), n.to_array(), v.texture_coordinates));
                         (verts.len() - 1) as u32
                     });
                     tris.entry(mat).or_default().push(local);
@@ -514,14 +565,39 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
     }
     let mut keys: Vec<usize> = parts.keys().copied().collect();
     keys.sort();
+
+    // Each clip: every part that moves, placed (relative to the root) at each frame. A part
+    // goes wherever its bone goes from where it rests.
+    let mut clips = Vec::new();
+    for (a, name) in &clips_src {
+        let mut tracks: Vec<(usize, Vec<[f32; 3]>, Vec<[f32; 4]>)> = keys.iter().enumerate().map(|(i, _)| (i, Vec::new(), Vec::new())).collect();
+        for f in 0..a.frames.len() {
+            let world = a.world(f, &parents);
+            for (track, &b) in tracks.iter_mut().zip(&keys) {
+                let moved = world[b] * rest[b].inverse();
+                let (_, r, t) = moved.to_scale_rotation_translation();
+                let r = (to_ours * r * to_ours.inverse()).normalize();
+                track.1.push((r * pivot_of(b) + convert(t)).to_array());
+                track.2.push(r.to_array());
+            }
+        }
+        // Leave out the parts that never move.
+        tracks.retain(|(i, ts, rs)| {
+            let pivot = pivot_of(keys[*i]);
+            ts.iter().any(|t| glam::Vec3::from(*t).distance(pivot) > 1e-4) || rs.iter().any(|r| glam::Quat::from_array(*r).angle_between(glam::Quat::IDENTITY) > 1e-4)
+        });
+        let times = (0..a.frames.len()).map(|f| f as f32 / a.fps.max(1.0)).collect();
+        clips.push(glb::Clip { name: name.to_string(), times, tracks });
+    }
+
     let out: Vec<glb::Part> = keys
         .into_iter()
         .map(|b| {
             let (verts, _, tris) = parts.remove(&b).unwrap();
             let mut prims: Vec<(Vec<u32>, usize)> = tris.into_iter().map(|(m, t)| (t, m)).collect();
             prims.sort_by_key(|p| p.1);
-            glb::Part { name: names.get(b).cloned().unwrap_or_else(|| format!("bone{b}")), pivot: pivot_of(b), verts, prims }
+            glb::Part { name: names.get(b).cloned().unwrap_or_else(|| format!("bone{b}")), pivot: pivot_of(b).to_array(), verts, prims }
         })
         .collect();
-    Ok(glb::write(&out, &materials))
+    Ok(glb::write(&out, &materials, &clips))
 }

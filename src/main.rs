@@ -118,6 +118,8 @@ fn main() {
         me_props::spawn_for_level,
         props::tag_parts,
         props::animate,
+        props::tag_plate_players,
+        props::animate_plates,
         viewmodel::animate,
         me_viewmodel::animate,
         body3p::animate,
