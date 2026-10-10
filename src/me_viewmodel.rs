@@ -196,6 +196,9 @@ fn spawn_part(
             metallic_roughness_texture: rough,
             normal_map_texture: normal_map,
             reflectance: 0.3,
+            // Skinned on the CPU every frame (no motion for traced light to follow): lit the
+            // ordinary way, as the arms' overlay is anyway.
+            opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
             ..default()
         });
         let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat), Transform::default(), layer.clone(), NotShadowCaster)).id();

@@ -21,6 +21,9 @@ pub struct Capture {
     /// loads. Frames run far faster than 60 a second here, so frame counts alone can shoot
     /// before the renderer's ready (a black frame).
     hold_until: Option<std::time::Instant>,
+    /// Real time per frame (smoothed, ms): the clock the game runs on here is fixed.
+    real_ms: f32,
+    last: Option<std::time::Instant>,
 }
 
 pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
@@ -30,7 +33,7 @@ pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
         game.locked = true;
         // Every frame is 1/60 s of game time, however fast it renders: scripts count frames.
         commands.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / 60.0)));
-        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)) });
+        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)), real_ms: 0.0, last: None });
     }
 }
 
@@ -179,6 +182,35 @@ fn script(name: &str) -> Vec<Act> {
             Wait(3),
             Shot("c_other_side"),
         ],
+        // Lighting: held still (the traced light settles), moving, turned round; indoors and
+        // out.
+        "lighting" => vec![
+            Map(0),
+            Wait(60),
+            Teleport(Vec3::new(0.0, 0.0, 10.0)),
+            Look(0.0, 5.0),
+            Wait(150),
+            Shot("l01_still"),
+            Hold(fwd(), 30),
+            Shot("l02_moving"),
+            Look(150.0, 10.0),
+            Wait(3),
+            Shot("l03_turned"),
+            Wait(150),
+            Shot("l04_turned_settled"),
+            Look(150.0, -70.0),
+            Wait(60),
+            Shot("l04b_looking_down"),
+            Map(1),
+            Wait(150),
+            Shot("l05_chamber01"),
+            Map(5),
+            Wait(150),
+            Shot("l06_outdoor"),
+            Look(160.0, 10.0),
+            Wait(150),
+            Shot("l07_outdoor_back"),
+        ],
         // Speed: sprinting, then far past it on Chamber 04's propulsion gel.
         "speed" => vec![
             Map(4),
@@ -318,7 +350,7 @@ fn script(name: &str) -> Vec<Act> {
             Look(-90.0, 0.0),
             Wait(10),
             Hold(fwd(), 105),
-            Film("w", fwd(), 24),
+            Film("w", fwd(), 50),
         ],
         // Mirror's Edge's props on Chamber 05's roofs, and its ladder.
         "meprops" => vec![
@@ -467,6 +499,22 @@ fn script(name: &str) -> Vec<Act> {
             Shot("r02_hall_angle"),
         ],
         // Chamber 02's fling.
+        // The fling, a frame at a time: into the floor portal, out of the wall.
+        "flingfilm" => vec![
+            Map(2),
+            Wait(30),
+            Teleport(Vec3::new(0.0, 12.0, 0.6)),
+            Wait(10),
+            Look(0.0, -62.0),
+            Wait(5),
+            Fire(PortalColor::Blue),
+            Wait(20),
+            Look(0.0, -20.0),
+            Hold(fwd(), 6),
+            Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), jump_pressed: true, jump_held: true, ..default() }, 1),
+            Hold(MoveInput::default(), 20),
+            Film("f", MoveInput::default(), 60),
+        ],
         "fling" => vec![
             Map(2),
             Wait(30),
@@ -520,6 +568,12 @@ pub fn run(
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
+    let now = std::time::Instant::now();
+    if let Some(last) = cap.last {
+        let ms = (now - last).as_secs_f32() * 1000.0;
+        cap.real_ms = if cap.real_ms == 0.0 { ms } else { cap.real_ms + (ms - cap.real_ms) * 0.1 };
+    }
+    cap.last = Some(now);
     if cap.frame < 20 {
         return;
     }
@@ -577,7 +631,8 @@ pub fn run(
             let path = format!("{}/{name}.png", cap.dir);
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
             println!(
-                "capture: {name}  fps {fps:.0}  feet {} state {} portals {:?} held {:?} props {:?}",
+                "capture: {name}  fps {fps:.0} ({:.1} ms real)  feet {} state {} portals {:?} held {:?} props {:?}",
+                cap.real_ms,
                 game.ctrl.feet,
                 game.ctrl.state.name(),
                 game.sim.portals.iter().map(|p| p.map(|p| p.center)).collect::<Vec<_>>(),

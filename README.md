@@ -41,6 +41,12 @@ Then Settings > Graphics > DLSS offers DLAA, Quality, Balanced, Performance and 
 performance (it replaces the anti-aliasing setting, and the portal views render at its lower
 resolution too). Without the feature, or on a GPU without DLSS, the setting says so.
 
+**Lighting is ray traced** (Bevy's Solari) on GPUs with hardware ray tracing (NVIDIA RTX,
+AMD RX 6000 and later, on Vulkan): the sun, the ceiling panels and everything that glows light
+the chambers directly and by bouncing, traced every frame, through portal views too. Nothing
+is baked. Other GPUs (or Settings > Graphics > Ray-traced lighting off, after a restart, or
+`PORTAL_NORT=1` for one run) light them the ordinary way.
+
 It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were
 in, **Chambers** lists them all with your best times, and **Settings** and **Controls** are
 there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.
@@ -120,9 +126,10 @@ In pages: **Audio** (master, music, effects), **Controls** (mouse sensitivity, f
 funnel**; **Skid delay off speed gel**; **Chamber timer**), **Display** (window: windowed,
 borderless or fullscreen; window size; VSync; a frame-rate cap; brightness; **Speed FOV
 increase**, **Speed lines**, **Portal gun model**) and **Graphics** (anti-aliasing: off, FXAA,
-SMAA, MSAA 4x or TAA; sharpening; the portal views' resolution; shadow quality; **Bounce light
-(GI)**, a one-bounce irradiance volume baked per chamber as it loads; **Bloom**; **Ambient
-occlusion**, which needs MSAA off). They apply at
+SMAA, MSAA 4x or TAA (always TAA with ray tracing: it's what smooths the traced light);
+sharpening; the portal views' resolution; shadow quality; **Ray-traced lighting** (applies at
+the next start); **Bloom**; **Ambient occlusion**, which needs MSAA off and isn't needed with
+ray tracing). They apply at
 once and are saved to `settings.txt` where you run the game. (`PORTAL_NOVSYNC=1` still forces
 VSync off.)
 
@@ -156,7 +163,7 @@ src/hud.rs              crosshair, hints, messages, timer, debug readout
 src/menu.rs             title, pause, chamber select, settings pages, controls
 src/speed_fx.rs         speed FOV kick, speed lines, skid dust
 src/graphics.rs         applying the display and graphics settings, the frame-rate cap
-src/gi.rs               bounce light: baking each chamber's irradiance volume
+src/raytrace.rs         ray-traced lighting (Solari): the traced scene, emissive lights, sky
 src/fonts.rs            the UI font (Inter from the system, if it's there)
 src/progress.rs         best times and the last chamber, saved
 src/portal_audio.rs     Portal's sounds
@@ -179,8 +186,10 @@ PORTAL_CAPTURE=shots PORTAL_SCRIPT=portals cargo run --release
 
 The capture mode plays a scripted run and saves screenshots into the folder: scripts are
 `portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
-screenshot every frame), `cubethrough` (a cube held half through one) and `tour` (each map's
-start), in `src/capture.rs`. `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
+screenshot every frame), `flingfilm` (the same, falling through a floor portal),
+`cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors) and
+`tour` (each map's start), in `src/capture.rs`. Each screenshot's line says how long frames
+really take (the game's own clock is fixed at 60 a second while capturing). `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 
 ## Credits
 

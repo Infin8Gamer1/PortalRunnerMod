@@ -10,7 +10,6 @@ mod capture;
 mod chamber;
 mod extracted;
 mod fonts;
-mod gi;
 mod graphics;
 mod gun;
 mod hud;
@@ -20,6 +19,7 @@ mod menu;
 mod portal_audio;
 mod portal_render;
 mod progress;
+mod raytrace;
 mod props;
 mod settings;
 mod speed_fx;
@@ -74,7 +74,6 @@ fn main() {
     .add_plugins(portal_render::PortalRenderPlugin)
     .add_plugins(speed_fx::SpeedFxPlugin)
     .add_plugins(graphics::GraphicsPlugin)
-    .init_resource::<gi::GiState>()
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
@@ -107,7 +106,6 @@ fn main() {
         speed_fx::update,
         chamber::update,
         me_props::spawn_for_level,
-        gi::update,
         props::tag_parts,
         props::animate,
         viewmodel::animate,
@@ -123,6 +121,8 @@ fn main() {
         hud::update,
     )
         .chain();
+    // Ray-traced lighting is chosen at startup (PORTAL_NORT=1 turns it off for this run).
+    raytrace::add(&mut app, settings::Settings::load().ray_tracing > 0.5 && std::env::var_os("PORTAL_NORT").is_none());
     app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), menu::update, cursor_lock, game).chain());
     app.run();
 }
@@ -244,12 +244,11 @@ fn load_first_level(
     camera: Query<Entity, With<PlayerCamera>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
-    settings: Res<settings::Settings>,
 ) {
     let g = &mut *game;
     g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
-    light_for(&g.sim.level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient, settings.bounce_light > 0.0);
+    light_for(&g.sim.level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     g.flash = None;
 }
 
@@ -262,7 +261,6 @@ fn light_for(
     commands: &mut Commands,
     clear: &mut ClearColor,
     ambient: &mut GlobalAmbientLight,
-    gi: bool,
 ) {
     if let Ok((mut l, mut tf)) = sun.single_mut() {
         if level.indoor {
@@ -271,19 +269,17 @@ fn light_for(
             *tf = Transform::from_xyz(8.0, 30.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y);
         } else {
             l.illuminance = 11_000.0;
-            l.shadow_maps_enabled = true;
+            l.shadow_maps_enabled = !raytrace::active();
             *tf = Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y);
         }
     }
-    // A flat fill on top of the bounce light (gi.rs), which does most of the work when it's on.
-    let flat = if gi { 0.3 } else { 1.0 };
     if level.indoor {
         clear.0 = Color::srgb(0.04, 0.04, 0.05);
-        ambient.brightness = 520.0 * flat;
+        ambient.brightness = 520.0;
         ambient.color = Color::srgb(0.92, 0.95, 1.0);
     } else {
         clear.0 = Color::srgb(0.62, 0.78, 0.93);
-        ambient.brightness = 650.0 * flat;
+        ambient.brightness = 650.0;
         ambient.color = Color::srgb(0.85, 0.92, 1.0);
     }
     if let Some(cam) = camera {
@@ -416,7 +412,7 @@ fn switch_level(
     g.level = level.greybox();
     g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
-    light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient, settings.bounce_light > 0.0);
+    light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     let cp = &level.checkpoints[0];
     g.ctrl.spawn = cp.spawn;
     g.ctrl.spawn_yaw = cp.yaw;

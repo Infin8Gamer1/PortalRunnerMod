@@ -42,6 +42,11 @@ pub const MAX_DEPTH: usize = 4;
 /// opening nor shows up flat across the view through it.
 pub const SURFACE_LIFT: f32 = 0.012;
 
+/// How long (s) a traced first view keeps running after its portal's left the screen.
+const KEEP_TRACED: f32 = 3.0;
+/// How long (s) the view through the portal stays on screen after she's come through it.
+const HANDOFF: f32 = 0.5;
+
 /// How deep the tunnel behind an opening goes: the eye can be this far through before
 /// she's carried across (her eye leads her body).
 const TUNNEL_DEPTH: f32 = 0.6;
@@ -160,6 +165,12 @@ pub struct PortalSurface {
     pub level: usize,
 }
 
+/// Right after she's come through a portal, with traced light: a screen in front of the
+/// player's camera showing the view of the portal she came through, whose camera follows her
+/// on for a moment (`PortalRender::handoff`).
+#[derive(Component)]
+pub struct HandoffScreen;
+
 /// The inside of the tunnel behind a portal: drawn (without the oval) only while the
 /// camera is right at the surface, so stepping through never shows the inside of the wall.
 #[derive(Component)]
@@ -179,6 +190,13 @@ pub struct PortalRender {
     /// Surface materials per colour per level (0..=MAX_DEPTH), and the tunnels'.
     surface_mats: [Vec<Handle<PortalMaterial>>; 2],
     tunnel_mats: [Handle<PortalMaterial>; 2],
+    /// Seconds since each portal's first view was last on screen.
+    since_shown: [f32; 2],
+    /// After she's come through a portal (with traced light): which portal's first view takes
+    /// over the screen, and for how much longer. Up to then she'd seen the room through it,
+    /// and its camera's traced light has settled on it; the player's camera's hasn't (it was
+    /// looking at the portal). It follows her eye while the player's camera catches up.
+    handoff: Option<(PortalColor, f32)>,
 }
 
 pub struct PortalRenderPlugin;
@@ -302,7 +320,16 @@ fn setup(
             NotShadowCaster,
         ));
     }
-    commands.insert_resource(PortalRender { depth: 3, scale: 1.0, size, images: images_per_level, surface_mats, tunnel_mats });
+    commands.spawn((
+        HandoffScreen,
+        Mesh3d(meshes.add(portal_quad(Vec2::ONE))),
+        MeshMaterial3d(tunnel_mats[0].clone()),
+        Transform::default(),
+        Visibility::Hidden,
+        RenderLayers::layer(SURFACE_LAYER),
+        NotShadowCaster,
+    ));
+    commands.insert_resource(PortalRender { depth: 3, scale: 1.0, size, images: images_per_level, surface_mats, tunnel_mats, since_shown: [f32::INFINITY; 2], handoff: None });
 }
 
 /// What a portal camera draws: the world, the surfaces at its level, Faith's body, and her
@@ -314,6 +341,19 @@ fn cam_layers(level: usize, through: bool) -> RenderLayers {
     } else {
         layers
     }
+}
+
+/// Whether any of a portal's opening is in front of a camera and on its screen (strictly:
+/// not counting being in its opening).
+fn in_view(clip_from_world: Mat4, p: &Portal) -> bool {
+    let c = p.corners();
+    let (o, a, b) = (c[0], c[1] - c[0], c[3] - c[0]);
+    (0..=4).any(|i| {
+        (0..=4).any(|j| {
+            let q = clip_from_world * (o + a * (i as f32 / 4.0) + b * (j as f32 / 4.0)).extend(1.0);
+            q.w > 1e-3 && q.x.abs() <= q.w && q.y.abs() <= q.w
+        })
+    })
 }
 
 /// Whether any of a portal's opening shows on a camera's screen.
@@ -354,6 +394,7 @@ pub fn update(
     mut cams: Query<(Entity, &PortalCam, &mut Camera, &mut Transform, &mut Projection, &mut RenderLayers, Option<&mut DistanceFog>), Without<PlayerCamera>>,
     mut surfaces: Query<(&PortalSurface, &mut Transform, &mut Visibility), (Without<PortalCam>, Without<PlayerCamera>, Without<PortalTunnel>)>,
     mut tunnels: Query<(&PortalTunnel, &mut Transform, &mut Visibility), (Without<PortalCam>, Without<PlayerCamera>, Without<PortalSurface>)>,
+    mut screen: Query<(&mut Transform, &mut Visibility, &mut MeshMaterial3d<PortalMaterial>), (With<HandoffScreen>, Without<PortalCam>, Without<PlayerCamera>, Without<PortalSurface>, Without<PortalTunnel>)>,
     mut commands: Commands,
 ) {
     let Ok((main_tf, main_proj, main_fog)) = main.single() else { return };
@@ -388,6 +429,9 @@ pub fn update(
     // Which levels are worth drawing, and where their cameras go.
     let mut active = [[false; MAX_DEPTH + 1]; 2];
     let mut cam_tf = [[Transform::default(); MAX_DEPTH + 1]; 2];
+    // With traced light, a first view keeps running a while after its portal leaves the
+    // screen: started again, it would have none of the light it had gathered (grainy).
+    let keep = if crate::raytrace::active() { KEEP_TRACED } else { 0.0 };
     for c in PortalColor::BOTH {
         cam_tf[c.index()][0] = *main_tf;
         active[c.index()][0] = true;
@@ -395,17 +439,65 @@ pub fn update(
         let q = link.quat();
         for level in 1..=depth {
             let prev = cam_tf[c.index()][level - 1];
+            cam_tf[c.index()][level] = Transform { translation: link.point(prev.translation), rotation: q * prev.rotation, scale: Vec3::ONE };
             if !active[c.index()][level - 1] || !on_screen(clip_of(&prev), prev.translation, &p) {
                 break;
             }
             active[c.index()][level] = true;
-            cam_tf[c.index()][level] = Transform { translation: link.point(prev.translation), rotation: q * prev.rotation, scale: Vec3::ONE };
         }
+    }
+    let dt = time.delta_secs();
+    if let Some((_, left)) = &mut render.handoff {
+        *left -= dt;
+    }
+    if render.handoff.is_some_and(|(_, left)| left <= 0.0) || !linked {
+        render.handoff = None;
+    }
+    if crate::raytrace::active() {
+        for e in &sim.events {
+            if let aperture::SimEvent::Teleported { entered, .. } = *e {
+                render.handoff = Some((entered, HANDOFF));
+            }
+        }
+    }
+    // Looking back at the portal she came out of, the stand-in can't show it right (its view
+    // into it would be one too deep): the player's camera takes back over.
+    if let Some((c, _)) = render.handoff {
+        if sim.portal(c.other()).is_some_and(|o| in_view(clip_of(main_tf), &o)) {
+            render.handoff = None;
+        }
+    }
+    let handoff = render.handoff.map(|(c, _)| c);
+    if let Some(c) = handoff {
+        // Its first view at her eye, and what's beyond it from there.
+        let p = sim.portal(c);
+        let link = sim.link(c);
+        cam_tf[c.index()][1] = *main_tf;
+        active[c.index()][1] = true;
+        for level in 2..=depth {
+            active[c.index()][level] = false;
+        }
+        if let (Some(p), Some(link)) = (p, link) {
+            for level in 2..=depth {
+                let prev = cam_tf[c.index()][level - 1];
+                cam_tf[c.index()][level] = Transform { translation: link.point(prev.translation), rotation: link.quat() * prev.rotation, scale: Vec3::ONE };
+                if !on_screen(clip_of(&prev), prev.translation, &p) {
+                    break;
+                }
+                active[c.index()][level] = true;
+            }
+        }
+    }
+    let mut running = [false; 2];
+    for c in PortalColor::BOTH {
+        let since = &mut render.since_shown[c.index()];
+        *since = if active[c.index()][1] { 0.0 } else { *since + dt };
+        running[c.index()] = linked && *since < keep;
     }
 
     for (e, pc, mut cam, mut tf, mut proj, mut layers, fog) in &mut cams {
         let ci = pc.color.index();
-        let on = linked && pc.level <= depth && active[ci][pc.level];
+        let on = linked && pc.level <= depth && (active[ci][pc.level] || (pc.level == 1 && running[ci]));
         if cam.is_active != on {
             cam.is_active = on;
         }
@@ -413,7 +505,12 @@ pub fn update(
             continue;
         }
         // Her copy through the portal she's in stands where that portal's first camera is.
-        let want = cam_layers(pc.level, !(pc.level == 1 && sim.player_env == Some(pc.color)));
+        let want = if pc.level == 1 && handoff == Some(pc.color) {
+            // Standing in for the player's camera: her own legs, not her body seen from outside.
+            RenderLayers::from_layers(&[0, SURFACE_LAYER + 1, PLAYER_LAYER])
+        } else {
+            cam_layers(pc.level, !(pc.level == 1 && sim.player_env == Some(pc.color)))
+        };
         if *layers != want {
             *layers = want;
         }
@@ -429,10 +526,14 @@ pub fn update(
                 o.fov = fov;
                 o.aspect = aspect;
                 o.near = near;
-                // With the camera already out in front of the exit (her eye through the
-                // opening before she is), there's no wall between it and the view to cut away,
-                // and an oblique near plane behind the camera would cut into the view instead.
-                o.plane = (plane_view.w < -1e-4).then_some(plane_view);
+                // With the camera out in front of the exit (her eye through the opening before
+                // she is) there's no wall left to cut away, and a plane behind the camera would
+                // cut into the view: it's kept just ahead of the camera instead. (Moved, not
+                // dropped: the projection changes smoothly, so the view keeps its history.)
+                let mut plane = plane_view;
+                plane.w = plane.w.min(-near);
+                // Standing in for the player's camera, it sees what that does: no plane.
+                o.plane = (handoff != Some(pc.color) || pc.level != 1).then_some(plane);
             }
         }
         match (main_fog, fog) {
@@ -468,6 +569,21 @@ pub fn update(
                 // closed one.
                 m.uniform.params.x = 0.0;
             }
+        }
+    }
+    // The handoff screen: just past the player's near plane, covering the view.
+    if let Ok((mut tf, mut vis, mut mat)) = screen.single_mut() {
+        match handoff {
+            Some(c) => {
+                let d = near * 3.0;
+                let h = d * (fov * 0.5).tan() * 1.2;
+                *tf = Transform { translation: main_tf.translation + main_tf.forward() * d, rotation: main_tf.rotation, scale: Vec3::new(h * aspect, h, 1.0) };
+                if mat.0 != render.tunnel_mats[c.index()] {
+                    mat.0 = render.tunnel_mats[c.index()].clone();
+                }
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
         }
     }
     // The tunnel: only when the camera is in (or right at) the opening.

@@ -11,7 +11,7 @@ faith_move = { path = "crates/faith_move" }
 me_assets = { path = "crates/me_assets" }
 faith_anim = { path = "crates/faith_anim" }
 aperture = { path = "crates/aperture" }
-bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav", "mp3", "png"] }
+bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "audio", "wav", "mp3", "png", "bevy_solari"] }
 half = "2"
 
 # Fast-ish dev builds: optimize dependencies, keep our code debuggable.

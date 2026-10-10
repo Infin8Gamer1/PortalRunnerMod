@@ -1,7 +1,8 @@
 //! The display and graphics settings, applied: window mode and size, VSync, a frame-rate
 //! cap, brightness, anti-aliasing (on the player's camera and, matched to it, the portal and
 //! viewmodel cameras), sharpening, HDR with bloom and ambient occlusion, the portal views'
-//! resolution and the sun's shadows (indoors too: the chambers' dim fill light).
+//! resolution and the sun's shadows (indoors too: the chambers' dim fill light). With
+//! ray-traced lighting (`raytrace`) there's no MSAA, SSAO or shadow maps: it does without.
 
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,16 @@ pub const RESOLUTIONS: [(u32, u32); 6] = [(1280, 720), (1600, 900), (1920, 1080)
 pub const FPS_CAPS: [u32; 7] = [0, 30, 60, 120, 144, 165, 240];
 pub const WINDOW_MODES: [&str; 3] = ["Windowed", "Borderless", "Fullscreen"];
 pub const AA_MODES: [&str; 5] = ["Off", "FXAA", "SMAA", "MSAA 4x", "TAA"];
+
+/// The anti-aliasing setting as shown: with ray-traced lighting it's always TAA.
+pub fn aa_label(v: f32) -> String {
+    let name = AA_MODES[(v as usize).min(AA_MODES.len() - 1)];
+    if crate::raytrace::active() && name != "TAA" {
+        format!("{name} (TAA: ray tracing)")
+    } else {
+        name.to_string()
+    }
+}
 pub const SHADOWS: [&str; 4] = ["Off", "Low", "Medium", "High"];
 /// DLSS settings, and how much of the window's resolution each renders at.
 pub const DLSS_MODES: [(&str, f32); 6] = [("Off", 1.0), ("DLAA", 1.0), ("Quality", 0.667), ("Balanced", 0.58), ("Performance", 0.5), ("Ultra perf.", 0.333)];
@@ -88,7 +99,7 @@ pub struct GraphicsPlugin;
 
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(Last, frame_cap);
+        app.add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
         #[cfg(feature = "dlss")]
         app.add_systems(PreUpdate, |ok: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>| {
             DLSS_OK.store(ok.is_some(), std::sync::atomic::Ordering::Relaxed);
@@ -147,23 +158,35 @@ fn apply(
     let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
     let dlss = if dlss_on(&settings) { settings.dlss as i32 } else { 0 };
     let cams = (aa, sharpen, ev * 10000 + fx * 10 + dlss);
-    // DLSS does the anti-aliasing itself.
-    let aa = if dlss > 0 { Aa::Off } else { aa };
+    // DLSS does the anti-aliasing itself. Ray-traced lighting needs TAA: it's what smooths
+    // the traced light's grain over frames (and it can't take MSAA).
+    let rt = crate::raytrace::active();
+    let aa = if dlss > 0 {
+        Aa::Off
+    } else if rt {
+        Aa::Taa
+    } else {
+        aa
+    };
     if applied.cameras != Some(cams) || !new_cameras.is_empty() {
         applied.cameras = Some(cams);
         // Brighter is a lower exposure value.
         let exposure = Exposure { ev100: Exposure::EV100_BLENDER - settings.brightness };
         for e in &main {
             let mut ec = commands.entity(e);
-            ec.remove::<(Fxaa, Smaa, TemporalAntiAliasing, TemporalJitter, MipBias, DepthPrepass, MotionVectorPrepass, ContrastAdaptiveSharpening)>();
+            ec.remove::<(Fxaa, Smaa, TemporalAntiAliasing, TemporalJitter, MipBias, ContrastAdaptiveSharpening)>();
+            // (The ray-traced lighting needs these prepasses.)
+            if !rt {
+                ec.remove::<(DepthPrepass, MotionVectorPrepass)>();
+            }
             ec.remove::<(Bloom, ScreenSpaceAmbientOcclusion, bevy::core_pipeline::prepass::NormalPrepass)>();
             // HDR, tonemapped once here (the portal views arrive linear), with bloom.
             ec.insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface));
             if settings.bloom > 0.0 {
                 ec.insert(Bloom { intensity: 0.15 * settings.bloom, ..Bloom::NATURAL });
             }
-            // SSAO needs MSAA off.
-            if settings.ssao > 0.5 && aa != Aa::Msaa {
+            // SSAO needs MSAA off; traced light has its own occlusion.
+            if settings.ssao > 0.5 && aa != Aa::Msaa && !rt {
                 ec.insert(ScreenSpaceAmbientOcclusion::default());
             }
             match aa {
@@ -222,8 +245,9 @@ fn apply(
             _ => 2048,
         };
         let _ = outdoor;
+        // Traced light casts its own shadows.
         for mut l in &mut sun {
-            l.shadow_maps_enabled = quality > 0;
+            l.shadow_maps_enabled = quality > 0 && !crate::raytrace::active();
         }
     }
 }
@@ -235,13 +259,32 @@ fn reset_taa_on_teleport(
     mut taa: Query<&mut TemporalAntiAliasing, With<PlayerCamera>>,
     #[cfg(feature = "dlss")] mut dlss: Query<&mut bevy::anti_alias::dlss::Dlss, With<PlayerCamera>>,
 ) {
-    if game.sim.events.iter().any(|e| matches!(e, aperture::SimEvent::Teleported { .. })) {
+    // With traced light TAA is also what smooths its grain: starting it over would show the
+    // grain for a moment. Its own checks catch the old view instead.
+    if game.sim.events.iter().any(|e| matches!(e, aperture::SimEvent::Teleported { .. })) && !crate::raytrace::active() {
         for mut t in &mut taa {
             t.reset = true;
         }
         #[cfg(feature = "dlss")]
         for mut d in &mut dlss {
             d.reset = true;
+        }
+    }
+}
+
+/// Through a portal, last frame's view (what motion vectors measure from) is carried through
+/// it too: what's on screen now was on screen a frame ago, seen through the portal, and TAA
+/// and the traced light can carry on from it rather than start over.
+fn carry_previous_view(game: Res<Game>, mut cams: Query<&mut bevy::core_pipeline::prepass::PreviousViewData, With<PlayerCamera>>) {
+    for e in &game.sim.events {
+        let aperture::SimEvent::Teleported { entered, .. } = *e else { continue };
+        let Some(link) = game.sim.link(entered) else { continue };
+        let through = Mat4::from_rotation_translation(link.quat(), link.point(Vec3::ZERO));
+        let back = through.inverse();
+        for mut prev in &mut cams {
+            prev.view_from_world *= back;
+            prev.clip_from_world *= back;
+            prev.world_from_clip = through * prev.world_from_clip;
         }
     }
 }

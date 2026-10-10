@@ -90,6 +90,9 @@ pub struct ChamberMats {
     pub lens_off: Handle<StandardMaterial>,
     pub lens_on: Handle<StandardMaterial>,
     pub paint: [Handle<StandardMaterial>; 3],
+    /// The same, for gel in flight: drawn forward, with the ordinary lights (too small and
+    /// fast for traced light to settle on).
+    pub blob_paint: [Handle<StandardMaterial>; 3],
     pub goo: Handle<StandardMaterial>,
     pub wire_off: Handle<StandardMaterial>,
     pub wire_on: Handle<StandardMaterial>,
@@ -284,6 +287,11 @@ pub fn setup(
         ..default()
     };
     let tiled = |m: StandardMaterial| StandardMaterial { uv_transform: tiles, ..m };
+    let paint = [
+        StandardMaterial { base_color: Color::srgb(0.1, 0.42, 1.0), emissive: LinearRgba::rgb(0.02, 0.08, 0.3), perceptual_roughness: 0.12, ..default() },
+        StandardMaterial { base_color: Color::srgb(1.0, 0.42, 0.04), emissive: LinearRgba::rgb(0.3, 0.08, 0.0), perceptual_roughness: 0.12, ..default() },
+        StandardMaterial { base_color: Color::srgb(0.97, 0.97, 0.97), perceptual_roughness: 0.25, ..default() },
+    ];
     let mats = ChamberMats {
         white: materials.add(tiled(std(Color::srgb(1.08, 1.08, 1.1), Some(white_tex), 0.7, 0.0))),
         black: materials.add(tiled(std(Color::srgb(0.75, 0.75, 0.78), Some(black_tex), 0.45, 0.4))),
@@ -348,11 +356,8 @@ pub fn setup(
         laser_glow: materials.add(glow(LinearRgba::rgb(1.2, 0.05, 0.03), 0.3)),
         lens_off: materials.add(std(Color::srgb(0.25, 0.08, 0.06), None, 0.2, 0.0)),
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
-        paint: [
-            materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.42, 1.0), emissive: LinearRgba::rgb(0.02, 0.08, 0.3), perceptual_roughness: 0.12, ..default() }),
-            materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.42, 0.04), emissive: LinearRgba::rgb(0.3, 0.08, 0.0), perceptual_roughness: 0.12, ..default() }),
-            materials.add(StandardMaterial { base_color: Color::srgb(0.97, 0.97, 0.97), perceptual_roughness: 0.25, ..default() }),
-        ],
+        paint: paint.clone().map(|p| materials.add(p)),
+        blob_paint: paint.map(|p| materials.add(StandardMaterial { opaque_render_method: bevy::material::OpaqueRendererMethod::Forward, ..p })),
         goo: materials.add(StandardMaterial {
             base_color: Color::srgba(0.25, 0.22, 0.05, 0.92),
             emissive: LinearRgba::rgb(0.05, 0.06, 0.0),
@@ -790,7 +795,7 @@ pub fn update(
     pooled(&mut commands, &mut pools.glows, beams.len(), |c| spawn_pooled(c, &m.glow, &m.laser_glow, false));
     let segs: Vec<Aabb> = sim.bridges.iter().flat_map(|b| b.segs.iter().map(|s| s.aabb)).collect();
     pooled(&mut commands, &mut pools.bridges, segs.len(), |c| spawn_pooled(c, &m.unit_cube, &m.bridge, false));
-    pooled(&mut commands, &mut pools.blobs, sim.blobs.len(), |c| spawn_pooled(c, &m.blob, &m.paint[0], false));
+    pooled(&mut commands, &mut pools.blobs, sim.blobs.len(), |c| spawn_pooled(c, &m.blob, &m.blob_paint[0], false));
 
     let mut set = |e: Entity, tf: Option<Transform>, mat: Option<&Handle<StandardMaterial>>| {
         if let Ok((_, mut t, mut v, mm)) = vis.get_mut(e) {
@@ -893,9 +898,9 @@ pub fn update(
         match sim.blobs.get(i) {
             Some(b) => {
                 let mat = match b.paint {
-                    Paint::Bounce => &m.paint[0],
-                    Paint::Speed => &m.paint[1],
-                    _ => &m.paint[2],
+                    Paint::Bounce => &m.blob_paint[0],
+                    Paint::Speed => &m.blob_paint[1],
+                    _ => &m.blob_paint[2],
                 };
                 let stretch = 1.0 + b.v.length() * 0.03;
                 let rot = Quat::from_rotation_arc(Vec3::Y, b.v.normalize_or(Vec3::Y));

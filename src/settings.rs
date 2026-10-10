@@ -55,8 +55,8 @@ pub struct Settings {
     pub shadows: f32,
     /// Faith's third-person body, seen through portals (and her shadow): 1 on, 0 off.
     pub body3p: f32,
-    /// Baked bounce light (global illumination): its strength (0 off).
-    pub bounce_light: f32,
+    /// Ray-traced lighting (`raytrace`): 1 on, 0 off. Applies at the next start.
+    pub ray_tracing: f32,
     /// Glow round bright things (lamps, portal rims, lasers): its strength (0 off).
     pub bloom: f32,
     /// Screen-space ambient occlusion (not with MSAA): 1 on, 0 off.
@@ -121,7 +121,7 @@ impl Default for Settings {
             portal_resolution: 1.0,
             shadows: 2.0,
             body3p: 1.0,
-            bounce_light: 1.0,
+            ray_tracing: 1.0,
             bloom: 0.3,
             ssao: 1.0,
             dlss: 0.0,
@@ -338,7 +338,7 @@ const ROWS: [Row; 28] = [
         step: 1.0,
         get: |s| s.anti_aliasing,
         put: |s, v| s.anti_aliasing = v,
-        show: |v| crate::graphics::AA_MODES[v as usize].to_string(),
+        show: crate::graphics::aa_label,
     },
     Row {
         key: "sharpening",
@@ -373,17 +373,7 @@ const ROWS: [Row; 28] = [
         put: |s, v| s.shadows = v,
         show: |v| crate::graphics::SHADOWS[v as usize].to_string(),
     },
-    Row {
-        key: "bounce_light",
-        page: Page::Graphics,
-        label: "Bounce light (GI)",
-        min: 0.0,
-        max: 1.5,
-        step: 0.25,
-        get: |s| s.bounce_light,
-        put: |s, v| s.bounce_light = v,
-        show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) },
-    },
+    Row { key: "ray_tracing", page: Page::Graphics, label: "Ray-traced lighting", min: 0.0, max: 1.0, step: 1.0, get: |s| s.ray_tracing, put: |s, v| s.ray_tracing = v, show: crate::raytrace::label },
     Row { key: "bloom", page: Page::Graphics, label: "Bloom", min: 0.0, max: 1.0, step: 0.1, get: |s| s.bloom, put: |s, v| s.bloom = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
     Row {
         key: "dlss",
@@ -469,7 +459,7 @@ mod tests {
             portal_resolution: 0.75,
             shadows: 3.0,
             body3p: 0.0,
-            bounce_light: 0.5,
+            ray_tracing: 0.0,
             bloom: 0.8,
             ssao: 0.0,
             dlss: 3.0,

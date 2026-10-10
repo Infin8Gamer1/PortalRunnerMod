@@ -89,10 +89,12 @@ pub fn setup(
             metallic_roughness_texture: rough,
             normal_map_texture: normal_map,
             reflectance: 0.3,
+            // Lit the ordinary way (see `raytrace::CastsTracedShadow`).
+            opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
             ..default()
         });
         for (parent, layer) in [(root, &layer), (through, &through_layer)] {
-            let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat.clone()), Transform::default(), layer.clone())).id();
+            let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat.clone()), Transform::default(), layer.clone(), crate::raytrace::CastsTracedShadow)).id();
             commands.entity(parent).add_child(e);
         }
         handles.push(h);
