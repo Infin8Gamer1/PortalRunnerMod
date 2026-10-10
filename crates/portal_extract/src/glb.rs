@@ -37,6 +37,9 @@ pub struct Clip {
     pub tracks: Vec<(usize, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
 }
 
+/// The most triangles one primitive holds.
+const MAX_TRIANGLES: usize = 65535;
+
 fn pad4(buf: &mut Vec<u8>, byte: u8) {
     while buf.len() % 4 != 0 {
         buf.push(byte);
@@ -98,38 +101,53 @@ pub fn write(parts: &[Part], mats: &[Material], clips: &[Clip]) -> Vec<u8> {
     }
 
     for part in parts {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for (p, _, _) in &part.verts {
-            for a in 0..3 {
-                min[a] = min[a].min(p[a]);
-                max[a] = max[a].max(p[a]);
-            }
-        }
-        // Interleaved vertices: 8 floats each.
-        pad4(&mut bin, 0);
-        let start = bin.len();
-        for (p, n, uv) in &part.verts {
-            for f in p.iter().chain(n.iter()).chain(uv.iter()) {
-                bin.extend_from_slice(&f.to_le_bytes());
-            }
-        }
-        views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "byteStride": 32, "target": 34962}));
-        let view = views.len() - 1;
-        let count = part.verts.len();
-        let a0 = accessors.len();
-        accessors.push(json!({"bufferView": view, "byteOffset": 0, "componentType": 5126, "count": count, "type": "VEC3", "min": min, "max": max}));
-        accessors.push(json!({"bufferView": view, "byteOffset": 12, "componentType": 5126, "count": count, "type": "VEC3"}));
-        accessors.push(json!({"bufferView": view, "byteOffset": 24, "componentType": 5126, "count": count, "type": "VEC2"}));
         let mut primitives = Vec::new();
-        for (indices, material) in &part.prims {
+        // At most 65535 triangles a primitive: Bevy makes each its own mesh (with whatever
+        // vertices it's given, so each gets just its own), and Solari takes no glowing mesh
+        // larger than that as a light.
+        let chunks = part.prims.iter().flat_map(|(indices, material)| indices.chunks(MAX_TRIANGLES * 3).map(move |c| (c, material)));
+        for (indices, material) in chunks {
+            let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            let mut verts = Vec::new();
+            let local: Vec<u32> = indices
+                .iter()
+                .map(|&i| {
+                    *remap.entry(i).or_insert_with(|| {
+                        verts.push(part.verts[i as usize]);
+                        (verts.len() - 1) as u32
+                    })
+                })
+                .collect();
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for (p, _, _) in &verts {
+                for a in 0..3 {
+                    min[a] = min[a].min(p[a]);
+                    max[a] = max[a].max(p[a]);
+                }
+            }
+            // Interleaved vertices: 8 floats each.
             pad4(&mut bin, 0);
             let start = bin.len();
-            for i in indices {
+            for (p, n, uv) in &verts {
+                for f in p.iter().chain(n.iter()).chain(uv.iter()) {
+                    bin.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+            views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "byteStride": 32, "target": 34962}));
+            let view = views.len() - 1;
+            let count = verts.len();
+            let a0 = accessors.len();
+            accessors.push(json!({"bufferView": view, "byteOffset": 0, "componentType": 5126, "count": count, "type": "VEC3", "min": min, "max": max}));
+            accessors.push(json!({"bufferView": view, "byteOffset": 12, "componentType": 5126, "count": count, "type": "VEC3"}));
+            accessors.push(json!({"bufferView": view, "byteOffset": 24, "componentType": 5126, "count": count, "type": "VEC2"}));
+            pad4(&mut bin, 0);
+            let start = bin.len();
+            for i in &local {
                 bin.extend_from_slice(&i.to_le_bytes());
             }
             views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "target": 34963}));
-            accessors.push(json!({"bufferView": views.len() - 1, "componentType": 5125, "count": indices.len(), "type": "SCALAR"}));
+            accessors.push(json!({"bufferView": views.len() - 1, "componentType": 5125, "count": local.len(), "type": "SCALAR"}));
             primitives.push(json!({
                 "attributes": {"POSITION": a0, "NORMAL": a0 + 1, "TEXCOORD_0": a0 + 2},
                 "indices": accessors.len() - 1,

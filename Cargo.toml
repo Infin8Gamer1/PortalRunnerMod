@@ -1,5 +1,10 @@
 [workspace]
 members = [".", "crates/*"]
+exclude = ["vendor"]
+
+# Bevy Solari with a fix for a crash compacting ray-tracing BLAS (see vendor/README.md).
+[patch.crates-io]
+bevy_solari = { path = "vendor/bevy_solari" }
 
 [package]
 name = "portal-runner"

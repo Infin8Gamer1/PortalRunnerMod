@@ -190,16 +190,25 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("sign_frame", "portal2", "models/props/sign_frame02/sign_frame02.mdl", 0, 0.0),
 ];
 
-/// Portal with RTX's remastered models: (our name, USD files under `gameReadyAssets`, what to
-/// call each part by the joint or mesh it comes from (parts not listed are left out), and a
-/// turn about the vertical in degrees to line it up with the Source model it replaces).
-/// Each is written as `<name>.glb` beside the Portal and Portal 2 models; the game prefers it.
-const RTX_MODELS: &[(&str, &[&str], &[(&str, &str)], f32)] = &[
+/// Portal with RTX's remastered models: (our name, USD files under `gameReadyAssets` (each
+/// with a turn about X in degrees, for content built lying on its side), what to call each
+/// part by the joint or mesh it comes from (parts not listed are left out), and a turn about
+/// the vertical in degrees to line it up with the Source model it replaces). Each is written
+/// as `<name>.glb` beside the Portal and Portal 2 models; the game prefers it.
+type RtxModel = (&'static str, &'static [(&'static str, f32)], &'static [(&'static str, &'static str)], f32);
+const RTX_MODELS: &[RtxModel] = &[
     // The Weighted Storage Cube.
-    ("rtx_storage_cube", &["SubUSDs/SM_Prop_CompanionCube_A1_01.usd"], &[("SM_Prop_CompanionCube_A1_01", "body")], 0.0),
+    ("rtx_storage_cube", &[("SubUSDs/SM_Prop_CompanionCube_A1_01.usd", 0.0)], &[("SM_Prop_CompanionCube_A1_01", "body")], 0.0),
     // The pedestal button: its base, and the button that goes down. (Remix's skinned capture
     // is a quarter turn round from the MDL.)
-    ("rtx_pedestal_button", &["skinned/switch001.usd"], &[("Root", "Root"), ("Button", "Button")], 90.0),
+    ("rtx_pedestal_button", &[("skinned/switch001.usd", 0.0)], &[("Root", "Root"), ("Button", "Button")], 90.0),
+    // The floor button: its base, and the pad a cube or Faith presses down.
+    (
+        "rtx_floor_button",
+        &[("SubUSDs/SM_Fixture_Superbutton_Base.usd", 0.0), ("SubUSDs/SM_Fixture_Superbutton_Pad.usd", 90.0)],
+        &[("SM_Fixture_Superbutton_Base", "base"), ("SM_Fixture_Superbutton_Pad", "button_top")],
+        0.0,
+    ),
 ];
 
 /// Animations to bring along: (our model name, [(the MDL's animation, our name for it)]). A

@@ -320,6 +320,16 @@ fn script(name: &str) -> Vec<Act> {
             Look(0.0, -25.0),
             Wait(30),
             Shot("r02_pedestal"),
+            // The floor button, up, then held down by the cube.
+            Teleport(Vec3::new(-16.0, 0.0, 5.4)),
+            Look(180.0, -35.0),
+            Wait(30),
+            Shot("r03_floor_button"),
+            // Standing on its edge (still pressing it), looking across the pad.
+            Teleport(Vec3::new(-16.0, 0.0, 8.75)),
+            Look(0.0, -45.0),
+            Wait(30),
+            Shot("r04_floor_button_pressed"),
         ],
         // The faith plate at rest from two sides, then (from beside it, after it's thrown her)
         // its paddle snapping up, holding, and settling back into its pit.

@@ -155,21 +155,23 @@ fn part_name(p: &Prim) -> String {
     }
 }
 
-/// Convert the meshes in these USD files (relative to `gameReadyAssets`) to parts, in our
-/// space by `convert` (Source inches, Z up, to ours). `rename` gives each part (named after
+/// Convert the meshes in these USD files (relative to `gameReadyAssets`, each with a turn about
+/// X in degrees for content that lies on its side) to parts, in our space by `convert` (Source
+/// inches, Z up, to ours). `rename` gives each part (named after
 /// its joint or prim) the name the game knows it by, or `None` to leave it out.
-pub fn convert(remix: &Remix, files: &[&str], convert: &dyn Fn(Vec3) -> Vec3, to_ours: glam::Quat, rename: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<glb::Part>, Vec<glb::Material>), String> {
+pub fn convert(remix: &Remix, files: &[(&str, f32)], convert: &dyn Fn(Vec3) -> Vec3, to_ours: glam::Quat, rename: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<glb::Part>, Vec<glb::Material>), String> {
     let mut parts: Vec<(String, Gathered)> = Vec::new();
     let mut materials: Vec<glb::Material> = Vec::new();
     let mut material_of: HashMap<(usize, String), usize> = HashMap::new();
-    for (fi, file) in files.iter().enumerate() {
+    for (fi, (file, stand_up)) in files.iter().enumerate() {
         let usd_dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         let stage = Stage::open(&remix.root().join(file).to_string_lossy()).map_err(|e| format!("{file}: {e}"))?;
         let root = stage.prim(sdf::Path::abs_root()).map_err(|e| e.to_string())?;
         // Skeletons first (bind transforms in our space, by joint name), then meshes.
         let mut skeletons: HashMap<String, Vec<(String, DMat4)>> = HashMap::new();
         let mut meshes: Vec<(Prim, DMat4)> = Vec::new();
-        let mut stack = vec![(root, DMat4::IDENTITY)];
+        // A file whose content lies on its side (built Y up) is stood up first.
+        let mut stack = vec![(root, DMat4::from_rotation_x((*stand_up as f64).to_radians()))];
         while let Some((prim, parent)) = stack.pop() {
             let world = parent * local_transform(&prim);
             let ty = prim.type_name().ok().flatten().map(|t| t.as_str().to_string()).unwrap_or_default();

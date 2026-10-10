@@ -22,6 +22,7 @@ pub const NAMES: &[&str] = &[
     // Portal with RTX's remasters, preferred where they were extracted.
     "rtx_storage_cube",
     "rtx_pedestal_button",
+    "rtx_floor_button",
     // Portal 2's.
     "metal_box",
     "companion_cube",
@@ -70,8 +71,9 @@ impl PropModels {
 /// What a model stands for, so its parts can follow the simulation.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub enum PropKind {
-    /// A floor button, and which of its two looks (unlit, lit) this is.
-    Button(usize, bool),
+    /// A floor button, and which of its two looks (unlit, lit) this is: `None` for a model
+    /// with only the one (Portal with RTX's).
+    Button(usize, Option<bool>),
     Pedestal(usize),
     DropperCover(usize),
     /// A catcher, unlit or lit.
@@ -137,17 +139,29 @@ pub struct Replaced {
 /// Spawn the models for the chamber's pieces; says which stand-ins they replace.
 pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replaced {
     let mut r = Replaced::default();
-    // Floor buttons: Portal 2's (3.2 m across) at 60%, sunk so the top is where a cube rests.
-    // Cube-only buttons are Portal 2's box sockets.
-    let floor = (models.get("floor_button"), models.get("floor_button_on"));
+    // Floor buttons: Portal with RTX's remaster or Portal 2's (each 3.2 m across, at 60%),
+    // sunk so the top is where a cube rests; Portal 2's comes unlit and lit. Cube-only buttons
+    // are Portal 2's box sockets (Portal has none).
+    let floor = match (models.get("rtx_floor_button"), models.get("floor_button"), models.get("floor_button_on")) {
+        (Some(one), ..) => Some((one, None)),
+        (None, Some(off), Some(on)) => Some((off, Some(on))),
+        _ => None,
+    };
     let socket = (models.get("cube_button"), models.get("cube_button_on"));
-    if let ((Some(off), Some(on)), (Some(cube_off), Some(cube_on))) = (floor, socket) {
+    if let (Some((floor, floor_on)), (Some(cube_off), Some(cube_on))) = (floor, socket) {
         r.buttons = true;
         for (i, b) in sim.buttons.iter().enumerate() {
-            let (off, on, s, top) = if b.cube_only { (&cube_off, &cube_on, 0.72, 0.356) } else { (&off, &on, 0.6, 0.346) };
+            let (off, on, s, top) = if b.cube_only { (&cube_off, Some(&cube_on), 0.72, 0.356) } else { (&floor, floor_on.as_ref(), 0.6, 0.346) };
             let tf = Transform::from_translation(b.at + Vec3::Y * (BUTTON_TOP - top * s)).with_scale(Vec3::splat(s));
-            spawn_model(commands, off.clone(), tf, PropKind::Button(i, false));
-            spawn_model(commands, on.clone(), tf, PropKind::Button(i, true));
+            match on {
+                Some(on) => {
+                    spawn_model(commands, off.clone(), tf, PropKind::Button(i, Some(false)));
+                    spawn_model(commands, on.clone(), tf, PropKind::Button(i, Some(true)));
+                }
+                None => {
+                    spawn_model(commands, off.clone(), tf, PropKind::Button(i, None));
+                }
+            }
         }
     }
     // Pedestal buttons: Portal with RTX's remaster or Portal 2's (the same size and parts).
@@ -314,20 +328,24 @@ pub fn spawn_cubes(commands: &mut Commands, models: &PropModels, slot: usize) ->
     }))
 }
 
-/// Tag a model's named parts as its scene spawns.
+/// Tag a model's named parts as its scene spawns: the glTF nodes under its top node. (Not the
+/// top node itself, nor the mesh entities under each node, which carry the node's name too:
+/// tagged, they'd move along with it a second time.)
 pub fn tag_parts(
     mut commands: Commands,
-    added: Query<(Entity, &Name, &Transform), Added<Name>>,
+    added: Query<(Entity, &Name, &Transform), (Added<Name>, Without<Mesh3d>)>,
     parents: Query<&ChildOf>,
     roots: Query<&PropKind>,
 ) {
     for (e, name, tf) in &added {
         let mut cur = e;
-        for _ in 0..8 {
+        for depth in 0..8 {
             let Ok(p) = parents.get(cur) else { break };
             cur = p.parent();
             if let Ok(kind) = roots.get(cur) {
-                commands.entity(e).insert(PropPart { kind: *kind, name: name.as_str().to_string(), rest: *tf });
+                if depth > 0 {
+                    commands.entity(e).insert(PropPart { kind: *kind, name: name.as_str().to_string(), rest: *tf });
+                }
                 break;
             }
         }
@@ -390,7 +408,7 @@ pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, m
     let sim = &game.sim;
     for (kind, mut vis) in &mut roots {
         let show = match *kind {
-            PropKind::Button(i, lit) => sim.buttons.get(i).is_some_and(|b| b.pressed == lit),
+            PropKind::Button(i, Some(lit)) => sim.buttons.get(i).is_some_and(|b| b.pressed == lit),
             PropKind::Catcher(i, lit) => sim.catchers.get(i).is_some_and(|c| c.lit == lit),
             _ => continue,
         };
