@@ -16,7 +16,7 @@ use crate::{settings, Game, PlayerCamera};
 const SPEED_LINES_SHADER: Handle<Shader> = uuid_handle!("3f1c9e52-8a47-4d0b-b6e3-2a9d7c41f805");
 
 /// Where the effects start, as a fraction of her top running speed.
-pub const START: f32 = 0.95;
+pub const START: f32 = 0.98;
 /// The speed (m/s) at which they're at their strongest.
 pub const FULL: f32 = 20.0;
 /// Degrees of horizontal field of view added at top running speed, and at `FULL`.
@@ -227,7 +227,8 @@ mod tests {
     fn effects_start_near_top_speed_and_grow_past_it() {
         let top = 7.2;
         assert_eq!(amount_for(6.0, top), 0.0);
-        assert!(amount_for(top * 0.97, top) > 0.0);
+        assert_eq!(amount_for(top * 0.97, top), 0.0);
+        assert!(amount_for(top * 0.99, top) > 0.0);
         assert!((amount_for(top, top) - 1.0).abs() < 1e-5);
         assert!((amount_for(FULL, top) - 2.0).abs() < 1e-5);
         assert_eq!(amount_for(100.0, top), 2.0);

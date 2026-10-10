@@ -34,9 +34,9 @@ fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     let dash = smoothstep(0.0, 0.08, along) * (1.0 - smoothstep(0.25, 0.55, along));
     let on = step(0.8 - strength * 0.6, h);
     let edge = smoothstep(0.32, 0.8, r);
-    let streak = thin * dash * on * edge * strength * 0.55;
+    let streak = thin * dash * on * edge * strength * 0.3;
 
-    let vignette = smoothstep(0.45, 1.05, r) * strength * 0.35;
+    let vignette = smoothstep(0.45, 1.05, r) * strength * 0.2;
     let alpha = clamp(streak + vignette, 0.0, 1.0);
     if alpha < 0.002 {
         discard;
