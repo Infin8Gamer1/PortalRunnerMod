@@ -158,6 +158,13 @@ const TEXTURES: &[(&str, &[&str])] = &[
     ("black_floor", &["materials/metal/metal_modular_floor001.vtf", "materials/metal/black_floor_metal_001c.vtf"]),
     ("grate", &["materials/metal/metalgrate018.vtf"]),
     ("metal_box", &["materials/models/props/metal_box.vtf"]),
+    // Deadly goo (Portal's `nature/hazard_liquid`; Portal with RTX's toxic water).
+    ("goo", &["materials/nature/hazard_liquid.vtf"]),
+    // Observation windows: frosted glass, and clear glass's ripples.
+    ("glass_frosted", &["materials/glass/glasswindow_frosted.vtf"]),
+    ("glass_frosted_002", &["materials/glass/glasswindow_frosted_002.vtf"]),
+    ("glass_frosted_003", &["materials/glass/glasswindow_frosted_003.vtf"]),
+    ("glass_normal", &["materials/glass/glass_normal.vtf"]),
 ];
 
 /// A model to convert: (our name, which game, MDL path, skin, and a turn about our Z axis in

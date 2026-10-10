@@ -114,7 +114,7 @@ fn main() {
         switch_level,
         play,
         speed_fx::update,
-        chamber::update,
+        (chamber::update, chamber::scroll_goo),
         me_props::spawn_for_level,
         props::tag_parts,
         props::animate,

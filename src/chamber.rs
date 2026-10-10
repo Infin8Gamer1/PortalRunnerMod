@@ -193,6 +193,24 @@ fn cube_texture(accent: [u8; 3]) -> Image {
     image(N, data, false)
 }
 
+/// Goo's texture: one tile per 4 m.
+const GOO_TILE: f32 = 0.25;
+/// How fast it drifts (texture tiles a second) and which way, as Portal's `TextureScroll` does.
+const GOO_SCROLL: f32 = 0.012;
+const GOO_SCROLL_ANGLE: f32 = -35.0;
+
+/// Goo drifts slowly.
+pub fn scroll_goo(time: Res<Time>, m: Option<Res<ChamberMats>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    let Some(m) = m else { return };
+    let Some(mut mat) = materials.get_mut(&m.goo) else { return };
+    if mat.base_color_texture.is_none() {
+        return;
+    }
+    let (s, c) = GOO_SCROLL_ANGLE.to_radians().sin_cos();
+    let t = (time.elapsed_secs_wrapped() * GOO_SCROLL).fract();
+    mat.uv_transform = bevy::math::Affine2::from_scale_angle_translation(Vec2::splat(GOO_TILE), 0.0, Vec2::new(c, s) * t);
+}
+
 /// Box mesh with world-space UVs (one texture tile per metre).
 pub fn box_mesh(b: &Aabb) -> Mesh {
     box_faces(b, |_| true)
@@ -373,12 +391,15 @@ pub fn setup(
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
         paint: paint.clone().map(|p| materials.add(p)),
         blob_paint: paint.map(|p| materials.add(StandardMaterial { opaque_render_method: bevy::material::OpaqueRendererMethod::Forward, ..p })),
-        goo: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.25, 0.22, 0.05, 0.92),
-            emissive: LinearRgba::rgb(0.05, 0.06, 0.0),
-            alpha_mode: AlphaMode::Blend,
-            perceptual_roughness: 0.1,
-            ..default()
+        // Opaque and glossy, so it's in the ray-traced scene and the chamber shows in it.
+        goo: materials.add(match extracted.texture("goo") {
+            Some(img) => {
+                let base = StandardMaterial { base_color_texture: Some(images.add(img)), uv_transform: bevy::math::Affine2::from_scale(Vec2::splat(GOO_TILE)), ..default() };
+                // Portal with RTX's toxic water is translucent over dark depths; opaque, its
+                // colour is darkened to match, so what it reflects shows.
+                StandardMaterial { base_color: Color::srgb(0.4, 0.4, 0.4), ..pbr(&mut images, "goo", base) }
+            }
+            None => StandardMaterial { base_color: Color::srgb(0.16, 0.14, 0.05), perceptual_roughness: 0.08, metallic: 0.4, ..default() },
         }),
         wire_off: materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.35, 0.8), emissive: LinearRgba::rgb(0.1, 0.4, 1.2), ..default() }),
         wire_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.55, 0.1), emissive: LinearRgba::rgb(2.5, 1.0, 0.1), ..default() }),

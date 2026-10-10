@@ -354,6 +354,26 @@ fn script(name: &str) -> Vec<Act> {
         ],
         // The faith plate at rest from two sides, then (from beside it, after it's thrown her)
         // its paddle snapping up, holding, and settling back into its pit.
+        // Goo (#18): Chamber 03's pit, from its edge and looking along it, then the
+        // Proving Grounds' pit.
+        "goo" => vec![
+            Map(3),
+            Wait(240),
+            Teleport(Vec3::new(-4.0, 0.0, -4.5)),
+            Look(-20.0, -30.0),
+            Wait(60),
+            Shot("goo_a_edge"),
+            Teleport(Vec3::new(8.0, 0.0, -4.0)),
+            Look(30.0, -12.0),
+            Wait(60),
+            Shot("goo_b_along"),
+            Map(0),
+            Wait(240),
+            Teleport(Vec3::new(14.0, 0.0, -10.5)),
+            Look(0.0, -35.0),
+            Wait(60),
+            Shot("goo_c_arena"),
+        ],
         "plate" => vec![
             Map(0),
             Wait(90),
