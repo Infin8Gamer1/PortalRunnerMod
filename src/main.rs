@@ -22,6 +22,7 @@ mod progress;
 mod raytrace;
 mod props;
 mod settings;
+mod source_map;
 mod speed_fx;
 mod viewmodel;
 
@@ -85,6 +86,8 @@ fn main() {
     .add_plugins(speed_fx::SpeedFxPlugin)
     .add_plugins(graphics::GraphicsPlugin)
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+    .init_resource::<source_map::MapMats>()
+    .init_resource::<source_map::Lamps>()
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
     .add_systems(
@@ -114,7 +117,7 @@ fn main() {
         switch_level,
         play,
         speed_fx::update,
-        (chamber::update, chamber::scroll_goo),
+        (chamber::update, chamber::scroll_goo, source_map::sync),
         me_props::spawn_for_level,
         props::tag_parts,
         props::animate,
@@ -147,7 +150,7 @@ pub struct Game {
     pub sim: Sim,
     /// The chamber as Mirror's Edge's sounds see it (footstep surfaces, checkpoints).
     pub level: greybox::Level,
-    pub levels: Vec<(&'static str, fn() -> Level)>,
+    pub levels: Vec<(String, source_map::LevelFn)>,
     pub level_index: usize,
     /// Load this level next frame (chamber finished, or a key).
     pub pending: Option<usize>,
@@ -192,7 +195,9 @@ pub struct Sun;
 
 fn setup_world(mut commands: Commands) {
     commands.insert_resource(progress::Progress::load());
-    let levels = aperture::levels::all();
+    // The game's chambers, then Portal's own maps where they were extracted.
+    let mut levels: Vec<(String, source_map::LevelFn)> = aperture::levels::all().into_iter().map(|(name, f)| (name.to_string(), std::sync::Arc::new(f) as source_map::LevelFn)).collect();
+    levels.extend(source_map::levels(extracted::find_root().as_deref()));
     let first = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(levels.len() - 1);
     let level = (levels[first].1)();
     let cp = level.checkpoints[0].clone();
@@ -623,7 +628,7 @@ fn play(
             SimEvent::PortalsCleared => game.flash = Some(("PORTALS CLEARED".into(), 0.0)),
             SimEvent::LevelComplete => {
                 let t = game.timer;
-                let pb = progress.finished(game.levels[game.level_index].0, t);
+                let pb = progress.finished(&game.levels[game.level_index].0, t);
                 progress.save();
                 game.last_time = Some(t);
                 game.flash = Some((format!("CHAMBER COMPLETE  {}{}", hud::fmt_time(t), if pb { "  - NEW BEST" } else { "" }), -2.0));

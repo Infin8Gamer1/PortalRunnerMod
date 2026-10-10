@@ -1,0 +1,474 @@
+//! Portal's maps (Source BSP, version 20): their faces to draw, their brushes as boxes to
+//! collide with, and their entities, written out for the game (`maps/<name>.mesh`,
+//! `.solids`, `.ents`).
+//!
+//! Faces are drawn as they are, a mesh per material (and per brush model, so a brush entity's
+//! faces can move with it). Collision is boxes, as the rest of the game's chambers are:
+//! an axis-aligned brush is its box; an angled one is cut into thin slices along its longest
+//! side, each slice's box standing in for it (stairs on a ramp, steps along a slanted wall).
+//! Portal's angled brushes are mostly behind the scenes and in elevator shafts.
+
+use std::collections::{HashMap, HashSet};
+
+use glam::Vec3;
+
+/// The lumps used here.
+const ENTITIES: usize = 0;
+const PLANES: usize = 1;
+const TEXDATA: usize = 2;
+const VERTEXES: usize = 3;
+const NODES: usize = 5;
+const TEXINFO: usize = 6;
+const FACES: usize = 7;
+const LEAFS: usize = 10;
+const EDGES: usize = 12;
+const SURFEDGES: usize = 13;
+const MODELS: usize = 14;
+const LEAFBRUSHES: usize = 17;
+const BRUSHES: usize = 18;
+const BRUSHSIDES: usize = 19;
+const TEXDATA_STRING_DATA: usize = 43;
+const TEXDATA_STRING_TABLE: usize = 44;
+
+pub const CONTENTS_SOLID: i32 = 0x1;
+pub const CONTENTS_WINDOW: i32 = 0x2;
+pub const CONTENTS_GRATE: i32 = 0x8;
+pub const CONTENTS_SLIME: i32 = 0x10;
+pub const CONTENTS_WATER: i32 = 0x20;
+pub const CONTENTS_PLAYERCLIP: i32 = 0x10000;
+
+/// Texinfo flags of faces that aren't drawn: sky, nodraw, hint, skip, trigger.
+pub const SURF_HIDDEN: i32 = 0x4 | 0x80 | 0x100 | 0x200 | 0x40;
+
+/// Angled brushes are cut into slices this thick (metres) along their longest side...
+const SLICE: f32 = 0.25;
+/// ...but no more than this many.
+const MAX_SLICES: usize = 48;
+
+pub struct Plane {
+    pub normal: Vec3,
+    pub dist: f32,
+    /// 0-2: along X, Y or Z (axial).
+    pub axial: bool,
+}
+
+pub struct TexInfo {
+    pub s: [f32; 4],
+    pub t: [f32; 4],
+    pub flags: i32,
+    pub texdata: i32,
+}
+
+pub struct TexData {
+    pub name: String,
+    pub width: i32,
+    pub height: i32,
+}
+
+pub struct Face {
+    pub first_edge: usize,
+    pub num_edges: usize,
+    pub texinfo: i32,
+}
+
+pub struct Model {
+    pub mins: Vec3,
+    pub maxs: Vec3,
+    pub headnode: i32,
+    pub first_face: usize,
+    pub num_faces: usize,
+}
+
+pub struct Brush {
+    pub first_side: usize,
+    pub num_sides: usize,
+    pub contents: i32,
+}
+
+pub struct BrushSide {
+    pub plane: usize,
+    pub texinfo: i32,
+    pub bevel: bool,
+}
+
+pub struct Bsp {
+    pub entities: String,
+    pub planes: Vec<Plane>,
+    pub texinfo: Vec<TexInfo>,
+    pub texdata: Vec<TexData>,
+    pub vertices: Vec<Vec3>,
+    pub edges: Vec<[u16; 2]>,
+    pub surfedges: Vec<i32>,
+    pub faces: Vec<Face>,
+    pub models: Vec<Model>,
+    /// Nodes: (children); a negative child is leaf `-1 - child`.
+    pub nodes: Vec<[i32; 2]>,
+    /// Leaves: (first leafbrush, count).
+    pub leafs: Vec<(usize, usize)>,
+    pub leafbrushes: Vec<u16>,
+    pub brushes: Vec<Brush>,
+    pub sides: Vec<BrushSide>,
+}
+
+fn rd<T: Copy>(b: &[u8], at: usize, f: impl Fn([u8; 4]) -> T) -> T {
+    f(b[at..at + 4].try_into().unwrap())
+}
+fn f32_at(b: &[u8], at: usize) -> f32 {
+    rd(b, at, f32::from_le_bytes)
+}
+fn i32_at(b: &[u8], at: usize) -> i32 {
+    rd(b, at, i32::from_le_bytes)
+}
+fn u16_at(b: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([b[at], b[at + 1]])
+}
+fn i16_at(b: &[u8], at: usize) -> i16 {
+    i16::from_le_bytes([b[at], b[at + 1]])
+}
+
+impl Bsp {
+    pub fn parse(d: &[u8]) -> Result<Bsp, String> {
+        if d.len() < 1036 || &d[0..4] != b"VBSP" {
+            return Err("not a BSP".into());
+        }
+        let version = i32_at(d, 4);
+        if !(19..=21).contains(&version) {
+            return Err(format!("BSP version {version}"));
+        }
+        let lump = |i: usize| -> Result<(&[u8], i32), String> {
+            let at = 8 + 16 * i;
+            let (ofs, len, ver) = (i32_at(d, at) as usize, i32_at(d, at + 4) as usize, i32_at(d, at + 8));
+            d.get(ofs..ofs + len).map(|b| (b, ver)).ok_or_else(|| format!("lump {i} out of range"))
+        };
+        let recs = |i: usize, size: usize| -> Result<(&[u8], usize), String> {
+            let (b, _) = lump(i)?;
+            Ok((b, b.len() / size))
+        };
+
+        let entities = String::from_utf8_lossy(lump(ENTITIES)?.0).trim_end_matches('\0').to_string();
+        let (b, n) = recs(PLANES, 20)?;
+        let planes = (0..n)
+            .map(|i| {
+                let a = i * 20;
+                Plane { normal: Vec3::new(f32_at(b, a), f32_at(b, a + 4), f32_at(b, a + 8)), dist: f32_at(b, a + 12), axial: i32_at(b, a + 16) < 3 }
+            })
+            .collect();
+        let (b, n) = recs(TEXINFO, 72)?;
+        let texinfo = (0..n)
+            .map(|i| {
+                let a = i * 72;
+                let v = |k: usize| f32_at(b, a + k * 4);
+                TexInfo { s: [v(0), v(1), v(2), v(3)], t: [v(4), v(5), v(6), v(7)], flags: i32_at(b, a + 64), texdata: i32_at(b, a + 68) }
+            })
+            .collect();
+        let strings = lump(TEXDATA_STRING_DATA)?.0;
+        let (table, nt) = recs(TEXDATA_STRING_TABLE, 4)?;
+        let string = |id: i32| -> String {
+            if id < 0 || id as usize >= nt {
+                return String::new();
+            }
+            let at = i32_at(table, id as usize * 4) as usize;
+            let end = strings[at..].iter().position(|&c| c == 0).map_or(strings.len(), |e| at + e);
+            String::from_utf8_lossy(&strings[at..end]).to_string()
+        };
+        let (b, n) = recs(TEXDATA, 32)?;
+        let texdata = (0..n)
+            .map(|i| {
+                let a = i * 32;
+                TexData { name: string(i32_at(b, a + 12)), width: i32_at(b, a + 16), height: i32_at(b, a + 20) }
+            })
+            .collect();
+        let (b, n) = recs(VERTEXES, 12)?;
+        let vertices = (0..n).map(|i| Vec3::new(f32_at(b, i * 12), f32_at(b, i * 12 + 4), f32_at(b, i * 12 + 8))).collect();
+        let (b, n) = recs(EDGES, 4)?;
+        let edges = (0..n).map(|i| [u16_at(b, i * 4), u16_at(b, i * 4 + 2)]).collect();
+        let (b, n) = recs(SURFEDGES, 4)?;
+        let surfedges = (0..n).map(|i| i32_at(b, i * 4)).collect();
+        let (b, n) = recs(FACES, 56)?;
+        let faces = (0..n)
+            .map(|i| {
+                let a = i * 56;
+                Face { first_edge: i32_at(b, a + 4) as usize, num_edges: i16_at(b, a + 8) as usize, texinfo: i16_at(b, a + 10) as i32 }
+            })
+            .collect();
+        let (b, n) = recs(MODELS, 48)?;
+        let models = (0..n)
+            .map(|i| {
+                let a = i * 48;
+                let v = |k: usize| Vec3::new(f32_at(b, a + k), f32_at(b, a + k + 4), f32_at(b, a + k + 8));
+                Model { mins: v(0), maxs: v(12), headnode: i32_at(b, a + 36), first_face: i32_at(b, a + 40) as usize, num_faces: i32_at(b, a + 44) as usize }
+            })
+            .collect();
+        let (b, n) = recs(NODES, 32)?;
+        let nodes = (0..n).map(|i| [i32_at(b, i * 32 + 4), i32_at(b, i * 32 + 8)]).collect();
+        let (b, ver) = lump(LEAFS)?;
+        let leaf_size = if ver == 0 { 56 } else { 32 };
+        let leafs = (0..b.len() / leaf_size)
+            .map(|i| {
+                let a = i * leaf_size;
+                (u16_at(b, a + 24) as usize, u16_at(b, a + 26) as usize)
+            })
+            .collect();
+        let (b, n) = recs(LEAFBRUSHES, 2)?;
+        let leafbrushes = (0..n).map(|i| u16_at(b, i * 2)).collect();
+        let (b, n) = recs(BRUSHES, 12)?;
+        let brushes = (0..n)
+            .map(|i| {
+                let a = i * 12;
+                Brush { first_side: i32_at(b, a) as usize, num_sides: i32_at(b, a + 4) as usize, contents: i32_at(b, a + 8) }
+            })
+            .collect();
+        let (b, n) = recs(BRUSHSIDES, 8)?;
+        let sides = (0..n)
+            .map(|i| {
+                let a = i * 8;
+                BrushSide { plane: u16_at(b, a) as usize, texinfo: i16_at(b, a + 2) as i32, bevel: i16_at(b, a + 6) != 0 }
+            })
+            .collect();
+        Ok(Bsp { entities, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides })
+    }
+
+    /// A texinfo's texture name, as the map has it (lower case, forward slashes).
+    pub fn texture(&self, texinfo: i32) -> Option<(&TexData, &TexInfo)> {
+        let ti = self.texinfo.get(usize::try_from(texinfo).ok()?)?;
+        let td = self.texdata.get(usize::try_from(ti.texdata).ok()?)?;
+        Some((td, ti))
+    }
+
+    /// A face's corners, in order.
+    pub fn face_points(&self, f: &Face) -> Vec<Vec3> {
+        (0..f.num_edges)
+            .map(|k| {
+                let se = self.surfedges[f.first_edge + k];
+                let e = self.edges[se.unsigned_abs() as usize];
+                self.vertices[if se >= 0 { e[0] } else { e[1] } as usize]
+            })
+            .collect()
+    }
+
+    /// Every brush under a model's tree.
+    pub fn model_brushes(&self, model: usize) -> Vec<usize> {
+        let mut out = HashSet::new();
+        let mut stack = vec![self.models[model].headnode];
+        while let Some(n) = stack.pop() {
+            if n < 0 {
+                let Some(&(first, count)) = self.leafs.get((-1 - n) as usize) else { continue };
+                out.extend(self.leafbrushes[first..first + count].iter().map(|&b| b as usize));
+            } else if let Some(c) = self.nodes.get(n as usize) {
+                stack.extend_from_slice(c);
+            }
+        }
+        let mut v: Vec<usize> = out.into_iter().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// A brush's corners (Source space), from its planes taken three at a time; with, for
+    /// each, the planes it's on.
+    pub fn brush_corners(&self, b: &Brush) -> Vec<(Vec3, Vec<usize>)> {
+        let planes: Vec<&Plane> = (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| &self.planes[s.plane]).collect();
+        let mut out: Vec<(Vec3, Vec<usize>)> = Vec::new();
+        let n = planes.len();
+        for i in 0..n {
+            for j in i + 1..n {
+                for k in j + 1..n {
+                    let (a, b2, c) = (planes[i], planes[j], planes[k]);
+                    let det = a.normal.dot(b2.normal.cross(c.normal));
+                    if det.abs() < 1e-6 {
+                        continue;
+                    }
+                    let p = (b2.normal.cross(c.normal) * a.dist + c.normal.cross(a.normal) * b2.dist + a.normal.cross(b2.normal) * c.dist) / det;
+                    if planes.iter().all(|q| q.normal.dot(p) - q.dist <= 0.01) {
+                        let on: Vec<usize> = (0..n).filter(|&q| (planes[q].normal.dot(p) - planes[q].dist).abs() < 0.01).collect();
+                        if let Some(o) = out.iter_mut().find(|(q, _)| q.distance(p) < 0.01) {
+                            for x in on {
+                                if !o.1.contains(&x) {
+                                    o.1.push(x);
+                                }
+                            }
+                        } else {
+                            out.push((p, on));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether every (non-bevel) side of a brush is axis-aligned.
+    pub fn brush_axial(&self, b: &Brush) -> bool {
+        (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).all(|s| self.planes[s.plane].axial)
+    }
+
+    /// The textures on a brush's sides (texinfo indices).
+    pub fn brush_textures(&self, b: &Brush) -> Vec<i32> {
+        (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| s.texinfo).collect()
+    }
+}
+
+/// A brush's collision in boxes (Source space): its box when it's axis-aligned, slices of it
+/// when it isn't.
+pub fn brush_boxes(bsp: &Bsp, b: &Brush) -> Vec<(Vec3, Vec3)> {
+    let corners = bsp.brush_corners(b);
+    if corners.len() < 4 {
+        return Vec::new();
+    }
+    let lo = corners.iter().fold(Vec3::splat(f32::MAX), |m, (p, _)| m.min(*p));
+    let hi = corners.iter().fold(Vec3::splat(f32::MIN), |m, (p, _)| m.max(*p));
+    if bsp.brush_axial(b) {
+        return vec![(lo, hi)];
+    }
+    // Edges: corners sharing two planes.
+    let mut edges = Vec::new();
+    for i in 0..corners.len() {
+        for j in i + 1..corners.len() {
+            if corners[i].1.iter().filter(|p| corners[j].1.contains(p)).count() >= 2 {
+                edges.push((corners[i].0, corners[j].0));
+            }
+        }
+    }
+    let size = hi - lo;
+    let axis = if size.x >= size.y && size.x >= size.z { 0 } else if size.y >= size.z { 1 } else { 2 };
+    let len = size[axis];
+    let n = ((len * 0.0254 / SLICE).ceil() as usize).clamp(1, MAX_SLICES);
+    let mut out = Vec::new();
+    for k in 0..n {
+        let (s0, s1) = (lo[axis] + len * k as f32 / n as f32, lo[axis] + len * (k + 1) as f32 / n as f32);
+        let (mut a, mut z) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        let mut take = |p: Vec3| {
+            a = a.min(p);
+            z = z.max(p);
+        };
+        for (p, _) in &corners {
+            if p[axis] >= s0 - 1e-3 && p[axis] <= s1 + 1e-3 {
+                take(*p);
+            }
+        }
+        for &(p, q) in &edges {
+            for s in [s0, s1] {
+                let (u, v) = (p[axis] - s, q[axis] - s);
+                if (u < 0.0) != (v < 0.0) && (u - v).abs() > 1e-6 {
+                    take(p + (q - p) * (u / (u - v)));
+                }
+            }
+        }
+        if a.x <= z.x {
+            a[axis] = s0;
+            z[axis] = s1;
+            out.push((a, z));
+        }
+    }
+    out
+}
+
+/// A Source entity: its keys in order (a key can repeat: outputs).
+pub type Entity = Vec<(String, String)>;
+
+/// The entity lump's entities.
+pub fn parse_entities(text: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    let mut cur: Option<Entity> = None;
+    let mut chars = text.chars().peekable();
+    let mut strings = Vec::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => cur = Some(Vec::new()),
+            '}' => {
+                if let Some(e) = cur.take() {
+                    out.push(e);
+                }
+                strings.clear();
+            }
+            '"' => {
+                let mut s = String::new();
+                for c in chars.by_ref() {
+                    if c == '"' {
+                        break;
+                    }
+                    s.push(c);
+                }
+                strings.push(s);
+                if strings.len() == 2 {
+                    let v = strings.pop().unwrap();
+                    let k = strings.pop().unwrap();
+                    if let Some(e) = cur.as_mut() {
+                        e.push((k, v));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub fn key<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
+    e.iter().find(|(a, _)| a.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str())
+}
+
+pub fn vec3_key(e: &Entity, k: &str) -> Option<Vec3> {
+    let v: Vec<f32> = key(e, k)?.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+    (v.len() >= 3).then(|| Vec3::new(v[0], v[1], v[2]))
+}
+
+/// Where each brush model is when the map starts (Source space): its entity's origin (its
+/// faces and brushes are stored relative to it), or for a train, the path node it starts on
+/// (a `func_tracktrain` jumps to its first `path_track`, `height` above it).
+pub fn model_origins(ents: &[Entity]) -> HashMap<usize, Vec3> {
+    let named: HashMap<&str, &Entity> = ents.iter().filter_map(|e| Some((key(e, "targetname")?, e))).collect();
+    let mut m = HashMap::new();
+    for e in ents {
+        if let Some(n) = key(e, "model").and_then(|v| v.strip_prefix('*')).and_then(|v| v.parse::<usize>().ok()) {
+            let mut at = vec3_key(e, "origin").unwrap_or(Vec3::ZERO);
+            if key(e, "classname") == Some("func_tracktrain") {
+                if let Some(p) = key(e, "target").and_then(|t| named.get(t)).and_then(|p| vec3_key(p, "origin")) {
+                    let height = key(e, "height").and_then(|h| h.parse::<f32>().ok()).unwrap_or(0.0);
+                    at = p + Vec3::Z * height;
+                }
+            }
+            m.insert(n, at);
+        }
+    }
+    m
+}
+
+/// The base material behind a map's cubemap-patched copy
+/// (`maps/testchmb_a_00/metal/metal_lift001_-537_-308_126` → `metal/metal_lift001`).
+pub fn base_material(name: &str) -> String {
+    let n = name.replace('\\', "/").to_ascii_lowercase();
+    let Some(rest) = n.strip_prefix("maps/") else { return n };
+    let Some((_, rest)) = rest.split_once('/') else { return n };
+    let parts: Vec<&str> = rest.rsplitn(4, '_').collect();
+    if parts.len() == 4 && parts[..3].iter().all(|p| p.parse::<i32>().is_ok()) {
+        parts[3].to_string()
+    } else {
+        rest.to_string()
+    }
+}
+
+/// Whether a texture isn't drawn (tools, sky).
+pub fn tool_texture(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.starts_with("tools/") || n.contains("toolsskybox")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cubemap_patches_name_their_base() {
+        assert_eq!(base_material("maps/testchmb_a_00/metal/metal_lift001_-537_-308_126"), "metal/metal_lift001");
+        assert_eq!(base_material("maps/testchmb_a_00/metal/metal_lift001_gradient_-537_-308_126"), "metal/metal_lift001_gradient");
+        assert_eq!(base_material("METAL/METALWALL048B"), "metal/metalwall048b");
+    }
+
+    #[test]
+    fn entities_parse_with_repeated_keys() {
+        let e = parse_entities("{\n\"classname\" \"logic_relay\"\n\"OnTrigger\" \"a,Open,,0,-1\"\n\"OnTrigger\" \"b,Close,,1,-1\"\n}\n{\n\"classname\" \"worldspawn\"\n}");
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0].iter().filter(|(k, _)| k == "OnTrigger").count(), 2);
+        assert_eq!(key(&e[1], "classname"), Some("worldspawn"));
+    }
+}

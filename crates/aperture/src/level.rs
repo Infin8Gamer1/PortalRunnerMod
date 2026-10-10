@@ -35,6 +35,9 @@ pub enum Mat {
     Wall,
     /// Concrete that portals don't stick to (rooftops built as courses).
     Concrete,
+    /// An invisible wall that only stops Faith and cubes (Portal's player clip): shots and
+    /// lasers go through, portals don't stick.
+    Clip,
 }
 
 impl Mat {
@@ -49,7 +52,7 @@ impl Mat {
 
     /// Whether shots and lasers go through it.
     pub fn see_through(self) -> bool {
-        matches!(self, Mat::Grate)
+        matches!(self, Mat::Grate | Mat::Clip)
     }
 
     /// Mirror's Edge's footstep set for it (faith_move's greybox looks).
@@ -59,7 +62,7 @@ impl Mat {
             Mat::Roof | Mat::Concrete => Look::Roof,
             Mat::Black | Mat::Grate => Look::Runner,
             Mat::Runner => Look::Runner,
-            Mat::Glass | Mat::Frosted | Mat::Prop => Look::Prop,
+            Mat::Glass | Mat::Frosted | Mat::Prop | Mat::Clip => Look::Prop,
         }
     }
 }
@@ -231,6 +234,23 @@ pub struct Level {
     pub lamps: Vec<Vec3>,
     /// Mirror's Edge's props, for dressing (drawn from the player's install when it's there).
     pub me_props: Vec<MeProp>,
+    /// One of Portal's own maps (its name, `testchmb_a_00`): drawn from its faces, not
+    /// [`Level::solids`]' boxes.
+    pub source: Option<String>,
+    /// Its lights (Portal's `light` and `light_spot` entities).
+    pub lights: Vec<SourceLight>,
+}
+
+/// A light in one of Portal's maps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceLight {
+    pub at: Vec3,
+    /// Colour, 0-1.
+    pub color: Vec3,
+    /// Brightness, as Portal gives it (about 200 for an ordinary lamp).
+    pub brightness: f32,
+    /// A spotlight's direction and outer cone half-angle (radians).
+    pub spot: Option<(Vec3, f32)>,
 }
 
 /// One of Mirror's Edge's static meshes placed in a level: drawn only, no collision (give it a
@@ -268,6 +288,8 @@ impl Level {
             indoor: true,
             lamps: Vec::new(),
             me_props: Vec::new(),
+            source: None,
+            lights: Vec::new(),
         }
     }
 

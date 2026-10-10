@@ -393,6 +393,27 @@ fn script(name: &str) -> Vec<Act> {
             Wait(60),
             Shot("glass_c_c03_across"),
         ],
+        // Portal's own maps (#20): each one's start, four ways round. PORTAL_FIRST_MAP and
+        // PORTAL_LAST_MAP pick which (indexes into the map list; Portal's come after the game's).
+        "p1" => {
+            let first: usize = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len());
+            let last: usize = std::env::var("PORTAL_LAST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(first);
+            let mut v = Vec::new();
+            for i in first..=last {
+                v.extend([Map(i), Wait(300)]);
+                for (k, yaw) in [0.0f32, 90.0, 180.0, 270.0].into_iter().enumerate() {
+                    v.extend([Look(yaw, 0.0), Wait(45), Shot(Box::leak(format!("p1_{i:02}_{k}").into_boxed_str()))]);
+                }
+                // PORTAL_TP="x,y,z,yaw,pitch;...": more places to look from.
+                for (k, p) in std::env::var("PORTAL_TP").unwrap_or_default().split(';').enumerate() {
+                    let f: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if f.len() == 5 {
+                        v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Look(f[3], f[4]), Wait(60), Shot(Box::leak(format!("p1_{i:02}_tp{k}").into_boxed_str()))]);
+                    }
+                }
+            }
+            v
+        }
         "plate" => vec![
             Map(0),
             Wait(90),

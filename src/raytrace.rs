@@ -150,9 +150,11 @@ fn forward_overlays(
 fn emissive_materials(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mats: Option<Res<crate::chamber::ChamberMats>>,
+    lamps: Option<Res<crate::source_map::Lamps>>,
     mut done: Local<HashSet<AssetId<StandardMaterial>>>,
 ) {
     let lamp = mats.map(|m| m.lamp.id());
+    let is_lamp = |id: AssetId<StandardMaterial>| Some(id) == lamp || lamps.as_ref().is_some_and(|l| l.0.contains(&id));
     let todo: Vec<_> = materials
         .iter()
         .filter(|(id, m)| !done.contains(id) && m.emissive.to_vec3() != Vec3::ZERO)
@@ -161,7 +163,7 @@ fn emissive_materials(
     for id in todo {
         done.insert(id);
         if let Some(mut m) = materials.get_mut(id) {
-            let scale = EMISSIVE_SCALE * if Some(id) == lamp { LAMP_BOOST } else { 1.0 };
+            let scale = EMISSIVE_SCALE * if is_lamp(id) { LAMP_BOOST } else { 1.0 };
             m.emissive = LinearRgba::from_vec3(m.emissive.to_vec3() * scale);
             m.emissive_exposure_weight = 1.0;
         }

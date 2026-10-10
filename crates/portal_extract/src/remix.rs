@@ -122,13 +122,19 @@ fn gdeflate(blob: &[u8], out_len: usize) -> Result<Vec<u8>, String> {
             let end = if t + 1 < tiles { table[t + 1] } else { start + table[0] };
             let len = if t + 1 < tiles || last == 0 { TILE } else { last };
             let src = blob.get(data + start..data + end).ok_or("GDeflate tile runs past its blob")?;
-            let dst = out.get_mut(written..written + len).ok_or("GDeflate data larger than the image")?;
+            // (A small image's mips are all in one blob, the top one first: there's more than
+            // the top mip to unpack.)
+            if out.len() < written + len {
+                out.resize(written + len, 0);
+            }
+            let dst = &mut out[written..written + len];
             d.tile(src, dst)?;
             written += len;
         }
         let last_start = if tiles > 1 { table[tiles - 1] } else { 0 };
         at = (data + last_start + table[0]).next_multiple_of(4 << 20);
     }
+    out.truncate(out_len);
     Ok(out)
 }
 
@@ -416,17 +422,32 @@ impl Remix {
 
     /// The replacement for the texture with this hash, if Portal with RTX has one.
     pub fn material(&self, hash: u64) -> Option<Material> {
-        let name = format!("over \"mat_{hash:016X}\"");
-        // A material can be named more than once (once per layer); the one with a shader wins.
+        let name = format!(" \"mat_{hash:016X}\"");
+        // A material can be named more than once (once per layer, `over` or `def Material`);
+        // the one with a shader wins. A block runs to the next prim at its depth.
         let mut from = 0;
         while let Some(i) = self.usda[from..].find(&name) {
             let start = from + i;
-            let end = self.usda[start + name.len()..].find("\n        over \"").map(|e| start + name.len() + e).unwrap_or(self.usda.len());
+            let line = self.usda[..start].rfind('\n').map_or(0, |l| l + 1);
+            let head = self.usda[line..start].trim_start();
+            from = start + name.len();
+            if !(head == "over" || head == "def Material") {
+                continue;
+            }
+            let depth = start - line - head.len();
+            let rest = &self.usda[from..];
+            let end = rest
+                .match_indices('\n')
+                .find(|(k, _)| {
+                    let next = &rest[k + 1..];
+                    let indent = next.len() - next.trim_start_matches(' ').len();
+                    indent == depth && next[indent..].starts_with(|c: char| c.is_ascii_alphabetic())
+                })
+                .map_or(self.usda.len(), |(k, _)| from + k);
             let block = &self.usda[start..end];
-            if block.contains("over \"Shader\"") {
+            if block.contains("over \"Shader\"") || block.contains("def Shader \"Shader\"") {
                 return Some(parse_material(block));
             }
-            from = start + name.len();
         }
         None
     }

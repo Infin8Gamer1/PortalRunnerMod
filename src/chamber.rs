@@ -461,6 +461,7 @@ fn mat_for(m: &ChamberMats, mat: Mat) -> Handle<StandardMaterial> {
         Mat::Roof => m.roof.clone(),
         Mat::Wall => m.wall.clone(),
         Mat::Concrete => m.roof.clone(),
+        Mat::Clip => m.prop.clone(),
     }
 }
 
@@ -484,6 +485,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     let pits: Vec<Aabb> = if r.plates { sim.plates.iter().map(crate::props::plate_pit).collect() } else { Vec::new() };
     // The chamber's boxes (and the boxes of emitters and the like).
     for s in &sim.statics {
+        // One of Portal's maps is drawn from its own faces (`source_map`).
+        if l.source.is_some() && matches!(s.owner, Owner::Level(_)) {
+            continue;
+        }
         match s.owner {
             Owner::Level(_) if matches!(s.mat, Mat::White | Mat::Black) => {
                 // Floor tiles on top, panels on the sides and underneath.

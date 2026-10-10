@@ -192,7 +192,7 @@ pub fn update(
     let sim = &game.sim;
     let playing = !menu.open;
     let speed = c.horizontal_speed();
-    let name = game.levels[game.level_index].0;
+    let name = game.levels[game.level_index].0.as_str();
 
     if let Ok(mut v) = vis.p4().single_mut() {
         *v = if playing { Visibility::Inherited } else { Visibility::Hidden };

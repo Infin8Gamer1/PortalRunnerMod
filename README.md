@@ -123,6 +123,12 @@ M and N cycle through them; finishing one moves on to the next.
 Then Mirror's Edge's own courses from Faith Runner (Rooftops, Moves, Springboard, Training),
 where every roof and wall takes portals.
 
+Then **Portal's own maps** (test chambers 00-19 and the escape), when `portal_extract` has
+taken them from your install: drawn from their own faces with Portal's textures (and Portal
+with RTX's materials), white surfaces taking portals as in Portal, goo, cubes and the gun's
+colours from the map. Their logic (buttons, doors, elevators, GLaDOS) isn't in yet (#21), so
+for now they're places to explore: doors stay shut.
+
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
 
@@ -180,13 +186,16 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   gel.rs                  the paint grid and gel blobs
   level.rs                the level description and its builder
   levels/                 the chambers (kit.rs: shared pieces)
+  source.rs               Portal's maps (as extracted) as levels
   tests.rs                the mechanics, and each chamber beaten by script
 crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
                         their animations) out of your Portal and Portal 2 VPKs, and Portal
-                        with RTX's remastered materials and models (remix.rs, usd.rs)
+                        with RTX's remastered materials and models (remix.rs, usd.rs), and
+                        Portal's maps (bsp.rs: faces, brushes as boxes, entities; maps.rs)
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces
+src/source_map.rs       Portal's maps: listing them, drawing their faces, their lights
 src/gun.rs              shot tracers, sparks, the hold beam (and the optional gun model)
 src/hud.rs              crosshair, hints, messages, timer, debug readout
 src/menu.rs             title, pause, chamber select, settings pages, controls
@@ -218,7 +227,7 @@ The capture mode plays a scripted run and saves screenshots into the folder: scr
 `portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
 screenshot every frame), `flingfilm` (the same, falling through a floor portal),
 `cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors),
-`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `rtx` (close-ups of Portal with RTX's pieces) and
+`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `p1` (Portal's maps, each one's start; `PORTAL_FIRST_MAP`/`PORTAL_LAST_MAP` pick them, `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from), `rtx` (close-ups of Portal with RTX's pieces) and
 `tour` (each map's start), in `src/capture.rs`. Each screenshot's line says how long frames
 really take (the game's own clock is fixed at 60 a second while capturing). `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 

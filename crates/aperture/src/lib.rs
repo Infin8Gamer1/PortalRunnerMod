@@ -12,6 +12,7 @@ pub mod level;
 pub mod levels;
 pub mod portal;
 pub mod sim;
+pub mod source;
 
 pub use level::{CubeKind, Gun, Inputs, Item, Level, Mat, MeProp, Paint, Sig};
 pub use portal::{Link, Portal, PortalColor};

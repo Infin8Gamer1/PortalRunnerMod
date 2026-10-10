@@ -12,7 +12,9 @@
 //! project: run it on your own machine, against your own copies of the games.
 
 mod anim;
+mod bsp;
 mod glb;
+mod maps;
 mod remix;
 mod usd;
 mod vpk;
@@ -264,6 +266,28 @@ const RTX_MODELS: &[RtxModel] = &[
     ),
 ];
 
+/// Portal's maps to bring along: the test chambers, in order, and the escape.
+const MAPS: &[&str] = &[
+    "testchmb_a_00",
+    "testchmb_a_01",
+    "testchmb_a_02",
+    "testchmb_a_03",
+    "testchmb_a_04",
+    "testchmb_a_05",
+    "testchmb_a_06",
+    "testchmb_a_07",
+    "testchmb_a_08",
+    "testchmb_a_09",
+    "testchmb_a_10",
+    "testchmb_a_11",
+    "testchmb_a_13",
+    "testchmb_a_14",
+    "testchmb_a_15",
+    "escape_00",
+    "escape_01",
+    "escape_02",
+];
+
 /// Animations to bring along: (our model name, [(the MDL's animation, our name for it)]). A
 /// model with any is drawn as its `@idle` animation poses it (its bind pose if it has none).
 const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
@@ -279,7 +303,10 @@ fn main() {
     };
     let mut games = Vec::new();
     let rtx_dir = find("--portal-rtx", "PortalRTX");
+    // Where Portal's maps are (loose BSPs).
+    let mut maps_dir = None;
     if let Some(p1) = find("--portal", "Portal") {
+        maps_dir = Some(p1.join("portal/maps"));
         println!("Portal:   {}", p1.display());
         if let Some(g) = Game::open("portal", &p1, &["portal/portal_pak_dir.vpk", "hl2/hl2_sound_misc_dir.vpk", "hl2/hl2_misc_dir.vpk", "hl2/hl2_textures_dir.vpk"], &["portal"]) {
             games.push(g);
@@ -289,6 +316,7 @@ fn main() {
         Game::open("portal", d, &["portal_rtx/portal_pak_dir.vpk", "hl2/hl2_sound_misc_dir.vpk", "hl2/hl2_misc_dir.vpk", "hl2/hl2_textures_dir.vpk"], &["portal_rtx"])
     }) {
         println!("Portal:   (Portal with RTX's copy)");
+        maps_dir = rtx_dir.as_ref().map(|d| d.join("portal_rtx/maps"));
         games.push(g);
     } else {
         println!("Portal not found (pass --portal <dir>)");
@@ -358,7 +386,8 @@ fn main() {
                     img.save(dir.join(format!("{name}.png"))).expect("write texture");
                     done = true;
                     n += 1;
-                    let material = remix.as_ref().zip(remix::vtf_hash(&bytes)).and_then(|(r, h)| Some((r, r.material(h)?)));
+                    // (Not glass: Portal with RTX's is a translucent shader, without the panes' alpha.)
+                    let material = remix.as_ref().filter(|_| !name.starts_with("glass")).zip(remix::vtf_hash(&bytes)).and_then(|(r, h)| Some((r, r.material(h)?)));
                     if let Some((r, m)) = material {
                         match write_pbr(r, &m, &dir, name) {
                             Ok(()) => pbr += 1,
@@ -415,6 +444,21 @@ fn main() {
         for (name, ..) in RTX_MODELS {
             let _ = std::fs::remove_file(out.join("models").join(format!("{name}.glb")));
         }
+    }
+    // Portal's own test chambers (`--no-maps` skips them).
+    if let Some(dir) = maps_dir.filter(|d| d.is_dir() && !args.iter().any(|a| a == "--no-maps")) {
+        let (mut n, mut mats) = (0, 0);
+        for name in MAPS {
+            let Ok(bytes) = std::fs::read(dir.join(format!("{name}.bsp"))) else { continue };
+            match maps::extract(name, &bytes, &read_any, remix.as_ref(), &out) {
+                Ok((_, _, m)) => {
+                    n += 1;
+                    mats += m;
+                }
+                Err(e) => eprintln!("  {name}: {e}"),
+            }
+        }
+        println!("  {n} of Portal's maps ({mats} materials)");
     }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));

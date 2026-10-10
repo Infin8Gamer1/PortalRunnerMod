@@ -218,7 +218,7 @@ fn build(commands: &mut Commands, root: Entity, fonts: &UiFonts, menu: &Menu, li
     let heading = |commands: &mut Commands, panel: Entity| {
         let (big, small) = match menu.screen {
             Screen::Title => ("PORTAL RUNNER", "Mirror's Edge, with a portal gun"),
-            Screen::Pause => ("PAUSED", game.levels[game.level_index].0),
+            Screen::Pause => ("PAUSED", game.levels[game.level_index].0.as_str()),
             Screen::Chambers => ("CHAMBERS", "Best times are saved"),
             Screen::Settings(_) => ("SETTINGS", "Saved as you change them"),
             Screen::Controls => ("CONTROLS", "Keyboard and mouse  /  gamepad"),

@@ -789,3 +789,32 @@ fn speed_gel_doesnt_skid_and_leaving_it_waits_before_skidding() {
     let waited = skid_at - left_at;
     assert!((waited - delay).abs() < 0.1, "skidded {waited} s after leaving the gel");
 }
+
+/// Portal's maps, where they've been extracted (`assets/extracted/maps`): each starts with
+/// Faith standing (not falling, not stuck), and walking about doesn't drop her out of the map.
+#[test]
+fn portals_maps_stand_her_up() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let mut bad = Vec::new();
+    for name in &names {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let spawn = level.checkpoints[0].spawn;
+        let (mut sim, mut c) = start(level);
+        run(&mut sim, &mut c, 1.0, |_, _| Input::default());
+        let stood = c.state == State::Ground && (c.feet.y - spawn.y).abs() < 1.0;
+        if !stood {
+            bad.push(format!("{name}: spawn {spawn}, after 1 s {:?} at {}", c.state, c.feet));
+            continue;
+        }
+        let stood_at = c.feet;
+        run(&mut sim, &mut c, 3.0, |_, _| forward());
+        if c.feet.y < stood_at.y - 2.0 {
+            bad.push(format!("{name}: walking from {stood_at} fell to {}", c.feet));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
