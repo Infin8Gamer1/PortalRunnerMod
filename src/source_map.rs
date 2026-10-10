@@ -47,13 +47,16 @@ const MAPS: &[(&str, &str)] = &[
 /// The extracted maps there are, as levels.
 pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
     let Some(dir) = root.map(|r| r.join("maps")) else { return Vec::new() };
+    // GLaDOS's scenes, shared by every map.
+    let scenes = Arc::new(aperture::source::parse_scenes(&std::fs::read_to_string(dir.join("scenes.txt")).unwrap_or_default()));
     MAPS.iter()
         .filter(|(name, _)| dir.join(format!("{name}.mesh")).is_file())
         .map(|&(name, title)| {
             let dir: PathBuf = dir.clone();
+            let scenes = scenes.clone();
             let f: LevelFn = Arc::new(move || {
                 let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-                aperture::source::level(name, title, &read("solids"), &read("ents"))
+                aperture::source::level_with_scenes(name, title, &read("solids"), &read("ents"), &scenes)
             });
             (title.to_string(), f)
         })

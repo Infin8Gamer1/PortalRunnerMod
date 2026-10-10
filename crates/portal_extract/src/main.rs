@@ -16,6 +16,7 @@ mod bsp;
 mod glb;
 mod maps;
 mod remix;
+mod scenes;
 mod usd;
 mod vpk;
 
@@ -596,6 +597,55 @@ fn main() {
             }
         }
         println!("  {} prop models in them ({made} written, {animated} with animations, {failed} not converted)", models.len());
+        // GLaDOS's lines: the scenes the maps play, and the sounds they speak.
+        let image = read_any("scenes/scenes.image");
+        let mut waves = HashMap::new();
+        for script in ["scripts/npc_sounds_aperture_ai.txt", "scripts/game_sounds_portal.txt", "scripts/npc_sounds_glados_cores.txt", "scripts/level_sounds_escape.txt", "scripts/npc_sounds_turret_portal.txt"] {
+            if let Some(t) = read_any(script) {
+                for (k, v) in scenes::soundscripts(&String::from_utf8_lossy(&t)) {
+                    waves.entry(k).or_insert(v);
+                }
+            }
+        }
+        match image.as_deref().and_then(scenes::Image::parse) {
+            Some(img) => {
+                let mut files: Vec<String> = Vec::new();
+                for name in MAPS {
+                    let Ok(text) = std::fs::read_to_string(out.join("maps").join(format!("{name}.ents"))) else { continue };
+                    for e in bsp::parse_entities(&text) {
+                        if let Some(f) = bsp::key(&e, "SceneFile") {
+                            let f = f.replace('\\', "/").to_ascii_lowercase();
+                            if !files.contains(&f) {
+                                files.push(f);
+                            }
+                        }
+                    }
+                }
+                let (mut table, mut lines) = (String::new(), 0);
+                for f in &files {
+                    let Some(scene) = img.scene(f) else { continue };
+                    let mut said = Vec::new();
+                    for (start, script) in &scene.lines {
+                        let Some(wave) = waves.get(&script.to_ascii_lowercase()) else { continue };
+                        let stem = Path::new(wave).file_stem().and_then(|s| s.to_str()).unwrap_or("line");
+                        let ours = format!("vo_{stem}");
+                        let file = out.join("sounds").join(format!("{ours}.wav"));
+                        if !file.exists() {
+                            match read_any(&format!("sound/{wave}")) {
+                                Some(bytes) => std::fs::write(&file, bytes).expect("write sound"),
+                                None => continue,
+                            }
+                        }
+                        said.push(format!("{start}:{ours}"));
+                        lines += 1;
+                    }
+                    table.push_str(&format!("{f}|{}|{}\n", scene.length, said.join(";")));
+                }
+                std::fs::write(out.join("maps").join("scenes.txt"), table).expect("write scenes");
+                println!("  {} of GLaDOS's scenes ({lines} lines)", files.len());
+            }
+            None => println!("  no scenes.image: GLaDOS stays quiet"),
+        }
     }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));

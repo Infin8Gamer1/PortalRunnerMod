@@ -142,8 +142,28 @@ fn cube_kind(e: &Entity) -> CubeKind {
     if key(e, "skin") == Some("1") { CubeKind::Companion } else { CubeKind::Storage }
 }
 
+/// GLaDOS's scenes (`maps/scenes.txt`): scene file to (length, lines).
+pub type Scenes = HashMap<String, (f32, Vec<(f32, String)>)>;
+
+/// Read `maps/scenes.txt` (a line a scene: `file|length|start:sound;...`).
+pub fn parse_scenes(text: &str) -> Scenes {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split('|');
+            let (file, length, lines) = (f.next()?, f.next()?.parse().ok()?, f.next().unwrap_or(""));
+            let lines = lines.split(';').filter_map(|x| x.split_once(':')).filter_map(|(t, s)| Some((t.parse().ok()?, s.to_string()))).collect();
+            Some((file.to_string(), (length, lines)))
+        })
+        .collect()
+}
+
 /// A map as a level. `name` is the map's (`testchmb_a_00`), `title` what the game calls it.
 pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level {
+    level_with_scenes(name, title, solids, ents, &Scenes::new())
+}
+
+/// The same, GLaDOS speaking her scenes' lines.
+pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &str, scenes: &Scenes) -> Level {
     let mut l = Level::new(title);
     l.source = Some(name.to_string());
     let boxes = parse_solids(solids);
@@ -382,7 +402,11 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
             "math_counter" => kind = io::Kind::Counter { value: num(e, "startvalue", 0.0), min: num(e, "min", 0.0), max: num(e, "max", 0.0) },
             "logic_case" => kind = io::Kind::Case { cases: (1..=16).map(|k| key(e, &format!("Case{k:02}")).unwrap_or("").to_string()).collect() },
             "logic_auto" => kind = io::Kind::Auto,
-            "logic_choreographed_scene" => kind = io::Kind::Scene,
+            "logic_choreographed_scene" => {
+                let file = key(e, "SceneFile").unwrap_or("").replace('\\', "/").to_ascii_lowercase();
+                let (length, lines) = scenes.get(&file).cloned().unwrap_or_default();
+                kind = io::Kind::Scene { lines, length };
+            }
             "trigger_changelevel" => kind = io::Kind::ChangeLevel,
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
             "env_entity_maker" => {

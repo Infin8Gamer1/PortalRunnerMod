@@ -1102,3 +1102,19 @@ fn a_punch_knocks_a_turret_over() {
     });
     assert!(ev.iter().any(|e| matches!(e, SimEvent::TurretTipped { .. })), "the punch didn't knock it over");
 }
+
+/// GLaDOS (where her scenes have been extracted): Chamber 00's first scene starts six seconds
+/// in, and her first line 20.4 s into it.
+#[test]
+fn portals_chamber_00_glados_speaks_on_cue() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |f: &str| std::fs::read_to_string(dir.join(f));
+    let (Ok(solids), Ok(ents), Ok(scenes)) = (text("testchmb_a_00.solids"), text("testchmb_a_00.ents"), text("scenes.txt")) else { return };
+    let level = crate::source::level_with_scenes("testchmb_a_00", "00", &solids, &ents, &crate::source::parse_scenes(&scenes));
+    let (mut sim, mut c) = start(level);
+    run(&mut sim, &mut c, 26.0, |_, _| Input::default());
+    let said = |sim: &Sim| sim.io.as_ref().unwrap().voice.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>();
+    assert!(!said(&sim).contains(&"vo_00_part1_entry-1".to_string()), "too soon: {:?}", said(&sim));
+    run(&mut sim, &mut c, 1.0, |_, _| Input::default());
+    assert!(said(&sim).contains(&"vo_00_part1_entry-1".to_string()), "she didn't speak: {:?}", said(&sim));
+}

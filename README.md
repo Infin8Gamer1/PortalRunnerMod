@@ -132,8 +132,8 @@ with RTX's materials), white surfaces taking portals as in Portal, goo, cubes an
 colours from the map, with their props (Portal's models: doors, elevators, droppers, furniture),
 and their logic: Source's entity I/O runs (relays, timers, counters, triggers), so buttons
 open doors, preset portals come and go, droppers make cubes, elevators ride and the exit
-elevator ends the chamber, pellets fly from their launchers into their catchers. GLaDOS isn't
-heard yet (her scenes are a short wait). Turrets watch for you, fire when they see you, and
+elevator ends the chamber, pellets fly from their launchers into their catchers, and GLaDOS
+speaks her lines on cue (her scenes, read from Portal's scenes.image). Turrets watch for you, fire when they see you, and
 tip over when a cube hits them, you run into them, or you kick them (Mirror's Edge's melee).
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
@@ -200,6 +200,7 @@ crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> 
                         their animations) out of your Portal and Portal 2 VPKs, and Portal
                         with RTX's remastered materials and models (remix.rs, usd.rs), and
                         Portal's maps (bsp.rs: faces, brushes as boxes, entities; maps.rs)
+                        and GLaDOS's scenes (scenes.rs)
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces

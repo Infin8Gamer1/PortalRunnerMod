@@ -24,6 +24,8 @@ pub struct PortalAudio {
     /// When each sound last started, so one that fires many times a frame (gel splats,
     /// cubes piling up) plays once rather than stacking into a roar.
     recent: std::collections::HashMap<AssetId<AudioSource>, f32>,
+    /// GLaDOS's last line played: (the level load it was in, its count).
+    voice: (u64, u32),
 }
 
 /// The same sound doesn't start again within this long (s).
@@ -143,6 +145,14 @@ pub fn play(
             }
             SimEvent::PlayerDied => one_shot(&mut commands, ex.sound("chamber_fail"), 0.6 * fx, 1.0),
             SimEvent::Checkpoint { .. } | SimEvent::MoverAt { .. } => {}
+        }
+    }
+    // GLaDOS, over the speakers (not from anywhere in particular).
+    if let Some(io) = &sim.io {
+        let heard = if st.voice.0 == game.loads { st.voice.1 } else { 0 };
+        for (k, sound) in io.voice.iter().filter(|(k, _)| *k > heard) {
+            one_shot(&mut commands, ex.sound(sound), 1.0 * fx, 1.0);
+            st.voice = (game.loads, *k);
         }
     }
     for e in &game.ctrl.events {

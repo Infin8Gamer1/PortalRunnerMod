@@ -78,7 +78,9 @@ pub enum Kind {
     Switch { sig: Sig },
     /// A preset portal (`start`: open as the map starts).
     Portal { color: PortalColor, portal: Portal, start: bool },
-    Scene,
+    /// A choreographed scene (GLaDOS speaking): its lines (start, sound) and length; with none
+    /// known, a short wait.
+    Scene { lines: Vec<(f32, String)>, length: f32 },
     /// Spawns a cube here (env_entity_maker, point_template).
     Maker { at: Vec3, kind: CubeKind },
     /// A train's path point (`node` on mover `mover`).
@@ -125,6 +127,8 @@ pub struct Io {
     /// one's started (so the host can tell a replay).
     pub animations: HashMap<usize, (String, u32)>,
     animation_count: u32,
+    /// GLaDOS's lines as she says them: a count that goes up with each, and the sound.
+    pub voice: Vec<(u32, String)>,
     /// Which preset portal (entity) is open in each colour.
     open: [Option<usize>; 2],
     rng: u32,
@@ -524,13 +528,25 @@ impl Io {
                     _ => {}
                 }
             }
-            Kind::Scene => match i.as_str() {
+            Kind::Scene { lines, length } => match i.as_str() {
                 "start" => {
                     self.fire(e, "OnStart", None);
-                    self.queue.push(Pending { at: now + SCENE_SECONDS, target: "!self".into(), input: "__done".into(), param: String::new(), caller: e });
+                    let length = if length > 0.0 { length } else { SCENE_SECONDS };
+                    self.queue.push(Pending { at: now + length, target: "!self".into(), input: "__done".into(), param: String::new(), caller: e });
+                    for (at, sound) in lines {
+                        self.queue.push(Pending { at: now + at, target: "!self".into(), input: "__say".into(), param: sound, caller: e });
+                    }
+                }
+                "__say" => {
+                    let n = self.voice.last().map_or(1, |v| v.0 + 1);
+                    self.voice.push((n, param.to_string()));
+                    // (Only the last few are kept: the host plays them as they come.)
+                    if self.voice.len() > 16 {
+                        self.voice.remove(0);
+                    }
                 }
                 "__done" => self.fire(e, "OnCompletion", None),
-                "cancel" => self.queue.retain(|p| !(p.caller == e && p.input == "__done")),
+                "cancel" => self.queue.retain(|p| !(p.caller == e && (p.input == "__done" || p.input == "__say"))),
                 _ => {}
             },
             Kind::Maker { at, kind } if i == "forcespawn" => {
