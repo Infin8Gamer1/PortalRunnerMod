@@ -192,7 +192,7 @@ fn setup_world(mut commands: Commands) {
         DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: true, ..default() },
         Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y),
         // Lights the world, Faith's body and the first-person arms.
-        RenderLayers::from_layers(&[0, PLAYER_LAYER, viewmodel::VIEWMODEL_LAYER, body3p::BODY_LAYER]),
+        RenderLayers::from_layers(&[0, PLAYER_LAYER, viewmodel::VIEWMODEL_LAYER, body3p::BODY_LAYER, body3p::THROUGH_LAYER]),
     ));
     commands.spawn((
         PlayerCamera,

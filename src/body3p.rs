@@ -21,6 +21,9 @@ use crate::Game;
 
 /// The third-person body's render layer.
 pub const BODY_LAYER: usize = 12;
+/// Her copy through the portal she's in. Not drawn by that portal's own first view, whose
+/// camera is her eye carried through the same way: it would be inside the copy's head.
+pub const THROUGH_LAYER: usize = 13;
 
 #[derive(Resource)]
 pub struct Body3p {
@@ -63,7 +66,8 @@ pub fn setup(
     let uvs: Vec<[f32; 2]> = body.mesh.vertices.iter().map(|v| v.uv).collect();
     let layer = RenderLayers::layer(BODY_LAYER);
     let root = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
-    let through = commands.spawn((Transform::default(), Visibility::Hidden, layer.clone())).id();
+    let through_layer = RenderLayers::layer(THROUGH_LAYER);
+    let through = commands.spawn((Transform::default(), Visibility::Hidden, through_layer.clone())).id();
     let mut handles = vec![];
     for (k, sec) in body.mesh.sections.iter().enumerate() {
         let m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
@@ -87,7 +91,7 @@ pub fn setup(
             reflectance: 0.3,
             ..default()
         });
-        for parent in [root, through] {
+        for (parent, layer) in [(root, &layer), (through, &through_layer)] {
             let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat.clone()), Transform::default(), layer.clone())).id();
             commands.entity(parent).add_child(e);
         }

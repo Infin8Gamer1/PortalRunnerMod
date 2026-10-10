@@ -178,8 +178,9 @@ PORTAL_CAPTURE=shots PORTAL_SCRIPT=portals cargo run --release
 ```
 
 The capture mode plays a scripted run and saves screenshots into the folder: scripts are
-`portals`, `stations`, `recursion`, `fling`, `gun` and `tour` (each map's start), in
-`src/capture.rs`. `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
+`portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
+screenshot every frame), `cubethrough` (a cube held half through one) and `tour` (each map's
+start), in `src/capture.rs`. `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 
 ## Credits
 

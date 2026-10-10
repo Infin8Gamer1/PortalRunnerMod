@@ -608,7 +608,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             PointLight { intensity: 900_000.0, range: 40.0, radius: 0.3, shadow_maps_enabled: false, color: Color::srgb(1.0, 0.97, 0.92), ..default() },
             Transform::from_translation(*p - Vec3::Y * 0.3),
             // The world, her own legs, and her third-person body (seen through portals).
-            bevy::camera::visibility::RenderLayers::from_layers(&[0, crate::portal_render::PLAYER_LAYER, crate::body3p::BODY_LAYER]),
+            bevy::camera::visibility::RenderLayers::from_layers(&[0, crate::portal_render::PLAYER_LAYER, crate::body3p::BODY_LAYER, crate::body3p::THROUGH_LAYER]),
         ));
     }
     for (paint, mat) in [(Paint::Bounce, &m.paint[0]), (Paint::Speed, &m.paint[1]), (Paint::Portal, &m.paint[2])] {

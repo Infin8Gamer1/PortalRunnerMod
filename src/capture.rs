@@ -55,6 +55,8 @@ enum Act {
     Portal(PortalColor, Vec3, Vec3, Vec3),
     /// Open a menu screen.
     Menu(crate::menu::Screen),
+    /// Hold this input for some frames, with a screenshot every frame (name_00, name_01...).
+    Film(&'static str, MoveInput, u32),
 }
 
 fn fwd() -> MoveInput {
@@ -274,6 +276,27 @@ fn script(name: &str) -> Vec<Act> {
             Hold(MoveInput::default(), 12),
             Shot("b03_jumping"),
         ],
+        // Running through a wall portal, a frame at a time: no frame should show black.
+        "through" => vec![
+            Map(0),
+            Wait(60),
+            Teleport(Vec3::new(-23.0, 0.0, 0.0)),
+            Wait(20),
+            Portal(PortalColor::Orange, Vec3::new(-24.0, 1.2, 0.0), Vec3::X, Vec3::Y),
+            Portal(PortalColor::Blue, Vec3::new(-18.0, 1.2, 0.0), Vec3::NEG_X, Vec3::Y),
+            Look(-90.0, 0.0),
+            Wait(30),
+            Hold(fwd(), 65),
+            Film("t", fwd(), 30),
+            // Into a wall portal at a sprint, out of the other wall.
+            Teleport(Vec3::new(14.0, 0.0, 18.0)),
+            Portal(PortalColor::Blue, Vec3::new(24.0, 1.2, 18.0), Vec3::NEG_X, Vec3::Y),
+            Portal(PortalColor::Orange, Vec3::new(-24.0, 1.2, 18.0), Vec3::X, Vec3::Y),
+            Look(-90.0, 0.0),
+            Wait(10),
+            Hold(fwd(), 105),
+            Film("w", fwd(), 24),
+        ],
         // Mirror's Edge's props on Chamber 05's roofs, and its ladder.
         "meprops" => vec![
             Map(5),
@@ -456,6 +479,14 @@ fn script(name: &str) -> Vec<Act> {
     }
 }
 
+/// One frame of a `Film`.
+fn film(commands: &mut Commands, dir: &str, name: &str, k: u32, game: &Game) {
+    let path = format!("{dir}/{name}_{k:02}.png");
+    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    let held = game.sim.held.map(|i| (game.sim.props[i].pos, game.sim.props[i].env));
+    println!("capture: {name}_{k:02}  feet {} vel {} held {held:?}", game.ctrl.feet, game.ctrl.vel);
+}
+
 pub fn run(
     mut commands: Commands,
     mut cap: ResMut<Capture>,
@@ -476,8 +507,13 @@ pub fn run(
     }
     if cap.wait > 0 {
         cap.wait -= 1;
-        if let Some(Act::Hold(i, _)) = acts.get(cap.step) {
-            game.scripted = Some(*i);
+        match acts.get(cap.step) {
+            Some(Act::Hold(i, _)) => game.scripted = Some(*i),
+            Some(Act::Film(name, i, n)) => {
+                game.scripted = Some(*i);
+                film(&mut commands, &cap.dir, name, n - cap.wait - 1, &game);
+            }
+            _ => {}
         }
         if cap.wait == 0 {
             cap.step += 1;
@@ -499,6 +535,11 @@ pub fn run(
             return;
         }
         Act::Hold(i, n) => {
+            game.scripted = Some(*i);
+            cap.wait = *n;
+            return;
+        }
+        Act::Film(_, i, n) => {
             game.scripted = Some(*i);
             cap.wait = *n;
             return;

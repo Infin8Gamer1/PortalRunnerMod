@@ -42,6 +42,10 @@ pub const MAX_DEPTH: usize = 4;
 /// opening nor shows up flat across the view through it.
 pub const SURFACE_LIFT: f32 = 0.012;
 
+/// How deep the tunnel behind an opening goes: the eye can be this far through before
+/// she's carried across (her eye leads her body).
+const TUNNEL_DEPTH: f32 = 0.6;
+
 const PORTAL_SHADER: Handle<Shader> = uuid_handle!("7d3b8a1e-2f4c-4f8e-9a51-6c2e0b9d4a17");
 
 pub fn color_of(c: PortalColor) -> LinearRgba {
@@ -209,7 +213,7 @@ fn tunnel_mesh(half: Vec2, depth: f32) -> Mesh {
     let (x, y, d) = (half.x, half.y, -depth);
     let mut pos = Vec::new();
     let mut idx = Vec::new();
-    // Each face's corners, wound to face inwards.
+    // Each face's corners, anticlockwise seen from inside (the side that's drawn).
     let faces = [
         [[-x, -y, 0.0], [-x, -y, d], [-x, y, d], [-x, y, 0.0]],
         [[x, -y, d], [x, -y, 0.0], [x, y, 0.0], [x, y, d]],
@@ -220,7 +224,7 @@ fn tunnel_mesh(half: Vec2, depth: f32) -> Mesh {
     for f in faces {
         let b = pos.len() as u32;
         pos.extend_from_slice(&f);
-        idx.extend_from_slice(&[b, b + 2, b + 1, b, b + 3, b + 2]);
+        idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
     let n = pos.len();
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
@@ -254,7 +258,7 @@ fn setup(
                 RenderTarget::from(images_per_level[level - 1][c.index()].clone()),
                 Projection::custom(ObliqueProjection::default()),
                 Transform::default(),
-                RenderLayers::from_layers(&[0, SURFACE_LAYER + level, crate::body3p::BODY_LAYER]),
+                cam_layers(level, true),
                 // The oblique projection would confuse the light clusters' depth slices.
                 ClusterConfig::Single,
             ));
@@ -262,7 +266,7 @@ fn setup(
     }
 
     let quad = meshes.add(portal_quad(aperture::portal::PORTAL_HALF));
-    let tunnel = meshes.add(tunnel_mesh(aperture::portal::PORTAL_HALF, 0.6));
+    let tunnel = meshes.add(tunnel_mesh(aperture::portal::PORTAL_HALF, TUNNEL_DEPTH));
     let mut surface_mats: [Vec<Handle<PortalMaterial>>; 2] = [Vec::new(), Vec::new()];
     for c in PortalColor::BOTH {
         let col = color_of(c);
@@ -301,14 +305,26 @@ fn setup(
     commands.insert_resource(PortalRender { depth: 3, scale: 1.0, size, images: images_per_level, surface_mats, tunnel_mats });
 }
 
+/// What a portal camera draws: the world, the surfaces at its level, Faith's body, and her
+/// copy through a portal (`through`).
+fn cam_layers(level: usize, through: bool) -> RenderLayers {
+    let layers = RenderLayers::from_layers(&[0, SURFACE_LAYER + level, crate::body3p::BODY_LAYER]);
+    if through {
+        layers.with(crate::body3p::THROUGH_LAYER)
+    } else {
+        layers
+    }
+}
+
 /// Whether any of a portal's opening shows on a camera's screen.
 fn on_screen(clip_from_world: Mat4, cam: Vec3, p: &Portal) -> bool {
     let dist = p.signed_distance(cam);
+    // In the opening (or just through it, before she's carried across): it's all round.
+    if dist < 0.5 && dist > -TUNNEL_DEPTH && p.in_rect(cam, -0.3) {
+        return true;
+    }
     if dist < -0.05 {
         return false;
-    }
-    if dist < 0.5 && p.in_rect(cam, -0.3) {
-        return true;
     }
     let mut lo = Vec2::splat(f32::INFINITY);
     let mut hi = Vec2::splat(f32::NEG_INFINITY);
@@ -335,7 +351,7 @@ pub fn update(
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<PortalMaterial>>,
     main: Query<(&Transform, &Projection, Option<&DistanceFog>), (With<PlayerCamera>, Without<PortalCam>)>,
-    mut cams: Query<(Entity, &PortalCam, &mut Camera, &mut Transform, &mut Projection, Option<&mut DistanceFog>), Without<PlayerCamera>>,
+    mut cams: Query<(Entity, &PortalCam, &mut Camera, &mut Transform, &mut Projection, &mut RenderLayers, Option<&mut DistanceFog>), Without<PlayerCamera>>,
     mut surfaces: Query<(&PortalSurface, &mut Transform, &mut Visibility), (Without<PortalCam>, Without<PlayerCamera>, Without<PortalTunnel>)>,
     mut tunnels: Query<(&PortalTunnel, &mut Transform, &mut Visibility), (Without<PortalCam>, Without<PlayerCamera>, Without<PortalSurface>)>,
     mut commands: Commands,
@@ -387,7 +403,7 @@ pub fn update(
         }
     }
 
-    for (e, pc, mut cam, mut tf, mut proj, fog) in &mut cams {
+    for (e, pc, mut cam, mut tf, mut proj, mut layers, fog) in &mut cams {
         let ci = pc.color.index();
         let on = linked && pc.level <= depth && active[ci][pc.level];
         if cam.is_active != on {
@@ -395,6 +411,11 @@ pub fn update(
         }
         if !on {
             continue;
+        }
+        // Her copy through the portal she's in stands where that portal's first camera is.
+        let want = cam_layers(pc.level, !(pc.level == 1 && sim.player_env == Some(pc.color)));
+        if *layers != want {
+            *layers = want;
         }
         *tf = cam_tf[ci][pc.level];
         // Clip at the exit portal's surface (pushed out a hair so its own wall goes too).
@@ -408,7 +429,10 @@ pub fn update(
                 o.fov = fov;
                 o.aspect = aspect;
                 o.near = near;
-                o.plane = Some(plane_view);
+                // With the camera already out in front of the exit (her eye through the
+                // opening before she is), there's no wall between it and the view to cut away,
+                // and an oblique near plane behind the camera would cut into the view instead.
+                o.plane = (plane_view.w < -1e-4).then_some(plane_view);
             }
         }
         match (main_fog, fog) {
@@ -453,7 +477,7 @@ pub fn update(
             continue;
         };
         let l = p.to_local(main_tf.translation);
-        let near_it = linked && l.z < 0.15 && l.z > -0.55 && l.x.abs() < p.half.x && l.y.abs() < p.half.y;
+        let near_it = linked && l.z < 0.15 && l.z > 0.05 - TUNNEL_DEPTH && l.x.abs() < p.half.x && l.y.abs() < p.half.y;
         *vis = if near_it { Visibility::Inherited } else { Visibility::Hidden };
         tf.translation = p.center + p.normal * SURFACE_LIFT;
         tf.rotation = p.rotation();
