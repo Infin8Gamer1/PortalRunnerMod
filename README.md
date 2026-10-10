@@ -30,16 +30,33 @@ when they're extracted, and stand-ins when they aren't. `--inspect <model.mdl>..
 models (parts, bones, size) instead of extracting. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
-**DLSS** (NVIDIA RTX, Vulkan) is a build option, since it needs NVIDIA's DLSS SDK (from
-https://github.com/NVIDIA/DLSS, under NVIDIA's licence) and the Vulkan SDK's headers:
+**DLSS** (NVIDIA RTX, Vulkan) is a build option, since it needs NVIDIA's DLSS SDK, which you
+download yourself under NVIDIA's licence. It must be version 310.5.3 (what Bevy 0.19's DLSS is
+built against); its libraries are in Git LFS:
 
 ```
-DLSS_SDK=/path/to/DLSS VULKAN_SDK=/usr cargo run --release --features dlss
+git clone --branch v310.5.3 --depth 1 https://github.com/NVIDIA/DLSS.git
+cd DLSS && git lfs pull
 ```
 
-Then Settings > Graphics > DLSS offers DLAA, Quality, Balanced, Performance and Ultra
-performance (it replaces the anti-aliasing setting, and the portal views render at its lower
-resolution too). Without the feature, or on a GPU without DLSS, the setting says so.
+Then set `DLSS_SDK` to that folder and `VULKAN_SDK` to where the Vulkan headers are (`/usr` on
+Linux with the distribution's `vulkan-headers`; the Vulkan SDK on Windows), and have clang
+installed. `DLSS_SDK` is also where the game finds DLSS's libraries when it runs, so keep it
+set (in your shell profile, say):
+
+```
+export DLSS_SDK=$HOME/Documents/Git/DLSS VULKAN_SDK=/usr
+cargo run --release --features dlss
+```
+
+Settings > Graphics > DLSS then offers DLAA, Quality, Balanced, Performance and Ultra
+performance, in place of the anti-aliasing setting (the portal views render at its lower
+resolution too). With ray-traced lighting it's **DLSS Ray Reconstruction**, which denoises the
+traced light as it upscales (no grain, even moving fast), and the setting says so. The log
+says which DLSS features the GPU has. Without the feature, or on a GPU without DLSS, the
+setting says so. Frame times on an RTX 4080 at 1440p, ray traced, standing still / with a pair
+of portals in view: off (TAA) 5.4 / 13.3 ms, DLAA 11.7 / 19.1, Quality 6.2 / 10.7, Balanced
+5.2 / 8.9, Performance 4.1 / 7.5.
 
 **Lighting is ray traced** (Bevy's Solari) on GPUs with hardware ray tracing (NVIDIA RTX,
 AMD RX 6000 and later, on Vulkan): the sun, the ceiling panels and everything that glows light

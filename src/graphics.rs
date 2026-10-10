@@ -10,7 +10,7 @@ use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::anti_alias::smaa::Smaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
-use bevy::camera::{Exposure, Hdr};
+use bevy::camera::{CameraMainTextureUsages, Exposure, Hdr};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
@@ -18,6 +18,7 @@ use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::prelude::*;
 use bevy::render::camera::{MipBias, TemporalJitter};
+use bevy::render::render_resource::TextureUsages;
 use bevy::render::view::Msaa;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, VideoModeSelection, WindowMode};
 
@@ -45,8 +46,15 @@ pub const SHADOWS: [&str; 4] = ["Off", "Low", "Medium", "High"];
 /// DLSS settings, and how much of the window's resolution each renders at.
 pub const DLSS_MODES: [(&str, f32); 6] = [("Off", 1.0), ("DLAA", 1.0), ("Quality", 0.667), ("Balanced", 0.58), ("Performance", 0.5), ("Ultra perf.", 0.333)];
 
-/// Whether DLSS is usable: built in, and this GPU has it (set once the renderer's up).
+/// Whether DLSS is usable: built in, and this GPU has it (set once the renderer's up). And
+/// whether it has Ray Reconstruction, which with ray-traced lighting denoises it as well.
 static DLSS_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DLSS_RR_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// DLSS Ray Reconstruction is in use: DLSS on, with ray-traced lighting, on a GPU that has it.
+fn ray_reconstruction(settings: &Settings) -> bool {
+    dlss_on(settings) && crate::raytrace::active() && DLSS_RR_OK.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 pub fn dlss_label(v: f32) -> String {
     let name = DLSS_MODES[(v as usize).min(DLSS_MODES.len() - 1)].0;
@@ -56,6 +64,8 @@ pub fn dlss_label(v: f32) -> String {
         format!("{name} (not built in)")
     } else if !DLSS_OK.load(std::sync::atomic::Ordering::Relaxed) {
         format!("{name} (no GPU support)")
+    } else if crate::raytrace::active() && DLSS_RR_OK.load(std::sync::atomic::Ordering::Relaxed) {
+        format!("{name} + Ray Reconstruction")
     } else {
         name.to_string()
     }
@@ -101,9 +111,17 @@ impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
         #[cfg(feature = "dlss")]
-        app.add_systems(PreUpdate, |ok: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>| {
-            DLSS_OK.store(ok.is_some(), std::sync::atomic::Ordering::Relaxed);
-        });
+        app.add_systems(
+            PreUpdate,
+            |ok: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>, rr: Option<Res<bevy::anti_alias::dlss::DlssRayReconstructionSupported>>, mut told: Local<bool>| {
+                DLSS_OK.store(ok.is_some(), std::sync::atomic::Ordering::Relaxed);
+                DLSS_RR_OK.store(rr.is_some(), std::sync::atomic::Ordering::Relaxed);
+                if !*told {
+                    *told = true;
+                    info!("DLSS: super resolution {}, ray reconstruction {}", if ok.is_some() { "available" } else { "not available" }, if rr.is_some() { "available" } else { "not available" });
+                }
+            },
+        );
     }
 }
 
@@ -157,7 +175,8 @@ fn apply(
     let ev = (settings.brightness * 4.0).round() as i32;
     let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
     let dlss = if dlss_on(&settings) { settings.dlss as i32 } else { 0 };
-    let cams = (aa, sharpen, ev * 10000 + fx * 10 + dlss);
+    let rr = ray_reconstruction(&settings);
+    let cams = (aa, sharpen, ev * 100000 + fx * 100 + dlss * 2 + rr as i32);
     // DLSS does the anti-aliasing itself. Ray-traced lighting needs TAA: it's what smooths
     // the traced light's grain over frames (and it can't take MSAA).
     let rt = crate::raytrace::active();
@@ -203,8 +222,8 @@ fn apply(
             }
             #[cfg(feature = "dlss")]
             {
-                use bevy::anti_alias::dlss::{Dlss, DlssPerfQualityMode};
-                ec.remove::<Dlss>();
+                use bevy::anti_alias::dlss::{Dlss, DlssPerfQualityMode, DlssRayReconstructionFeature};
+                ec.remove::<(Dlss, Dlss<DlssRayReconstructionFeature>)>();
                 if dlss > 0 {
                     let perf_quality_mode = match dlss {
                         1 => DlssPerfQualityMode::Dlaa,
@@ -213,7 +232,12 @@ fn apply(
                         4 => DlssPerfQualityMode::Performance,
                         _ => DlssPerfQualityMode::UltraPerformance,
                     };
-                    ec.insert(Dlss { perf_quality_mode, ..default() });
+                    if rr {
+                        // Upscales and denoises the traced light in one (in place of TAA).
+                        ec.insert(Dlss::<DlssRayReconstructionFeature> { perf_quality_mode, reset: false, _phantom_data: Default::default() });
+                    } else {
+                        ec.insert(Dlss { perf_quality_mode, ..default() });
+                    }
                 }
             }
             if settings.sharpening > 0.01 {
@@ -229,8 +253,12 @@ fn apply(
         // The arms and the gun draw over the player's picture, into the same HDR texture
         // (a camera with a different format or sampling would start from its own, black, one
         // and copy that over everything).
+        // The same texture usages too: DLSS and the traced light both add storage to the
+        // player's (DLSS out of sight, in the renderer), and a camera with other usages gets a
+        // texture of its own, never cleared, laid over the picture.
+        let usages = if dlss > 0 || rt { CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING) } else { CameraMainTextureUsages::default() };
         for e in &overlays {
-            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface));
+            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface, usages));
         }
     }
 

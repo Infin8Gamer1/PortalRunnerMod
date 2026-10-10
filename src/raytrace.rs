@@ -103,23 +103,18 @@ fn check_support(mut commands: Commands, device: Option<Res<RenderDevice>>) {
 /// Solari on the player's camera and the first portal views; a deferred prepass on the
 /// deeper ones (deferred materials draw nowhere else). Through a portal there's no reset of
 /// the traced light's history: most of it is in world space (still good), and what's kept per
-/// pixel is checked against the new view anyway. The overlay cameras (arms, gun) draw
-/// into the player's picture, so their main texture is made the same way as its (or they'd
-/// get one of their own, never cleared, laid over it).
+/// pixel is checked against the new view anyway. (The overlay cameras' texture usages are
+/// matched to the player's in `graphics`.)
 #[allow(clippy::type_complexity)]
 fn cameras(
     mut commands: Commands,
     player: Query<Entity, (With<PlayerCamera>, Without<SolariLighting>)>,
     portals: Query<(Entity, &PortalCam), (Without<SolariLighting>, Without<DeferredPrepass>)>,
-    overlays: Query<Entity, (With<crate::graphics::OverlayCamera>, Without<Traced>)>,
 ) {
     let usages = CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING);
     let traced = (SolariLighting::default(), usages, Msaa::Off);
     for e in &player {
         commands.entity(e).insert(traced.clone());
-    }
-    for e in &overlays {
-        commands.entity(e).insert((Traced, usages));
     }
     for (e, pc) in &portals {
         if pc.level <= TRACED_DEPTH {
@@ -131,10 +126,6 @@ fn cameras(
         }
     }
 }
-
-/// An overlay camera set up for the traced picture.
-#[derive(Component)]
-struct Traced;
 
 /// The arms and the gun are drawn by overlay cameras with no deferred pass: their materials
 /// draw forward.

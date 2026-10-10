@@ -51,7 +51,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var c: vec3<f32>;
     if linked > 0.5 && mode < 1.5 {
-        let screen = (in.position.xy - view.viewport.xy) / view.viewport.zw;
+        // The main pass's own viewport: with DLSS it draws at a lower resolution than the
+        // window's (which `viewport` is), and is upscaled after.
+        let screen = (in.position.xy - view.main_pass_viewport.xy) / view.main_pass_viewport.zw;
         c = textureSample(view_tex, view_smp, screen).rgb;
     } else {
         // Closed: a slow swirl of its colour.
