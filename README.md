@@ -23,13 +23,19 @@ cargo run --release
 ```
 
 The extractor finds the games in the usual Steam folders (Linux and Windows); otherwise pass
-`--portal <dir>` and `--portal2 <dir>`. If Portal with RTX is installed too (or passed with
-`--portal-rtx <dir>`), the chamber's walls and floors take its remastered, physically based
-materials (normal, roughness and metallic maps) for the ray-traced lighting. Run it again after pulling changes that add models: the
+`--portal <dir>` and `--portal2 <dir>`. Run it again after pulling changes that add models: the
 puzzle pieces (buttons, cube sockets, pedestal buttons, cubes, droppers, faith plates, chamber
 doors, grill emitters, laser emitters, catchers and relays, light bridge emitters) use Portal
 2's models when they're extracted, and stand-ins when they aren't. The faith plate brings its
-launch animation along. `--inspect <model.mdl>...` describes models (parts, bones, size,
+launch animation along.
+
+If Portal with RTX is installed too (or passed with `--portal-rtx <dir>`), its remaster is used
+where it has one, for the ray-traced lighting: the chamber's walls and floors take its
+physically based materials (normal, roughness and metallic maps), and Portal's own versions of
+the storage cube, floor and pedestal buttons, dropper iris, round chamber door and grill
+emitters replace Portal 2's, with their maps. (Portal 2's mechanics, lasers, light bridges,
+faith plates, gel, cube sockets and the reflection cube, have no Portal version and stay
+Portal 2's.) `--inspect <model.mdl>...` describes models (parts, bones, size,
 animations) instead of extracting. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
@@ -174,7 +180,8 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   levels/                 the chambers (kit.rs: shared pieces)
   tests.rs                the mechanics, and each chamber beaten by script
 crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
-                        their animations) out of your Portal and Portal 2 VPKs
+                        their animations) out of your Portal and Portal 2 VPKs, and Portal
+                        with RTX's remastered materials and models (remix.rs, usd.rs)
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces
@@ -190,11 +197,12 @@ src/portal_audio.rs     Portal's sounds
 src/audio.rs            Mirror's Edge's sounds (Faith Runner)
 src/me_viewmodel.rs     Faith's Mirror's Edge body (Faith Runner)
 src/body3p.rs           her third-person body, seen through portals (and her shadow)
-src/props.rs            Portal 2's models for the puzzle pieces
+src/props.rs            Portal 2's (and Portal with RTX's) models for the puzzle pieces
 src/me_props.rs         Mirror's Edge's props and ladders, from the install
 src/settings.rs         the settings and their pages
 src/capture.rs          scripted screenshot runs (see below)
 docs/faith-runner.md    Faith Runner's own README: every move, in detail
+vendor/bevy_solari/     Bevy's ray tracer with one crash fix (see vendor/README.md)
 ```
 
 ## Checking changes
@@ -207,7 +215,8 @@ PORTAL_CAPTURE=shots PORTAL_SCRIPT=portals cargo run --release
 The capture mode plays a scripted run and saves screenshots into the folder: scripts are
 `portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
 screenshot every frame), `flingfilm` (the same, falling through a floor portal),
-`cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors) and
+`cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors),
+`plate` (the faith plate throwing), `rtx` (close-ups of Portal with RTX's pieces) and
 `tour` (each map's start), in `src/capture.rs`. Each screenshot's line says how long frames
 really take (the game's own clock is fixed at 60 a second while capturing). `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 

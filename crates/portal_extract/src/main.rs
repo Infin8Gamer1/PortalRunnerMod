@@ -237,6 +237,13 @@ const RTX_MODELS: &[RtxModel] = &[
             ("Arm_4_Rot3", "arms"),
         ],
     ),
+    // An emancipation grill's emitter post (Portal's grills are level geometry; this is the
+    // remaster of their edge), with its glass strip. (Its lip, a separate file, is left out.)
+    (
+        "rtx_fizzler_emitter",
+        &[("SubUSDs/SM_Fixture_FizzleGates_A1_01.usd", 0.0, 0.0)],
+        &[("SM_Fixture_FizzleGates_A1", "post"), ("SM_Fixture_FizzleGates_A1_Glass", "post")],
+    ),
     // Portal's round chamber door: the frame round the doorway (built lying down), and two
     // leaves that slide apart.
     (

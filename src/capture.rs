@@ -344,6 +344,13 @@ fn script(name: &str) -> Vec<Act> {
             Look(0.0, 55.0),
             Wait(20),
             Shot("r07_dropper"),
+            // Chamber 01's grill.
+            Map(1),
+            Wait(60),
+            Teleport(Vec3::new(0.0, 0.0, -20.5)),
+            Look(0.0, -5.0),
+            Wait(30),
+            Shot("r08_fizzler"),
         ],
         // The faith plate at rest from two sides, then (from beside it, after it's thrown her)
         // its paddle snapping up, holding, and settling back into its pit.

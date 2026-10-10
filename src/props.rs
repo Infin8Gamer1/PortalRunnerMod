@@ -25,6 +25,7 @@ pub const NAMES: &[&str] = &[
     "rtx_floor_button",
     "rtx_dropper_cover",
     "rtx_door",
+    "rtx_fizzler_emitter",
     // Portal 2's.
     "metal_box",
     "companion_cube",
@@ -233,15 +234,17 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             spawn_model(commands, scene.clone(), Transform::from_translation(rl.at), PropKind::Static);
         }
     }
-    // Emancipation grills: an emitter post at each end.
-    if let Some(scene) = models.get("fizzler_emitter") {
+    // Emancipation grills: an emitter post at each end, Portal with RTX's remaster (3.29 tall)
+    // or Portal 2's (3.26), each from its middle.
+    if let Some((scene, which)) = models.first(&["rtx_fizzler_emitter", "fizzler_emitter"]) {
         r.fizzlers = true;
+        let height = if which == "rtx_fizzler_emitter" { 3.29 } else { 3.26 };
         for f in &sim.fizzlers {
             let s = f.b.size();
             let c = f.b.center();
             let along = if s.x >= s.z { Vec3::X } else { Vec3::Z };
             let half = s.x.max(s.z) * 0.5;
-            let k = s.y / 3.26;
+            let k = s.y / height;
             for sign in [-1.0f32, 1.0] {
                 // The post's inside face towards the field.
                 let inward = -along * sign;
