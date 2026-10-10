@@ -2,7 +2,7 @@
 name = "portal_extract"
 version = "0.1.0"
 edition = "2024"
-description = "Copies what Portal Runner uses out of your own Portal / Portal 2 installs: sounds, textures (VTF to PNG) and models (MDL to glTF)"
+description = "Copies what Portal Runner uses out of your own Portal / Portal 2 / Portal with RTX installs: sounds, textures (VTF to PNG, and RTX Remix PBR maps) and models (MDL to glTF)"
 
 [dependencies]
 vtf = "0.4"
@@ -12,3 +12,8 @@ serde_json = "1"
 glam = "0.32"
 bytemuck = "1"
 half = "2"
+# Portal with RTX: its packages are GDeflate-compressed, its textures block-compressed, and
+# its materials named by an XXH64 of the texture they replace.
+gdeflate-sys = "0.4"
+texture2ddecoder = "0.1"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }

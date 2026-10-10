@@ -83,6 +83,15 @@ pub fn find_root() -> Option<PathBuf> {
 impl Extracted {
     /// A texture by name (`textures/<name>.png`), tiling.
     pub fn texture(&self, name: &str) -> Option<Image> {
+        self.load_texture(name, true)
+    }
+
+    /// A texture holding data rather than colour (a normal or metallic-roughness map), tiling.
+    pub fn texture_data(&self, name: &str) -> Option<Image> {
+        self.load_texture(name, false)
+    }
+
+    fn load_texture(&self, name: &str, srgb: bool) -> Option<Image> {
         let path = self.root.as_ref()?.join("textures").join(format!("{name}.png"));
         let bytes = std::fs::read(&path).ok()?;
         let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -91,7 +100,7 @@ impl Extracted {
             anisotropy_clamp: 8,
             ..ImageSamplerDescriptor::linear()
         });
-        match Image::from_buffer(&bytes, ImageType::Extension("png"), CompressedImageFormats::NONE, true, sampler, RenderAssetUsages::default()) {
+        match Image::from_buffer(&bytes, ImageType::Extension("png"), CompressedImageFormats::NONE, srgb, sampler, RenderAssetUsages::default()) {
             Ok(img) => Some(img),
             Err(e) => {
                 warn!("{}: {e}", path.display());

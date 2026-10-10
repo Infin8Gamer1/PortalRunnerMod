@@ -23,7 +23,9 @@ cargo run --release
 ```
 
 The extractor finds the games in the usual Steam folders (Linux and Windows); otherwise pass
-`--portal <dir>` and `--portal2 <dir>`. Run it again after pulling changes that add models: the
+`--portal <dir>` and `--portal2 <dir>`. If Portal with RTX is installed too (or passed with
+`--portal-rtx <dir>`), the chamber's walls and floors take its remastered, physically based
+materials (normal, roughness and metallic maps) for the ray-traced lighting. Run it again after pulling changes that add models: the
 puzzle pieces (buttons, cube sockets, pedestal buttons, cubes, droppers, faith plates, chamber
 doors, grill emitters, laser emitters, catchers and relays, light bridge emitters) use Portal
 2's models when they're extracted, and stand-ins when they aren't. The faith plate brings its

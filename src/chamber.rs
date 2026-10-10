@@ -232,11 +232,13 @@ pub fn box_faces(b: &Aabb, keep: impl Fn(Vec3) -> bool) -> Mesh {
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_indices(Indices::U32(idx))
+        .with_inserted_indices(Indices::U32(idx));
+    // Tangents, for the surfaces' normal maps.
+    mesh.with_generated_tangents().expect("a box's faces have UVs")
 }
 
 /// A unit cube whose every face shows the whole texture (for cubes).
@@ -287,16 +289,29 @@ pub fn setup(
         ..default()
     };
     let tiled = |m: StandardMaterial| StandardMaterial { uv_transform: tiles, ..m };
+    // Portal with RTX's maps for a surface, when they were extracted: a normal map, and
+    // roughness and metallic per texel (the material's own values then scale them, so 1).
+    let pbr = |images: &mut Assets<Image>, name: &str, m: StandardMaterial| match (extracted.texture_data(&format!("{name}_normal")), extracted.texture_data(&format!("{name}_mr"))) {
+        (Some(normal), Some(mr)) => StandardMaterial {
+            base_color: Color::WHITE,
+            normal_map_texture: Some(images.add(normal)),
+            metallic_roughness_texture: Some(images.add(mr)),
+            perceptual_roughness: 1.0,
+            metallic: 1.0,
+            ..m
+        },
+        _ => m,
+    };
     let paint = [
         StandardMaterial { base_color: Color::srgb(0.1, 0.42, 1.0), emissive: LinearRgba::rgb(0.02, 0.08, 0.3), perceptual_roughness: 0.12, ..default() },
         StandardMaterial { base_color: Color::srgb(1.0, 0.42, 0.04), emissive: LinearRgba::rgb(0.3, 0.08, 0.0), perceptual_roughness: 0.12, ..default() },
         StandardMaterial { base_color: Color::srgb(0.97, 0.97, 0.97), perceptual_roughness: 0.25, ..default() },
     ];
     let mats = ChamberMats {
-        white: materials.add(tiled(std(Color::srgb(1.08, 1.08, 1.1), Some(white_tex), 0.7, 0.0))),
-        black: materials.add(tiled(std(Color::srgb(0.75, 0.75, 0.78), Some(black_tex), 0.45, 0.4))),
-        white_floor: materials.add(tiled(std(Color::srgb(1.0, 1.0, 1.0), Some(white_floor_tex), 0.8, 0.0))),
-        black_floor: materials.add(tiled(std(Color::srgb(0.8, 0.8, 0.82), Some(black_floor_tex), 0.5, 0.4))),
+        white: materials.add(pbr(&mut images, "white_ceiling", tiled(std(Color::srgb(1.08, 1.08, 1.1), Some(white_tex), 0.7, 0.0)))),
+        black: materials.add(pbr(&mut images, "black_panel", tiled(std(Color::srgb(0.75, 0.75, 0.78), Some(black_tex), 0.45, 0.4)))),
+        white_floor: materials.add(pbr(&mut images, "white_floor", tiled(std(Color::srgb(1.0, 1.0, 1.0), Some(white_floor_tex), 0.8, 0.0)))),
+        black_floor: materials.add(pbr(&mut images, "black_floor", tiled(std(Color::srgb(0.8, 0.8, 0.82), Some(black_floor_tex), 0.5, 0.4)))),
         glass: materials.add(StandardMaterial {
             base_color: Color::srgba(0.65, 0.85, 0.95, 0.18),
             alpha_mode: AlphaMode::Blend,

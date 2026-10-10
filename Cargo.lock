@@ -2792,6 +2792,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdeflate-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57d037ff28c21adce29618dbe9271e8b5a7ed121efe8482b43182db9649797d0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4344,6 +4353,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4470,12 +4485,15 @@ name = "portal_extract"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "gdeflate-sys",
  "glam",
  "half",
  "image",
  "serde_json",
+ "texture2ddecoder",
  "vmdl",
  "vtf",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -5236,6 +5254,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8550677e2259d675a7841cb1403db35f330cc9e58674c8c5caa12dd12c51dc71"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "texture2ddecoder"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "427ae8ec7f2f0fdd3146b77cfa44bea880caf066f7e55398a8467afe2645c832"
+dependencies = [
+ "paste",
 ]
 
 [[package]]
@@ -6504,6 +6531,12 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yazi"

@@ -1,9 +1,11 @@
 //! portal-extract: copies what Portal Runner uses out of your own Portal and Portal 2
 //! installs into `assets/extracted/` (which git ignores): sounds as they are, textures from
-//! VTF to PNG, and models from MDL/VVD/VTX to glTF (.glb, in metres, Y up, facing -Z).
+//! VTF to PNG, and models from MDL/VVD/VTX to glTF (.glb, in metres, Y up, facing -Z). With
+//! Portal with RTX installed too, textures it remastered come with its physically based maps
+//! (`<name>_normal.png`, `<name>_mr.png`, `<name>_emissive.png`) and its base colour.
 //!
 //! ```text
-//! cargo run --release -p portal_extract -- [--portal <dir>] [--portal2 <dir>] [--out <dir>]
+//! cargo run --release -p portal_extract -- [--portal <dir>] [--portal2 <dir>] [--portal-rtx <dir>] [--out <dir>]
 //! ```
 //!
 //! Without arguments it looks in the usual Steam folders. Nothing it writes is part of the
@@ -11,6 +13,7 @@
 
 mod anim;
 mod glb;
+mod remix;
 mod vpk;
 
 use std::collections::HashMap;
@@ -200,13 +203,26 @@ fn main() {
         arg(&args, flag).or_else(|| steam_dirs().into_iter().map(|d| d.join(folder)).find(|p| p.is_dir()))
     };
     let mut games = Vec::new();
+    let rtx_dir = find("--portal-rtx", "PortalRTX");
     if let Some(p1) = find("--portal", "Portal") {
         println!("Portal:   {}", p1.display());
         if let Some(g) = Game::open("portal", &p1, &["portal/portal_pak_dir.vpk", "hl2/hl2_sound_misc_dir.vpk", "hl2/hl2_misc_dir.vpk", "hl2/hl2_textures_dir.vpk"], &["portal"]) {
             games.push(g);
         }
+    } else if let Some(g) = rtx_dir.as_deref().and_then(|d| {
+        // Portal with RTX carries Portal's own files too.
+        Game::open("portal", d, &["portal_rtx/portal_pak_dir.vpk", "hl2/hl2_sound_misc_dir.vpk", "hl2/hl2_misc_dir.vpk", "hl2/hl2_textures_dir.vpk"], &["portal_rtx"])
+    }) {
+        println!("Portal:   (Portal with RTX's copy)");
+        games.push(g);
     } else {
         println!("Portal not found (pass --portal <dir>)");
+    }
+    let remix = rtx_dir.as_deref().and_then(remix::Remix::open);
+    match (&rtx_dir, &remix) {
+        (Some(d), Some(_)) => println!("Portal with RTX: {}", d.display()),
+        (Some(d), None) => println!("Portal with RTX: {} (no rtx-remix/mods/gameReadyAssets there)", d.display()),
+        (None, _) => println!("Portal with RTX not found (pass --portal-rtx <dir>): textures without physically based maps"),
     }
     if let Some(p2) = find("--portal2", "Portal 2") {
         println!("Portal 2: {}", p2.display());
@@ -253,16 +269,27 @@ fn main() {
     }
     println!("  {n} sounds");
 
-    let mut n = 0;
+    let (mut n, mut pbr) = (0, 0);
     for (name, candidates) in TEXTURES {
         let mut done = false;
+        let dir = out.join("textures");
+        for suffix in PBR_SUFFIXES {
+            let _ = std::fs::remove_file(dir.join(format!("{name}{suffix}.png")));
+        }
         for c in *candidates {
             let Some(bytes) = read_any(c) else { continue };
             match decode_vtf(&bytes) {
                 Ok(img) => {
-                    img.save(out.join("textures").join(format!("{name}.png"))).expect("write texture");
+                    img.save(dir.join(format!("{name}.png"))).expect("write texture");
                     done = true;
                     n += 1;
+                    let material = remix.as_ref().zip(remix::vtf_hash(&bytes)).and_then(|(r, h)| Some((r, r.material(h)?)));
+                    if let Some((r, m)) = material {
+                        match write_pbr(r, &m, &dir, name) {
+                            Ok(()) => pbr += 1,
+                            Err(e) => eprintln!("  {name}: Portal with RTX's maps: {e}"),
+                        }
+                    }
                     break;
                 }
                 Err(e) => eprintln!("  {c}: {e}"),
@@ -272,7 +299,7 @@ fn main() {
             missing.push(*name);
         }
     }
-    println!("  {n} textures");
+    println!("  {n} textures ({pbr} with Portal with RTX's maps)");
 
     let mut n = 0;
     for (name, game, path, skin, turn) in MODELS {
@@ -349,6 +376,52 @@ fn inspect(games: &[Game], mdl_path: &str) {
         }
         Err(e) => println!("  animations unreadable: {e}"),
     }
+}
+
+/// The maps written beside a texture when Portal with RTX remastered it.
+const PBR_SUFFIXES: [&str; 3] = ["_normal", "_mr", "_emissive"];
+
+/// The largest a remastered map is kept (they come at up to 4096 square).
+const PBR_MAX: u32 = 2048;
+
+fn shrink(img: image::RgbaImage, to: u32) -> image::RgbaImage {
+    if img.width() <= to && img.height() <= to {
+        return img;
+    }
+    let k = to as f32 / img.width().max(img.height()) as f32;
+    let (w, h) = (((img.width() as f32 * k).round() as u32).max(1), ((img.height() as f32 * k).round() as u32).max(1));
+    image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle)
+}
+
+/// Write a Portal with RTX material's maps for texture `name`: its base colour over
+/// `<name>.png`, then `<name>_normal.png` (tangent space, green up), `<name>_mr.png` (glTF's
+/// metallic-roughness: roughness in green, metallic in blue) and `<name>_emissive.png`.
+fn write_pbr(r: &remix::Remix, m: &remix::Material, dir: &Path, name: &str) -> Result<(), String> {
+    let save = |img: &image::RgbaImage, suffix: &str| img.save(dir.join(format!("{name}{suffix}.png"))).map_err(|e| e.to_string());
+    if let Some(p) = &m.albedo {
+        save(&shrink(r.image(p)?, PBR_MAX), "")?;
+    }
+    if let Some((p, encoding)) = &m.normal {
+        save(&shrink(remix::tangent_normals(&r.image(p)?, *encoding), PBR_MAX), "_normal")?;
+    }
+    let rough = m.roughness.as_deref().map(|p| r.image(p)).transpose()?;
+    let metal = m.metallic.as_deref().map(|p| r.image(p)).transpose()?;
+    if rough.is_some() || metal.is_some() || m.roughness_constant.is_some() || m.metallic_constant.is_some() {
+        let size = [&rough, &metal].iter().filter_map(|i| i.as_ref().map(|i| i.width().max(i.height()))).max().unwrap_or(4).min(PBR_MAX);
+        let fit = |i: Option<image::RgbaImage>| i.map(|i| image::imageops::resize(&i, size, size, image::imageops::FilterType::Triangle));
+        let (rough, metal) = (fit(rough), fit(metal));
+        let constant = |c: Option<f32>, fallback: f32| (c.unwrap_or(fallback).clamp(0.0, 1.0) * 255.0).round() as u8;
+        let mr = image::RgbaImage::from_fn(size, size, |x, y| {
+            let g = rough.as_ref().map_or(constant(m.roughness_constant, 0.5), |i| i.get_pixel(x, y).0[0]);
+            let b = metal.as_ref().map_or(constant(m.metallic_constant, 0.0), |i| i.get_pixel(x, y).0[0]);
+            image::Rgba([255, g, b, 255])
+        });
+        save(&mr, "_mr")?;
+    }
+    if let Some(p) = &m.emissive {
+        save(&shrink(r.image(p)?, PBR_MAX), "_emissive")?;
+    }
+    Ok(())
 }
 
 fn decode_vtf(bytes: &[u8]) -> Result<image::RgbaImage, String> {
