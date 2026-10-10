@@ -818,3 +818,62 @@ fn portals_maps_stand_her_up() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// Portal's Chamber 00 (where it's been extracted), its logic running: the relaxation vault's
+/// portals open once GLaDOS has spoken, a cube is made for the first room, and a cube on that
+/// room's button opens the way out.
+#[test]
+fn portals_chamber_00_runs_its_logic() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let level = crate::source::level("testchmb_a_00", "00", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    run(&mut sim, &mut c, 5.0, |_, _| Input::default());
+    assert!(sim.portals.iter().all(|p| p.is_none()), "portals open too soon");
+    assert!(sim.props.iter().any(|p| p.alive), "no cube made");
+    run(&mut sim, &mut c, 65.0, |_, _| Input::default());
+    assert!(sim.portals.iter().all(|p| p.is_some()), "the vault's portals never opened");
+
+    // A cube on the first room's button: the exit doors open.
+    let button = sim.buttons.iter().position(|b| (b.at - Vec3::new(23.58, 3.56, 13.0)).length() < 1.0).expect("the first room's button");
+    let at = sim.buttons[button].at;
+    let cube = sim.props.iter().position(|p| p.alive).unwrap();
+    sim.props[cube].pos = at + Vec3::Y * 0.8;
+    sim.props[cube].vel = Vec3::ZERO;
+    run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+    assert!(sim.buttons[button].pressed, "the cube didn't press the button");
+    let door = |sim: &Sim, name: &str| -> usize {
+        let io = sim.io.as_ref().unwrap();
+        io.ents.iter().find_map(|e| match e.kind {
+            crate::io::Kind::Mover { index, .. } if e.name == name => Some(index),
+            _ => None,
+        }).expect(name)
+    };
+    for name in ["exit_door_left_a00", "exit_door_right_a00"] {
+        let m = &sim.movers[door(&sim, name)];
+        assert_eq!(m.node, 1, "{name} didn't open");
+    }
+    // Off the button: they close again.
+    sim.props[cube].pos = at + Vec3::new(3.0, 0.8, 0.0);
+    run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+    assert_eq!(sim.movers[door(&sim, "exit_door_left_a00")].node, 0, "didn't close");
+}
+
+/// Chamber 00's lift between its rooms: step in, and five seconds later it carries her up
+/// its shaft (576 units, 14.6 m) to the second room.
+#[test]
+fn portals_chamber_00_lift_carries_her_up() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let mut level = crate::source::level("testchmb_a_00", "00", &solids, &ents);
+    level.spawn([21.95, 3.75, 37.39], 0.0);
+    let (mut sim, mut c) = start(level);
+    run(&mut sim, &mut c, 1.0, |_, _| Input::default());
+    let floor = c.feet.y;
+    assert!(c.state == State::Ground && (floor - 3.68).abs() < 0.2, "not on the lift's floor: {:?} at {}", c.state, c.feet);
+    run(&mut sim, &mut c, 22.0, |_, _| Input::default());
+    assert!((c.feet.y - (floor + 14.63)).abs() < 0.3, "the lift didn't take her up: {} (from {floor})", c.feet);
+    assert_eq!(c.state, State::Ground);
+}

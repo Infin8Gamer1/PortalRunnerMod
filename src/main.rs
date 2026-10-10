@@ -117,7 +117,7 @@ fn main() {
         switch_level,
         play,
         speed_fx::update,
-        (chamber::update, chamber::scroll_goo, source_map::sync),
+        (chamber::update, chamber::scroll_goo, source_map::sync, source_map::move_models),
         me_props::spawn_for_level,
         props::tag_parts,
         props::animate,
@@ -603,7 +603,7 @@ fn play(
         if use_key {
             g.sim.use_key(aim);
         }
-        g.sim.step(dt, &g.ctrl);
+        g.sim.step(dt, &mut g.ctrl);
         g.shot = g.fx.update(dt, &g.ctrl, &input);
         g.timer += dt;
         g.intro += dt;

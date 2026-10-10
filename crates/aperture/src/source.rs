@@ -12,7 +12,9 @@ use glam::Vec3;
 
 use faith_move::Aabb;
 
-use crate::level::{CubeKind, Gun, Item, Level, Mat, SourceLight, Solid};
+use crate::io;
+use crate::level::{CubeKind, Gun, Inputs, Item, Level, Mat, MoverDef, SourceLight, Solid};
+use crate::portal::{Portal, PortalColor};
 
 /// A Source entity: its keys in order (a key can repeat: outputs).
 pub type Entity = Vec<(String, String)>;
@@ -96,13 +98,48 @@ pub fn parse_solids(text: &str) -> Vec<MapBox> {
         .collect()
 }
 
-/// Brush entities that stand solid where the map has them (until their logic moves them).
-fn solid_class(class: &str, e: &Entity) -> bool {
-    match class {
-        "func_brush" => key(e, "Solidity") != Some("1") && key(e, "StartDisabled") != Some("1"),
-        "func_door" | "func_door_rotating" | "func_tracktrain" | "func_movelinear" | "func_rotating" | "func_physbox" | "func_wall_toggle" => true,
-        _ => false,
-    }
+/// Source's angles (pitch, yaw, roll; degrees) to our forward and up.
+pub fn angle_vectors(pitch: f32, yaw: f32, roll: f32) -> (Vec3, Vec3) {
+    let (sp, cp) = pitch.to_radians().sin_cos();
+    let (sy, cy) = yaw.to_radians().sin_cos();
+    let (sr, cr) = roll.to_radians().sin_cos();
+    let forward = Vec3::new(cp * cy, cp * sy, -sp);
+    let up = Vec3::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
+    let ours = |v: Vec3| Vec3::new(-v.y, v.z, -v.x).normalize_or_zero();
+    (ours(forward), ours(up))
+}
+
+fn angles(e: &Entity, k: &str) -> (f32, f32, f32) {
+    let a = key(e, k).map(floats).unwrap_or_default();
+    (a.first().copied().unwrap_or(0.0), a.get(1).copied().unwrap_or(0.0), a.get(2).copied().unwrap_or(0.0))
+}
+
+fn num(e: &Entity, k: &str, default: f32) -> f32 {
+    key(e, k).and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+}
+
+fn flags(e: &Entity) -> u32 {
+    key(e, "spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0)
+}
+
+fn mat_of(kind: &str) -> Option<Mat> {
+    Some(match kind {
+        "white" => Mat::White,
+        "black" => Mat::Black,
+        "glass" => Mat::Glass,
+        "grate" => Mat::Grate,
+        "clip" => Mat::Clip,
+        _ => return None,
+    })
+}
+
+fn is_metal_box(e: &Entity) -> bool {
+    matches!(key(e, "classname"), Some("prop_physics" | "prop_physics_override" | "prop_physics_multiplayer"))
+        && key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/metal_box.mdl"))
+}
+
+fn cube_kind(e: &Entity) -> CubeKind {
+    if key(e, "skin") == Some("1") { CubeKind::Companion } else { CubeKind::Storage }
 }
 
 /// A map as a level. `name` is the map's (`testchmb_a_00`), `title` what the game calls it.
@@ -111,57 +148,84 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
     l.source = Some(name.to_string());
     let boxes = parse_solids(solids);
     let ents = parse_entities(ents);
-    // Which entity each brush model belongs to.
-    let mut owner: HashMap<usize, &Entity> = HashMap::new();
-    for e in &ents {
-        if let Some(n) = key(e, "model").and_then(|m| m.strip_prefix('*')).and_then(|m| m.parse().ok()) {
-            owner.insert(n, e);
-        }
-    }
+    let model_of = |e: &Entity| key(e, "model").and_then(|m| m.strip_prefix('*')).and_then(|m| m.parse::<usize>().ok());
     let bounds: HashMap<usize, Aabb> = boxes.iter().filter(|b| b.kind == "bounds").map(|b| (b.model, b.b)).collect();
-
+    let mut model_boxes: HashMap<usize, Vec<Solid>> = HashMap::new();
     for b in &boxes {
-        let solid = b.model == 0 || owner.get(&b.model).is_some_and(|e| solid_class(key(e, "classname").unwrap_or(""), e));
-        let mat = match b.kind.as_str() {
-            "white" => Mat::White,
-            "black" => Mat::Black,
-            "glass" => Mat::Glass,
-            "grate" => Mat::Grate,
-            "clip" => Mat::Clip,
-            "goo" if b.model == 0 => {
-                l.items.push(Item::Goo { b: b.b });
-                continue;
+        if let Some(mat) = mat_of(&b.kind) {
+            model_boxes.entry(b.model).or_default().push(Solid { b: b.b, mat });
+        }
+    }
+    let named: HashMap<String, &Entity> = ents.iter().filter_map(|e| Some((key(e, "targetname")?.to_ascii_lowercase(), e))).collect();
+    // Entities a template makes: not there until it's told to make them.
+    let mut templated = std::collections::HashSet::new();
+    for e in &ents {
+        if key(e, "classname") == Some("point_template") {
+            for (k, v) in e {
+                if k.to_ascii_lowercase().starts_with("template") {
+                    templated.insert(v.to_ascii_lowercase());
+                }
             }
-            _ => continue,
-        };
-        if solid {
-            l.solids.push(Solid { b: b.b, mat });
+        }
+    }
+    // A template's cube (where it was put, and its kind).
+    let template_cube = |template: &str| -> Option<(Vec3, CubeKind)> {
+        let t = named.get(&template.to_ascii_lowercase())?;
+        t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).filter_map(|(_, v)| named.get(&v.to_ascii_lowercase())).find(|c| is_metal_box(c)).and_then(|c| Some((origin(c)?, cube_kind(c))))
+    };
+
+    // The world.
+    for b in &boxes {
+        if b.model != 0 {
+            continue;
+        }
+        match b.kind.as_str() {
+            "goo" => l.items.push(Item::Goo { b: b.b }),
+            k => {
+                if let Some(mat) = mat_of(k) {
+                    l.solids.push(Solid { b: b.b, mat });
+                }
+            }
         }
     }
 
+    let mut next_sig = 0usize;
+    let mut sig = || {
+        next_sig += 1;
+        next_sig - 1
+    };
+    let mut io_ents: Vec<io::Ent> = Vec::new();
+    let mut initial = Vec::new();
+    let mut movers = 0usize;
+    let mut buttons: Vec<Aabb> = Vec::new();
+    // Train paths: each path node's (mover, node).
+    let mut path_nodes: HashMap<String, (usize, usize)> = HashMap::new();
     let mut spawned = false;
+
     for e in &ents {
         let class = key(e, "classname").unwrap_or("");
-        let model_bounds = || key(e, "model").and_then(|m| m.strip_prefix('*')).and_then(|m| m.parse::<usize>().ok()).and_then(|m| bounds.get(&m).copied());
+        let name = key(e, "targetname").unwrap_or("").to_string();
+        let model = model_of(e);
+        let mb = model.and_then(|m| bounds.get(&m).copied());
+        let start_disabled = key(e, "StartDisabled") == Some("1");
+        let mut kind = io::Kind::Other;
         match class {
             "info_player_start" if !spawned => {
                 if let Some(at) = origin(e) {
-                    let yaw = key(e, "angles").map(floats).and_then(|a| a.get(1).copied()).unwrap_or(0.0);
-                    l.spawn(at.to_array(), yaw);
+                    l.spawn(at.to_array(), angles(e, "angles").1);
                     spawned = true;
                 }
             }
-            "prop_physics" | "prop_physics_override" if key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/metal_box.mdl")) => {
+            _ if is_metal_box(e) && !templated.contains(&name.to_ascii_lowercase()) => {
                 if let Some(at) = origin(e) {
-                    let kind = if key(e, "skin") == Some("1") { CubeKind::Companion } else { CubeKind::Storage };
-                    l.items.push(Item::Cube { at: at + Vec3::Y * 0.02, kind });
+                    l.items.push(Item::Cube { at: at + Vec3::Y * 0.02, kind: cube_kind(e) });
                 }
             }
             "weapon_portalgun" => {
                 l.gun = Gun { blue: key(e, "CanFirePortal1") != Some("0"), orange: key(e, "CanFirePortal2") == Some("1") };
             }
             "func_noportal_volume" => {
-                if let Some(b) = model_bounds() {
+                if let Some(b) = mb {
                     l.repaint(Mat::Black, b.min.to_array(), b.max.to_array());
                 }
             }
@@ -174,16 +238,162 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
                     _ => (Vec3::ONE, 200.0),
                 };
                 let spot = (class == "light_spot").then(|| {
-                    let a = key(e, "angles").map(floats).unwrap_or_default();
-                    let pitch = key(e, "pitch").and_then(|p| p.parse().ok()).or(a.first().copied()).unwrap_or(0.0);
-                    let cone = key(e, "_cone").and_then(|c| c.parse::<f32>().ok()).unwrap_or(45.0);
-                    (direction(pitch, a.get(1).copied().unwrap_or(0.0)), cone.to_radians())
+                    let a = angles(e, "angles");
+                    let pitch = key(e, "pitch").and_then(|p| p.parse().ok()).unwrap_or(a.0);
+                    (direction(pitch, a.1), num(e, "_cone", 45.0).to_radians())
                 });
                 l.lights.push(SourceLight { at, color, brightness, spot });
             }
+            // A floor button's moving top: the game's own button stands in for it.
+            "func_door" if name.to_ascii_lowercase().contains("button") && mb.is_some_and(|b| b.size().x < 2.2 && b.size().z < 2.2) => {
+                let b = mb.unwrap();
+                let c = b.center();
+                let floor = l
+                    .solids
+                    .iter()
+                    .filter(|s| s.b.min.x <= c.x && s.b.max.x >= c.x && s.b.min.z <= c.z && s.b.max.z >= c.z && s.b.max.y <= b.min.y + 0.1)
+                    .map(|s| s.b.max.y)
+                    .fold(f32::MIN, f32::max);
+                let at = Vec3::new(c.x, if floor > b.min.y - 1.0 { floor } else { b.min.y }, c.z);
+                l.items.push(Item::FloorButton { sig: sig(), at, cube_only: false });
+                buttons.push(b);
+                l.hidden_models.push(model.unwrap());
+            }
+            "func_door" | "func_movelinear" | "func_door_rotating" | "func_brush" | "func_wall_toggle" | "func_physbox" | "func_rotating" | "func_tracktrain" => {
+                let Some(m) = model else { continue };
+                let mut solids = model_boxes.remove(&m).unwrap_or_default();
+                let speed = num(e, "speed", 100.0).max(1.0) * 0.0254;
+                let mut shift = Vec3::ZERO;
+                let (path, start, mk, present) = match class {
+                    "func_door" | "func_movelinear" => {
+                        let (p, y, _) = angles(e, "movedir");
+                        let dir = direction(p, y);
+                        let travel = if class == "func_movelinear" {
+                            num(e, "movedistance", 100.0) * 0.0254
+                        } else {
+                            let size = mb.map(|b| b.size()).unwrap_or(Vec3::ONE);
+                            (size.dot(dir.abs()) - num(e, "lip", 0.0) * 0.0254).max(0.0)
+                        };
+                        let open = flags(e) & 1 != 0 && class == "func_door";
+                        (vec![Vec3::ZERO, dir * travel], usize::from(open), io::MoverKind::Door, true)
+                    }
+                    "func_tracktrain" => {
+                        // (The extractor put it on its first path node; models riding it go too.)
+                        // Its path: from the node it starts on, following each node's target.
+                        let mut pts = Vec::new();
+                        let mut names = Vec::new();
+                        let mut at = key(e, "target").map(str::to_ascii_lowercase);
+                        while let Some(n) = at.take() {
+                            if names.contains(&n) {
+                                break;
+                            }
+                            let Some(node) = named.get(&n) else { break };
+                            let Some(p) = origin(node) else { break };
+                            pts.push(p);
+                            names.push(n);
+                            at = key(node, "target").map(str::to_ascii_lowercase);
+                        }
+                        let first = pts.first().copied().unwrap_or(Vec3::ZERO);
+                        for (k, n) in names.into_iter().enumerate() {
+                            path_nodes.insert(n, (movers, k));
+                        }
+                        let path = if pts.is_empty() { vec![Vec3::ZERO] } else { pts.iter().map(|p| *p - first).collect() };
+                        if let (Some(p0), Some(o)) = (pts.first(), origin(e)) {
+                            let height = num(e, "height", 0.0) * 0.0254;
+                            shift = *p0 + Vec3::Y * height - o;
+                        }
+                        (path, 0, io::MoverKind::Train, true)
+                    }
+                    _ => {
+                        let present = !start_disabled;
+                        if class == "func_brush" && key(e, "Solidity") == Some("1") {
+                            solids.clear();
+                        }
+                        (vec![Vec3::ZERO], 0, io::MoverKind::Brush, present)
+                    }
+                };
+                // (A train runs at its top speed; an elevator's is around 65 units a second.)
+                let speed = if class == "func_tracktrain" { num(e, "startspeed", 0.0).max(num(e, "speed", 0.0)).max(64.0) * 0.0254 } else { speed };
+                // An elevator's floor is its model's (Portal's round elevator, 2.5 m across):
+                // a slab where that sits.
+                for p in &ents {
+                    let rides = key(p, "parentname").is_some_and(|n| !name.is_empty() && n.eq_ignore_ascii_case(&name));
+                    if rides && key(p, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/round_elevator_body.mdl")) {
+                        if let Some(o) = origin(p) {
+                            let c = o + shift;
+                            solids.push(Solid { b: Aabb::new(c + Vec3::new(-1.75, -0.2, -1.75), c + Vec3::new(1.75, 0.0, 1.75)), mat: Mat::Black });
+                        }
+                    }
+                }
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, present, shift }));
+                kind = io::Kind::Mover { index: movers, kind: mk };
+                movers += 1;
+            }
+            "trigger_portal_cleanser" => {
+                if let Some(b) = mb {
+                    let s = sig();
+                    l.items.push(Item::Fizzler { b, inputs: Inputs::on(s) });
+                    initial.push((s, !start_disabled));
+                    kind = io::Kind::Fizzler { sig: s };
+                    l.hidden_models.extend(model);
+                }
+            }
+            "trigger_once" | "trigger_multiple" | "trigger_look" => {
+                if let Some(b) = mb {
+                    let f = flags(e);
+                    let (players, cubes) = (f & 1 != 0 || f & 64 != 0 || class == "trigger_look", f & 8 != 0 || f & 64 != 0);
+                    let enabled = !start_disabled;
+                    kind = match buttons.iter().position(|bt| class == "trigger_multiple" && b.overlaps(&Aabb::new(bt.min - Vec3::splat(0.6), bt.max + Vec3::splat(0.6)))) {
+                        Some(button) => io::Kind::ButtonTrigger { button, enabled, players, cubes, on: false },
+                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, player_in: false, cubes_in: Vec::new() },
+                    };
+                }
+            }
+            "prop_portal" => {
+                if let Some(at) = origin(e) {
+                    let (p, y, r) = angles(e, "angles");
+                    let (normal, up) = angle_vectors(p, y, r);
+                    let color = if key(e, "PortalTwo") == Some("1") { PortalColor::Orange } else { PortalColor::Blue };
+                    kind = io::Kind::Portal { color, portal: Portal::new(at, normal, up), start: key(e, "Activated") == Some("1") };
+                }
+            }
+            "logic_relay" => kind = io::Kind::Relay { enabled: !start_disabled, once: flags(e) & 1 != 0 },
+            "logic_timer" => {
+                let random = (key(e, "UseRandomTime") == Some("1")).then(|| (num(e, "LowerRandomBound", 1.0), num(e, "UpperRandomBound", 1.0)));
+                let refire = num(e, "RefireTime", 1.0);
+                kind = io::Kind::Timer { enabled: !start_disabled, refire, next: refire, random };
+            }
+            "math_counter" => kind = io::Kind::Counter { value: num(e, "startvalue", 0.0), min: num(e, "min", 0.0), max: num(e, "max", 0.0) },
+            "logic_case" => kind = io::Kind::Case { cases: (1..=16).map(|k| key(e, &format!("Case{k:02}")).unwrap_or("").to_string()).collect() },
+            "logic_auto" => kind = io::Kind::Auto,
+            "logic_choreographed_scene" => kind = io::Kind::Scene,
+            "trigger_changelevel" => kind = io::Kind::ChangeLevel,
+            "env_entity_maker" => {
+                if let (Some(at), Some((_, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
+                    kind = io::Kind::Maker { at, kind: k };
+                }
+            }
+            "point_template" => {
+                if let Some((at, k)) = template_cube(&name) {
+                    kind = io::Kind::Maker { at, kind: k };
+                }
+            }
             _ => {}
         }
+        let outputs: Vec<io::Output> = e.iter().filter(|(k, _)| k.starts_with("On") || k.starts_with("Out")).filter_map(|(k, v)| io::Output::parse(k, v)).collect();
+        io_ents.push(io::Ent { name, class: class.to_string(), kind, outputs, alive: true });
     }
+    // Path nodes know their train.
+    for ent in &mut io_ents {
+        if ent.class == "path_track" {
+            if let Some(&(mover, node)) = path_nodes.get(&ent.name.to_ascii_lowercase()) {
+                ent.kind = io::Kind::PathNode { mover, node };
+            }
+        }
+    }
+    let signals = l.signal_count().max(next_sig);
+    l.io = Some(io::Io::new(io_ents, initial, signals));
+
     // Without a gun in the map, Portal's chambers before you find it: none.
     if !ents.iter().any(|e| key(e, "classname") == Some("weapon_portalgun")) {
         l.gun = Gun::NONE;
@@ -227,8 +437,12 @@ mod tests {
 { "classname" "trigger_once" "model" "*2" }
 { "classname" "prop_physics" "model" "models/props/metal_box.mdl" "origin" "40 0 20" }"#;
         let l = level("test", "Test", solids, ents);
-        // The world's two boxes and the door; not the trigger.
-        assert_eq!(l.solids.len(), 3);
+        // The world's two boxes; the door moves (open: its width along +X, Source's default
+        // direction, our -Z); the trigger isn't solid.
+        assert_eq!(l.solids.len(), 2);
+        let door = l.items.iter().find_map(|i| match i { Item::Mover(m) => Some(m), _ => None }).expect("the door");
+        assert_eq!(door.boxes.len(), 1);
+        assert!((door.path[1] - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-4, "{:?}", door.path);
         assert_eq!(l.solids.iter().filter(|s| s.mat == Mat::White).count(), 1);
         assert!(l.items.iter().any(|i| matches!(i, Item::Goo { .. })));
         assert!(l.items.iter().any(|i| matches!(i, Item::Cube { kind: CubeKind::Storage, .. })));

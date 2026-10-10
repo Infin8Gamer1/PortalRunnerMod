@@ -8,6 +8,7 @@
 pub mod collide;
 pub mod geom;
 pub mod gel;
+pub mod io;
 pub mod level;
 pub mod levels;
 pub mod portal;

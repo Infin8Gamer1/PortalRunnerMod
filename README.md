@@ -126,8 +126,11 @@ where every roof and wall takes portals.
 Then **Portal's own maps** (test chambers 00-19 and the escape), when `portal_extract` has
 taken them from your install: drawn from their own faces with Portal's textures (and Portal
 with RTX's materials), white surfaces taking portals as in Portal, goo, cubes and the gun's
-colours from the map. Their logic (buttons, doors, elevators, GLaDOS) isn't in yet (#21), so
-for now they're places to explore: doors stay shut.
+colours from the map, with their props (Portal's models: doors, elevators, droppers, furniture),
+and their logic: Source's entity I/O runs (relays, timers, counters, triggers), so buttons
+open doors, preset portals come and go, droppers make cubes, elevators ride and the exit
+elevator ends the chamber. GLaDOS isn't heard yet (her scenes are a short wait), and the
+energy pellets (#23) and turrets (#24) aren't in, so not every chamber can be finished.
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
@@ -187,6 +190,7 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   level.rs                the level description and its builder
   levels/                 the chambers (kit.rs: shared pieces)
   source.rs               Portal's maps (as extracted) as levels
+  io.rs                   their logic: Source's entity I/O
   tests.rs                the mechanics, and each chamber beaten by script
 crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
                         their animations) out of your Portal and Portal 2 VPKs, and Portal
@@ -195,7 +199,8 @@ crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> 
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces
-src/source_map.rs       Portal's maps: listing them, drawing their faces, their lights
+src/source_map.rs       Portal's maps: listing them, drawing their faces and props (moving with
+                        their doors and elevators), their lights
 src/gun.rs              shot tracers, sparks, the hold beam (and the optional gun model)
 src/hud.rs              crosshair, hints, messages, timer, debug readout
 src/menu.rs             title, pause, chamber select, settings pages, controls

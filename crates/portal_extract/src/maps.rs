@@ -7,6 +7,8 @@
 //!   kind one of `bounds` (a brush model's bounds), `white` (takes portals), `black`, `glass`, `grate`, `clip` (stops Faith,
 //!   nothing else), `goo`, `water`.
 //! - `maps/<name>.ents`: the entity lump as it is.
+//! - `maps/<name>.props`: its props (static, dynamic, physics), their models converted once
+//!   each into `models/map/`.
 //! - `textures/map/<material>.png` (and Portal with RTX's `_normal`, `_mr`, `_emissive` where
 //!   it has them): each material's texture, once.
 
@@ -112,8 +114,52 @@ struct Group {
     idx: Vec<u32>,
 }
 
-/// Write a map out (see the module notes). Returns (groups, boxes, materials) written.
-pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<(usize, usize, usize), String> {
+/// Models the game draws its own way in Portal's maps (cubes, buttons, grills).
+const OWN_MODELS: &[&str] = &["models/props/metal_box.mdl", "models/props/button_top_reference.mdl", "models/props/button_base_reference.mdl"];
+
+/// A prop model's file under `models/` (`map/props/door_01_frame_wide_reference`, with
+/// `_skinN` for another skin), as the game names it.
+pub fn prop_glb(model: &str, skin: i32) -> String {
+    let stem = model.trim_start_matches("models/").trim_end_matches(".mdl");
+    if skin > 0 { format!("map/{stem}_skin{skin}") } else { format!("map/{stem}") }
+}
+
+/// Write a map's props out (`maps/<name>.props`, a line each: `kind|model file|x y z|pitch
+/// yaw roll|parent|name`, Source space), and say which (model, skin)s they use.
+fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<(String, i32)>, String> {
+    let mut text = String::new();
+    let mut used = Vec::new();
+    let mut add = |kind: &str, model: &str, skin: i32, o: Vec3, a: Vec3, parent: &str, name: &str| {
+        let model = model.to_ascii_lowercase().replace('\\', "/");
+        if OWN_MODELS.contains(&model.as_str()) || model.contains("portal_cleanser") || !model.ends_with(".mdl") {
+            return;
+        }
+        text.push_str(&format!("{kind}|{}|{} {} {}|{} {} {}|{parent}|{name}\n", prop_glb(&model, skin), o.x, o.y, o.z, a.x, a.y, a.z));
+        if !used.contains(&(model.clone(), skin)) {
+            used.push((model, skin));
+        }
+    };
+    for p in &bsp.static_props {
+        add("static", &p.model, p.skin, p.origin, p.angles, "", "");
+    }
+    for e in ents {
+        let class = bsp::key(e, "classname").unwrap_or("");
+        if !matches!(class, "prop_dynamic" | "prop_dynamic_override" | "prop_physics" | "prop_physics_override" | "prop_physics_multiplayer") {
+            continue;
+        }
+        let (Some(model), Some(o)) = (bsp::key(e, "model"), bsp::vec3_key(e, "origin")) else { continue };
+        let a = bsp::vec3_key(e, "angles").unwrap_or(Vec3::ZERO);
+        let skin = bsp::key(e, "skin").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let kind = if class.starts_with("prop_physics") { "physics" } else { "dynamic" };
+        add(kind, model, skin, o, a, bsp::key(e, "parentname").unwrap_or(""), bsp::key(e, "targetname").unwrap_or(""));
+    }
+    std::fs::write(path, text).map_err(|e| e.to_string())?;
+    Ok(used)
+}
+
+/// Write a map out (see the module notes). Returns (groups, boxes, materials) written, and
+/// the prop models it uses.
+pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<(usize, usize, usize, Vec<(String, i32)>), String> {
     let bsp = Bsp::parse(bytes)?;
     let ents = bsp::parse_entities(&bsp.entities);
     let origins = bsp::model_origins(&ents);
@@ -258,5 +304,6 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     std::fs::write(map_dir.join(format!("{name}.mesh")), m).map_err(|e| e.to_string())?;
     std::fs::write(map_dir.join(format!("{name}.solids")), solids).map_err(|e| e.to_string())?;
     std::fs::write(map_dir.join(format!("{name}.ents")), &bsp.entities).map_err(|e| e.to_string())?;
-    Ok((groups.len(), nboxes, materials.len()))
+    let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")))?;
+    Ok((groups.len(), nboxes, materials.len(), used))
 }

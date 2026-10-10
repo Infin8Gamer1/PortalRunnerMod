@@ -25,6 +25,7 @@ const EDGES: usize = 12;
 const SURFEDGES: usize = 13;
 const MODELS: usize = 14;
 const LEAFBRUSHES: usize = 17;
+const GAME_LUMP: usize = 35;
 const BRUSHES: usize = 18;
 const BRUSHSIDES: usize = 19;
 const TEXDATA_STRING_DATA: usize = 43;
@@ -91,8 +92,18 @@ pub struct BrushSide {
     pub bevel: bool,
 }
 
+/// A static prop (the game lump's `sprp`): Source space.
+pub struct StaticProp {
+    pub model: String,
+    pub origin: Vec3,
+    /// Pitch, yaw, roll (degrees).
+    pub angles: Vec3,
+    pub skin: i32,
+}
+
 pub struct Bsp {
     pub entities: String,
+    pub static_props: Vec<StaticProp>,
     pub planes: Vec<Plane>,
     pub texinfo: Vec<TexInfo>,
     pub texdata: Vec<TexData>,
@@ -225,7 +236,8 @@ impl Bsp {
                 BrushSide { plane: u16_at(b, a) as usize, texinfo: i16_at(b, a + 2) as i32, bevel: i16_at(b, a + 6) != 0 }
             })
             .collect();
-        Ok(Bsp { entities, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides })
+        let static_props = static_props(lump(GAME_LUMP)?.0, d).unwrap_or_default();
+        Ok(Bsp { entities, static_props, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides })
     }
 
     /// A texinfo's texture name, as the map has it (lower case, forward slashes).
@@ -305,6 +317,49 @@ impl Bsp {
     pub fn brush_textures(&self, b: &Brush) -> Vec<i32> {
         (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| s.texinfo).collect()
     }
+}
+
+/// The static props in the game lump (`sprp`, versions 4-6). Its entries' offsets are into
+/// the whole file.
+fn static_props(lump: &[u8], file: &[u8]) -> Option<Vec<StaticProp>> {
+    let count = i32_at(lump, 0) as usize;
+    for i in 0..count {
+        let a = 4 + i * 16;
+        let id = u32::from_le_bytes(lump.get(a..a + 4)?.try_into().ok()?);
+        if id != u32::from_be_bytes(*b"sprp") {
+            continue;
+        }
+        let version = u16_at(lump, a + 6);
+        let (ofs, len) = (i32_at(lump, a + 8) as usize, i32_at(lump, a + 12) as usize);
+        let b = file.get(ofs..ofs + len)?;
+        let size = match version {
+            4 => 56,
+            5 => 60,
+            6 => 64,
+            _ => return None,
+        };
+        let names_n = i32_at(b, 0) as usize;
+        let names: Vec<String> = (0..names_n)
+            .map(|k| {
+                let n = &b[4 + 128 * k..4 + 128 * (k + 1)];
+                String::from_utf8_lossy(&n[..n.iter().position(|&c| c == 0).unwrap_or(128)]).to_ascii_lowercase().replace('\\', "/")
+            })
+            .collect();
+        let mut p = 4 + 128 * names_n;
+        let leaves = i32_at(b, p) as usize;
+        p += 4 + 2 * leaves;
+        let props = i32_at(b, p) as usize;
+        p += 4;
+        let mut out = Vec::with_capacity(props);
+        for k in 0..props {
+            let a = p + k * size;
+            let v = |o: usize| Vec3::new(f32_at(b, a + o), f32_at(b, a + o + 4), f32_at(b, a + o + 8));
+            let model = names.get(u16_at(b, a + 24) as usize).cloned().unwrap_or_default();
+            out.push(StaticProp { model, origin: v(0), angles: v(12), skin: i32_at(b, a + 32) });
+        }
+        return Some(out);
+    }
+    Some(Vec::new())
 }
 
 /// A brush's collision in boxes (Source space): its box when it's axis-aligned, slices of it

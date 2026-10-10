@@ -60,6 +60,24 @@ pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
         .collect()
 }
 
+/// A brush model's faces (one material's): they move with the sim's mover for that model.
+#[derive(Component)]
+pub struct MapModel(pub usize);
+
+/// One of the map's props: where it stands, and the mover it rides with (its parent).
+#[derive(Component)]
+pub struct MapProp {
+    base: Vec3,
+    mover: Option<usize>,
+}
+
+/// Source's angles (pitch, yaw, roll; degrees) as a turn in our space.
+fn source_rotation(a: Vec3) -> Quat {
+    let r = Quat::from_rotation_z(a.y.to_radians()) * Quat::from_rotation_y(a.x.to_radians()) * Quat::from_rotation_x(a.z.to_radians());
+    let to_ours = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
+    to_ours * r * to_ours.inverse()
+}
+
 /// Materials made for maps' textures, kept from map to map.
 #[derive(Resource, Default)]
 pub struct MapMats(HashMap<String, Handle<StandardMaterial>>);
@@ -78,7 +96,6 @@ const MAX_LIGHTS: usize = 96;
 
 struct Group {
     /// The brush model it's part of (0: the world).
-    #[allow(dead_code)]
     model: u32,
     material: usize,
     mesh: Mesh,
@@ -182,6 +199,7 @@ fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Im
 pub fn sync(
     mut commands: Commands,
     game: Res<Game>,
+    assets: Res<AssetServer>,
     extracted: Res<Extracted>,
     m: Option<Res<ChamberMats>>,
     mut cache: ResMut<MapMats>,
@@ -218,6 +236,9 @@ pub fn sync(
     }
     for g in file.groups {
         let (mat, flags) = &file.materials[g.material];
+        if level.hidden_models.contains(&(g.model as usize)) {
+            continue;
+        }
         // Goo is drawn as the level's goo.
         if mat == "nature/hazard_liquid" {
             continue;
@@ -230,6 +251,42 @@ pub fn sync(
         if flags & (1 | 8) != 0 || mat.starts_with("glass/") {
             e.insert(NotShadowCaster);
         }
+        if g.model != 0 {
+            e.insert(MapModel(g.model as usize));
+        }
+    }
+    // Its props: models where the map puts them, riding with what they're parented to.
+    let text = std::fs::read_to_string(root.join("maps").join(format!("{name}.props"))).unwrap_or_default();
+    let movers: HashMap<&str, usize> = game
+        .sim
+        .io
+        .iter()
+        .flat_map(|io| io.ents.iter())
+        .filter_map(|e| match e.kind {
+            aperture::io::Kind::Mover { index, .. } if !e.name.is_empty() => Some((e.name.as_str(), index)),
+            _ => None,
+        })
+        .collect();
+    let floats = |v: &str| -> Vec3 {
+        let f: Vec<f32> = v.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        Vec3::new(f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(0.0), f.get(2).copied().unwrap_or(0.0))
+    };
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('|').collect();
+        if f.len() < 6 {
+            continue;
+        }
+        let Some(path) = extracted.model(f[1]) else { continue };
+        let mover = movers.get(f[4]).copied();
+        let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
+        let at = aperture::source::to_ours(floats(f[2])) + shift;
+        commands.spawn((
+            ChamberGeom,
+            MapProp { base: at, mover },
+            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
+            Visibility::default(),
+            Transform::from_translation(at).with_rotation(source_rotation(floats(f[3]))),
+        ));
     }
     // The map's lights, brightest first.
     let mut lights = level.lights.clone();
@@ -248,6 +305,30 @@ pub fn sync(
             None => {
                 commands.spawn((ChamberGeom, PointLight { intensity, color, range: 20.0, radius: 0.2, shadow_maps_enabled: false, ..default() }, Transform::from_translation(l.at)));
             }
+        }
+    }
+}
+
+/// Brush models (and props parented to them) follow their movers: doors slide, elevators
+/// ride, walls come and go.
+pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform), Without<MapModel>>) {
+    let movers = &game.sim.movers;
+    for (p, mut tf) in &mut props {
+        let Some(mv) = p.mover.and_then(|m| movers.get(m)) else { continue };
+        let at = p.base + mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
+        if tf.translation != at {
+            tf.translation = at;
+        }
+    }
+    for (m, mut tf, mut vis) in &mut q {
+        let Some(mv) = movers.iter().find(|v| v.def.model == m.0) else { continue };
+        let at = mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
+        if tf.translation != at {
+            tf.translation = at;
+        }
+        let want = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want {
+            *vis = want;
         }
     }
 }

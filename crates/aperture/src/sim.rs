@@ -101,6 +101,28 @@ impl Door {
     }
 }
 
+/// A brush entity on the move (see [`MoverDef`](crate::level::MoverDef)).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mover {
+    pub def: crate::level::MoverDef,
+    /// Where it is: an offset from where it started.
+    pub at: Vec3,
+    /// The point on its path it was last at.
+    pub node: usize,
+    /// The point it's heading for (through the ones between), if it's moving.
+    pub goal: Option<usize>,
+    pub present: bool,
+    pub speed: f32,
+}
+
+impl Mover {
+    /// Its boxes where it is now.
+    pub fn boxes(&self) -> impl Iterator<Item = Aabb> + '_ {
+        let d = self.at - self.def.path.first().copied().unwrap_or(Vec3::ZERO);
+        self.def.boxes.iter().filter(move |_| self.present).map(move |b| b.b.translated(d))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Button {
     pub sig: Sig,
@@ -243,6 +265,8 @@ pub enum SimEvent {
     PlayerDied,
     Checkpoint { index: usize },
     LevelComplete,
+    /// A mover reached a point on its path (and `arrived`: the one it was heading for).
+    MoverAt { mover: usize, node: usize, arrived: bool },
 }
 
 /// What a ray met.
@@ -250,6 +274,7 @@ pub enum SimEvent {
 pub enum HitWhat {
     Static(usize),
     Door(usize),
+    Mover(usize),
     Bridge(usize),
     Prop(usize),
     Fizzler(usize),
@@ -312,6 +337,7 @@ pub struct Sim {
     pub props: Vec<Prop>,
     next_prop: u32,
     pub doors: Vec<Door>,
+    pub movers: Vec<Mover>,
     pub buttons: Vec<Button>,
     pub pedestals: Vec<Pedestal>,
     pub droppers: Vec<Dropper>,
@@ -326,6 +352,10 @@ pub struct Sim {
     pub gel: GelMap,
     pub blobs: Vec<Blob>,
     pub signals: Vec<bool>,
+    /// Signals the map's logic holds on ([`crate::io`]).
+    pub io_signals: Vec<bool>,
+    /// The map's logic (Portal's maps).
+    pub io: Option<crate::io::Io>,
     /// The prop Faith is carrying (index into `props`).
     pub held: Option<usize>,
     /// Which portal the held cube is through, from Faith: None, it's on her side; Some(c),
@@ -363,6 +393,7 @@ impl Sim {
             props: Vec::new(),
             next_prop: 1,
             doors: Vec::new(),
+            movers: Vec::new(),
             buttons: Vec::new(),
             pedestals: Vec::new(),
             droppers: Vec::new(),
@@ -377,6 +408,8 @@ impl Sim {
             gel: GelMap::default(),
             blobs: Vec::new(),
             signals: vec![false; level.signal_count()],
+            io_signals: vec![false; level.signal_count()],
+            io: level.io.clone(),
             held: None,
             held_through: None,
             held_far: 0.0,
@@ -456,6 +489,10 @@ impl Sim {
                     sim.gel.fill(c, geom::snap_axis(normal), u, v, half, paint);
                 }
                 Item::Goo { b } => sim.goo.push(b),
+                Item::Mover(def) => {
+                    let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, def });
+                }
             }
         }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
@@ -553,6 +590,9 @@ impl Sim {
     /// Boxes that move: closed doors, bridges, cubes (but not `skip`).
     fn moving_boxes(&self, skip: Option<usize>, include_held: bool) -> Vec<Aabb> {
         let mut v: Vec<Aabb> = self.doors.iter().filter(|d| d.solid()).map(|d| d.b).collect();
+        for m in &self.movers {
+            v.extend(m.boxes().filter(|b| b.size().min_element() > 0.0));
+        }
         for b in &self.bridges {
             v.extend(b.segs.iter().map(|s| s.aabb));
         }
@@ -600,6 +640,17 @@ impl Sim {
                 if door.solid() {
                     if let Some((t, n)) = ray_aabb(o, d, &door.b) {
                         consider(t, n, HitWhat::Door(i));
+                    }
+                }
+            }
+        }
+        if mask.doors {
+            for (i, m) in self.movers.iter().enumerate() {
+                for b in m.boxes() {
+                    if b.overlaps(&reach) {
+                        if let Some((t, n)) = ray_aabb(o, d, &b) {
+                            consider(t, n, HitWhat::Mover(i));
+                        }
                     }
                 }
             }
@@ -1152,7 +1203,7 @@ impl Sim {
     // ------------------------------------------------------------ everything else
 
     /// Advance the puzzle pieces by `dt` (after [`Sim::step_player`]).
-    pub fn step(&mut self, dt: f32, ctrl: &Controller) {
+    pub fn step(&mut self, dt: f32, ctrl: &mut Controller) {
         self.time += dt;
         for p in self.portals.iter_mut().flatten() {
             p.age += dt;
@@ -1161,6 +1212,12 @@ impl Sim {
         let aim = Aim::of(ctrl);
         let player_box = ctrl.body().aabb(ctrl.feet);
 
+        self.update_movers(dt, ctrl);
+        if let Some(mut io) = self.io.take() {
+            io.step(self, ctrl, dt);
+            self.io = Some(io);
+        }
+        let ctrl = &*ctrl;
         self.update_signals(dt);
         self.update_doors(dt);
         for i in 0..self.fizzlers.len() {
@@ -1194,7 +1251,63 @@ impl Sim {
         self.pedestals.iter().filter(|p| p.left > 0.0).for_each(|p| set(p.sig));
         self.catchers.iter().filter(|c| c.lit).for_each(|c| set(c.sig));
         self.relays.iter().filter(|r| r.lit).for_each(|r| set(r.sig));
+        for (i, on) in self.io_signals.iter().enumerate() {
+            if *on {
+                set(i);
+            }
+        }
         self.signals = sig;
+    }
+
+    /// Movers along their paths, carrying Faith and cubes that stand on them.
+    fn update_movers(&mut self, dt: f32, ctrl: &mut Controller) {
+        const STANDING: f32 = 0.08;
+        for i in 0..self.movers.len() {
+            let Some(goal) = self.movers[i].goal else { continue };
+            let m = &self.movers[i];
+            let before = m.at;
+            let mut at = m.at;
+            let mut node = m.node;
+            let mut left = m.speed * dt;
+            let mut passed = Vec::new();
+            while node != goal && left > 0.0 {
+                let next = if goal > node { node + 1 } else { node - 1 };
+                let target = m.def.path[next];
+                let gap = target.distance(at);
+                if gap <= left {
+                    at = target;
+                    left -= gap;
+                    node = next;
+                    passed.push(next);
+                } else {
+                    at += (target - at) * (left / gap);
+                    left = 0.0;
+                }
+            }
+            let d = at - before;
+            // What's standing on it moves with it.
+            if d != Vec3::ZERO {
+                let tops: Vec<Aabb> = self.movers[i].boxes().collect();
+                let on_top = |b: &Aabb| tops.iter().any(|t| (b.min.y - t.max.y).abs() < STANDING && b.max.x > t.min.x && b.min.x < t.max.x && b.max.z > t.min.z && b.min.z < t.max.z);
+                if on_top(&ctrl.body().aabb(ctrl.feet)) {
+                    ctrl.feet += d;
+                }
+                for p in self.props.iter_mut().filter(|p| p.alive) {
+                    if on_top(&p.aabb()) {
+                        p.pos += d;
+                    }
+                }
+            }
+            let m = &mut self.movers[i];
+            m.at = at;
+            m.node = node;
+            if node == goal {
+                m.goal = None;
+            }
+            for n in passed {
+                self.events.push(SimEvent::MoverAt { mover: i, node: n, arrived: n == goal });
+            }
+        }
     }
 
     fn update_doors(&mut self, dt: f32) {
@@ -1276,7 +1389,7 @@ impl Sim {
         }
     }
 
-    fn spawn_prop(&mut self, kind: CubeKind, at: Vec3, dropper: Option<usize>) -> u32 {
+    pub(crate) fn spawn_prop(&mut self, kind: CubeKind, at: Vec3, dropper: Option<usize>) -> u32 {
         let id = self.next_prop;
         self.next_prop += 1;
         // Reuse a dead slot so indices stay small.

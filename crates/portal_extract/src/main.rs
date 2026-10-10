@@ -448,17 +448,45 @@ fn main() {
     // Portal's own test chambers (`--no-maps` skips them).
     if let Some(dir) = maps_dir.filter(|d| d.is_dir() && !args.iter().any(|a| a == "--no-maps")) {
         let (mut n, mut mats) = (0, 0);
+        let mut models: Vec<(String, i32)> = Vec::new();
         for name in MAPS {
             let Ok(bytes) = std::fs::read(dir.join(format!("{name}.bsp"))) else { continue };
             match maps::extract(name, &bytes, &read_any, remix.as_ref(), &out) {
-                Ok((_, _, m)) => {
+                Ok((_, _, m, used)) => {
                     n += 1;
                     mats += m;
+                    for u in used {
+                        if !models.contains(&u) {
+                            models.push(u);
+                        }
+                    }
                 }
                 Err(e) => eprintln!("  {name}: {e}"),
             }
         }
         println!("  {n} of Portal's maps ({mats} materials)");
+        // Their props' models, once each (kept from an earlier run).
+        let (mut made, mut failed) = (0, 0);
+        if let Some(g) = games.iter().find(|g| g.name == "portal") {
+            for (model, skin) in &models {
+                let file = out.join("models").join(format!("{}.glb", maps::prop_glb(model, *skin)));
+                if file.exists() {
+                    continue;
+                }
+                match convert_model(g, &games, model, *skin as usize, 0.0, &[]) {
+                    Ok(bytes) => {
+                        let _ = std::fs::create_dir_all(file.parent().unwrap());
+                        std::fs::write(&file, bytes).expect("write model");
+                        made += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("    {model}: {e}");
+                        failed += 1;
+                    }
+                }
+            }
+        }
+        println!("  {} prop models in them ({made} new, {failed} not converted)", models.len());
     }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));

@@ -176,6 +176,28 @@ pub enum Item {
     Painted { b: Aabb, normal: Vec3, paint: Paint },
     /// Deadly goo (or a bottomless drop): falling in kills you, and cubes are lost.
     Goo { b: Aabb },
+    /// Something solid that moves along a path (Portal's maps: doors, elevators, walls that
+    /// come and go), driven by the map's logic ([`crate::io`]).
+    Mover(MoverDef),
+}
+
+/// A moving brush entity: its boxes where the level starts, and the offsets it travels
+/// between (the first is where it starts, zero).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoverDef {
+    /// The map's brush model it draws (Portal's maps).
+    pub model: usize,
+    pub boxes: Vec<Solid>,
+    pub path: Vec<Vec3>,
+    /// Metres a second.
+    pub speed: f32,
+    /// Which point on its path it starts at.
+    pub start: usize,
+    /// Solid and drawn at the start.
+    pub present: bool,
+    /// How far it was moved from where the map has it (a train put on its first path node):
+    /// models riding on it move as far.
+    pub shift: Vec3,
 }
 
 /// A cable from a button to what it drives, drawn on the walls and floor (Portal's
@@ -239,6 +261,10 @@ pub struct Level {
     pub source: Option<String>,
     /// Its lights (Portal's `light` and `light_spot` entities).
     pub lights: Vec<SourceLight>,
+    /// Its brush models not to draw (stood in for by the game's own pieces: buttons, grills).
+    pub hidden_models: Vec<usize>,
+    /// Its logic.
+    pub io: Option<crate::io::Io>,
 }
 
 /// A light in one of Portal's maps.
@@ -290,6 +316,8 @@ impl Level {
             me_props: Vec::new(),
             source: None,
             lights: Vec::new(),
+            hidden_models: Vec::new(),
+            io: None,
         }
     }
 
@@ -502,6 +530,9 @@ impl Level {
         }
         for w in &self.wires {
             see(w.sig);
+        }
+        if let Some(io) = &self.io {
+            n = n.max(io.signal_count());
         }
         n
     }

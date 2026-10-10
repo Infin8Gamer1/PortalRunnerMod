@@ -125,7 +125,7 @@ pub fn play(
                 one_shot(&mut commands, ex.sound("elevator_chime"), 0.7 * fx, 1.0);
             }
             SimEvent::PlayerDied => one_shot(&mut commands, ex.sound("chamber_fail"), 0.6 * fx, 1.0),
-            SimEvent::Checkpoint { .. } => {}
+            SimEvent::Checkpoint { .. } | SimEvent::MoverAt { .. } => {}
         }
     }
     for e in &game.ctrl.events {
