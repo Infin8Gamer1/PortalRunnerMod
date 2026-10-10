@@ -111,6 +111,80 @@ const PELLET_LIFE_AFTER_PORTAL: f32 = 6.0;
 /// A launcher waits this long after its last pellet before the next.
 const PELLET_RELOAD: f32 = 1.5;
 
+/// A turret sees this far...
+const TURRET_RANGE: f32 = 18.0;
+/// ...within this cone (cos of its half-angle) round where it faces...
+const TURRET_CONE: f32 = 0.64;
+/// ...and opens fire once it's seen her this long.
+const TURRET_SPOT: f32 = 0.6;
+/// Being shot hurts this fast (1 is dead)...
+const TURRET_DAMAGE: f32 = 0.8;
+/// ...and it wears off this fast.
+const HURT_RECOVERY: f32 = 0.35;
+/// A tipped turret takes this long to fall, and fires wildly this long before it gives up.
+const TURRET_FALL: f32 = 0.45;
+const TURRET_FLAIL: f32 = 2.5;
+/// A turret's size: half its width, and its height (Portal's: 64 units tall).
+pub const TURRET_HALF: f32 = 0.3;
+pub const TURRET_HEIGHT: f32 = 1.6;
+/// Its eyes, above its feet.
+const TURRET_EYE: f32 = 1.05;
+/// Faith's melee: turrets are her targets with handles from here up.
+const TURRET_TARGET_ID: u32 = 1_000_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurretState {
+    /// Watching for her.
+    Searching,
+    /// Firing at her.
+    Firing,
+    /// Knocked over: falling and firing wildly.
+    Tipped,
+    /// Given up.
+    Retired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Turret {
+    pub at: Vec3,
+    pub yaw: f32,
+    pub state: TurretState,
+    /// Seconds in this state.
+    pub t: f32,
+    /// How long it's had her in sight (falls back when it loses her).
+    pub sight: f32,
+    /// Which way it's falling (horizontal), once tipped; how far it's fallen (0..1).
+    pub fall_dir: Vec3,
+    pub fallen: f32,
+    /// Firing: seconds to the next shot.
+    pub reload: f32,
+}
+
+impl Turret {
+    pub fn facing(&self) -> Vec3 {
+        Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos())
+    }
+
+    pub fn upright(&self) -> bool {
+        matches!(self.state, TurretState::Searching | TurretState::Firing)
+    }
+
+    /// Its box: standing, or lying where it fell.
+    pub fn aabb(&self) -> Aabb {
+        if self.fallen < 0.5 {
+            Aabb::new(self.at + Vec3::new(-TURRET_HALF, 0.0, -TURRET_HALF), self.at + Vec3::new(TURRET_HALF, TURRET_HEIGHT, TURRET_HALF))
+        } else {
+            let c = self.at + self.fall_dir * TURRET_HEIGHT * 0.5 + Vec3::Y * TURRET_HALF;
+            let half = Vec3::new(TURRET_HALF, TURRET_HALF, TURRET_HALF) + self.fall_dir.abs() * (TURRET_HEIGHT * 0.5 - TURRET_HALF);
+            Aabb::new(c - half, c + half)
+        }
+    }
+
+    pub fn eye(&self) -> Vec3 {
+        self.at + Vec3::Y * TURRET_EYE + self.facing() * (TURRET_HALF + 0.05)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PelletLauncher {
     pub at: Vec3,
@@ -310,6 +384,14 @@ pub enum SimEvent {
     PlayerDied,
     Checkpoint { index: usize },
     LevelComplete,
+    /// A turret saw her (and is about to fire).
+    TurretSpotted { at: Vec3 },
+    /// A turret lost her.
+    TurretSearching { at: Vec3 },
+    /// A turret's shot: from its gun, to where it went (hit: her).
+    TurretShot { from: Vec3, to: Vec3, hit: bool },
+    TurretTipped { at: Vec3 },
+    TurretRetired { at: Vec3 },
     PelletLaunched { at: Vec3 },
     PelletBounced { at: Vec3 },
     /// A pellet's gone: worn out, into a grill, or caught (`caught`).
@@ -387,6 +469,9 @@ pub struct Sim {
     next_prop: u32,
     pub doors: Vec<Door>,
     pub movers: Vec<Mover>,
+    pub turrets: Vec<Turret>,
+    /// How hurt Faith is (turrets' fire): at 1 she's dead.
+    pub hurt: f32,
     pub launchers: Vec<PelletLauncher>,
     pub pellets: Vec<Pellet>,
     pub pellet_catchers: Vec<PelletCatcher>,
@@ -447,6 +532,8 @@ impl Sim {
             next_prop: 1,
             doors: Vec::new(),
             movers: Vec::new(),
+            turrets: Vec::new(),
+            hurt: 0.0,
             launchers: Vec::new(),
             pellets: Vec::new(),
             pellet_catchers: Vec::new(),
@@ -546,6 +633,16 @@ impl Sim {
                     sim.gel.fill(c, geom::snap_axis(normal), u, v, half, paint);
                 }
                 Item::Goo { b } => sim.goo.push(b),
+                Item::Turret { at, yaw } => sim.turrets.push(Turret {
+                    at,
+                    yaw,
+                    state: TurretState::Searching,
+                    t: 0.0,
+                    sight: 0.0,
+                    fall_dir: Vec3::ZERO,
+                    fallen: 0.0,
+                    reload: 0.0,
+                }),
                 Item::PelletLauncher { at, dir, inputs, life } => {
                     statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
                     sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: PELLET_RELOAD });
@@ -655,6 +752,7 @@ impl Sim {
     /// Boxes that move: closed doors, bridges, cubes (but not `skip`).
     fn moving_boxes(&self, skip: Option<usize>, include_held: bool) -> Vec<Aabb> {
         let mut v: Vec<Aabb> = self.doors.iter().filter(|d| d.solid()).map(|d| d.b).collect();
+        v.extend(self.turrets.iter().map(|t| t.aabb()));
         for m in &self.movers {
             v.extend(m.boxes().filter(|b| b.size().min_element() > 0.0));
         }
@@ -954,9 +1052,24 @@ impl Sim {
             self.funnel_into_portals(ctrl, dt);
         }
         let eye_before = ctrl.view().eye;
+        // Turrets are what her melee hits.
+        ctrl.targets = self
+            .turrets
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.upright())
+            .map(|(i, t)| faith_move::melee::Target { id: TURRET_TARGET_ID + i as u32, centre: t.at + Vec3::Y * TURRET_HEIGHT * 0.5, radius: TURRET_HALF, half_height: TURRET_HEIGHT * 0.5, eye: TURRET_EYE - TURRET_HEIGHT * 0.5, facing: t.facing() })
+            .collect();
         {
             let world = self.player_world();
             ctrl.step(dt, input, &world);
+        }
+        let hits: Vec<(u32, Vec3)> = ctrl.events.iter().filter_map(|e| if let MoveEvent::MeleeHit { target, momentum, .. } = e { Some((*target, *momentum)) } else { None }).collect();
+        for (target, momentum) in hits {
+            if let Some(i) = target.checked_sub(TURRET_TARGET_ID).map(|i| i as usize).filter(|i| *i < self.turrets.len()) {
+                let push = if momentum.length_squared() > 1e-4 { momentum } else { self.turrets[i].at - ctrl.feet };
+                self.tip_turret(i, push);
+            }
         }
         if ctrl.vel.length() > TERMINAL {
             ctrl.vel = ctrl.vel.normalize() * TERMINAL;
@@ -1279,6 +1392,7 @@ impl Sim {
 
         self.update_movers(dt, ctrl);
         self.update_pellets(dt, ctrl);
+        self.update_turrets(dt, ctrl);
         if let Some(mut io) = self.io.take() {
             io.step(self, ctrl, dt);
             self.io = Some(io);
@@ -1324,6 +1438,110 @@ impl Sim {
             }
         }
         self.signals = sig;
+    }
+
+    /// Knock a turret over, falling along `push`.
+    pub fn tip_turret(&mut self, i: usize, push: Vec3) {
+        let t = &mut self.turrets[i];
+        if !t.upright() {
+            return;
+        }
+        let d = Vec3::new(push.x, 0.0, push.z);
+        let d = if d.length_squared() > 1e-4 { d.normalize() } else { -t.facing() };
+        // It lies along X or Z (its box is axis-aligned).
+        t.fall_dir = if d.x.abs() > d.z.abs() { Vec3::X * d.x.signum() } else { Vec3::Z * d.z.signum() };
+        t.state = TurretState::Tipped;
+        t.t = 0.0;
+        self.events.push(SimEvent::TurretTipped { at: t.at });
+    }
+
+    /// Sentry turrets: spotting Faith, firing at her; knocked over by cubes, her running into
+    /// them or her kicks, they flail and give up.
+    fn update_turrets(&mut self, dt: f32, ctrl: &mut Controller) {
+        self.hurt = (self.hurt - HURT_RECOVERY * dt).max(0.0);
+        let me = ctrl.body().aabb(ctrl.feet);
+        let chest = ctrl.feet + Vec3::Y * 1.2;
+        let run = Vec3::new(ctrl.vel.x, 0.0, ctrl.vel.z);
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
+        let mut shot = 0.0;
+        for i in 0..self.turrets.len() {
+            let tu = self.turrets[i];
+            // Knocked over: a cube thrown at it, Faith running into it.
+            if tu.upright() {
+                let b = tu.aabb();
+                // (A cube coming at it fast, about to hit: cubes stop dead on contact.)
+                let near = Aabb::new(b.min - Vec3::splat(0.25), b.max + Vec3::splat(0.25));
+                let bumped = self.props.iter().find(|p| p.alive && p.vel.length() > 1.5 && p.vel.dot(b.center() - p.pos) > 0.0 && p.aabb().overlaps(&near)).map(|p| p.vel);
+                let push = bumped.or_else(|| (run.length() > 3.0 && me.overlaps(&Aabb::new(b.min - Vec3::splat(0.08), b.max + Vec3::splat(0.08)))).then_some(run));
+                if let Some(push) = push {
+                    self.tip_turret(i, push);
+                    continue;
+                }
+            }
+            let t = &mut self.turrets[i];
+            t.t += dt;
+            match t.state {
+                TurretState::Searching | TurretState::Firing => {
+                    let eye = t.eye();
+                    let to = chest - eye;
+                    let dist = to.length();
+                    let sees = dist < TURRET_RANGE && to.normalize_or_zero().dot(t.facing()) > TURRET_CONE;
+                    let tu = *t;
+                    let clear = sees && self.raycast(eye, to / dist, dist, mask).is_none_or(|h| h.t > dist - 0.4);
+                    let t = &mut self.turrets[i];
+                    t.sight = if clear { (t.sight + dt).min(TURRET_SPOT + 1.0) } else { (t.sight - dt * 0.5).max(0.0) };
+                    match (t.state, t.sight >= TURRET_SPOT, clear) {
+                        (TurretState::Searching, true, _) => {
+                            t.state = TurretState::Firing;
+                            t.t = 0.0;
+                            self.events.push(SimEvent::TurretSpotted { at: tu.at });
+                        }
+                        (TurretState::Firing, _, _) if t.sight <= 0.0 => {
+                            t.state = TurretState::Searching;
+                            t.t = 0.0;
+                            self.events.push(SimEvent::TurretSearching { at: tu.at });
+                        }
+                        _ => {}
+                    }
+                    let t = &mut self.turrets[i];
+                    if t.state == TurretState::Firing {
+                        t.reload -= dt;
+                        if clear {
+                            shot += dt;
+                        }
+                        if t.reload <= 0.0 {
+                            t.reload = 0.1;
+                            let to = if clear { chest } else { eye + t.facing() * TURRET_RANGE };
+                            self.events.push(SimEvent::TurretShot { from: eye, to, hit: clear });
+                        }
+                    }
+                }
+                TurretState::Tipped => {
+                    t.fallen = (t.t / TURRET_FALL).min(1.0);
+                    t.reload -= dt;
+                    if t.reload <= 0.0 && t.t < TURRET_FLAIL {
+                        t.reload = 0.12;
+                        let a = t.t * 7.0;
+                        let dir = (t.fall_dir * a.cos() + Vec3::Y * 0.3 + t.fall_dir.cross(Vec3::Y) * a.sin()).normalize();
+                        let from = t.at + Vec3::Y * 0.5 + t.fall_dir * 0.8;
+                        self.events.push(SimEvent::TurretShot { from, to: from + dir * 6.0, hit: false });
+                    }
+                    if t.t >= TURRET_FLAIL {
+                        t.state = TurretState::Retired;
+                        t.t = 0.0;
+                        self.events.push(SimEvent::TurretRetired { at: t.at });
+                    }
+                }
+                TurretState::Retired => t.fallen = 1.0,
+            }
+        }
+        if shot > 0.0 {
+            self.hurt += TURRET_DAMAGE * shot;
+            if self.hurt >= 1.0 {
+                self.hurt = 0.0;
+                self.player_died(ctrl, true);
+            }
+        }
     }
 
     /// Take a pellet out (a map's catcher took it).

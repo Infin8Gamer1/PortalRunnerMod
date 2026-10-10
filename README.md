@@ -133,7 +133,8 @@ colours from the map, with their props (Portal's models: doors, elevators, dropp
 and their logic: Source's entity I/O runs (relays, timers, counters, triggers), so buttons
 open doors, preset portals come and go, droppers make cubes, elevators ride and the exit
 elevator ends the chamber, pellets fly from their launchers into their catchers. GLaDOS isn't
-heard yet (her scenes are a short wait), and turrets (#24) aren't in.
+heard yet (her scenes are a short wait). Turrets watch for you, fire when they see you, and
+tip over when a cube hits them, you run into them, or you kick them (Mirror's Edge's melee).
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.

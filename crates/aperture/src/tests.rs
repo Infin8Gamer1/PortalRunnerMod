@@ -1041,3 +1041,64 @@ fn chamber06_can_be_solved() {
     assert!(sim.complete, "not out: {}", c.feet);
 }
 
+
+#[test]
+fn a_turret_shoots_her_in_sight_and_not_behind_a_wall() {
+    // Facing +Z (yaw 180), her 6 m in front of it.
+    let mut l = flat();
+    l.turret([0.0, 0.0, -6.0], 180.0);
+    l.spawn([0.0, 0.0, 0.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 3.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::TurretSpotted { .. })));
+    assert!(ev.contains(&SimEvent::PlayerDied), "it didn't kill her");
+    // A wall between: it never sees her.
+    let mut l = flat();
+    l.turret([0.0, 0.0, -6.0], 180.0);
+    l.solid(Mat::Black, [-3.0, 0.0, -3.5], [3.0, 3.0, -3.0]);
+    l.spawn([0.0, 0.0, 0.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 3.0, |_, _| Input::default());
+    assert!(!ev.iter().any(|e| matches!(e, SimEvent::TurretSpotted { .. } | SimEvent::PlayerDied)));
+}
+
+#[test]
+fn running_into_a_turret_knocks_it_over() {
+    // It faces away (yaw 0, looking -Z); she runs up behind it.
+    let mut l = flat();
+    l.turret([0.0, 0.0, -8.0], 0.0);
+    l.spawn([0.0, 0.0, 0.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 3.0, |_, _| forward());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::TurretTipped { .. })), "not knocked over (at {})", c.feet);
+    run(&mut sim, &mut c, 3.0, |_, _| Input::default());
+    assert_eq!(sim.turrets[0].state, crate::sim::TurretState::Retired);
+    assert!(!sim.turrets[0].upright());
+}
+
+#[test]
+fn a_thrown_cube_knocks_a_turret_over() {
+    let mut l = flat();
+    l.turret([0.0, 0.0, -8.0], 0.0);
+    l.cube(CubeKind::Storage, [0.0, 0.5, -4.0]);
+    l.spawn([4.0, 0.0, 0.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    sim.props[0].vel = Vec3::new(0.0, 1.0, -8.0);
+    let ev = run(&mut sim, &mut c, 1.5, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::TurretTipped { .. })));
+}
+
+#[test]
+fn a_punch_knocks_a_turret_over() {
+    // Up close behind it, facing it, and punch.
+    let mut l = flat();
+    l.turret([0.0, 0.0, -1.2], 0.0);
+    l.spawn([0.0, 0.0, 0.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let mut k = 0;
+    let ev = run(&mut sim, &mut c, 2.0, |_, _| {
+        k += 1;
+        Input { melee_pressed: k == 5, ..Default::default() }
+    });
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::TurretTipped { .. })), "the punch didn't knock it over");
+}

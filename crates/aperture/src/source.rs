@@ -359,6 +359,11 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
                     kind = io::Kind::Portal { color, portal: Portal::new(at, normal, up), start: key(e, "Activated") == Some("1") };
                 }
             }
+            "npc_portal_turret_floor" => {
+                if let Some(at) = origin(e) {
+                    l.items.push(Item::Turret { at, yaw: angles(e, "angles").1.to_radians() });
+                }
+            }
             "point_energy_ball_launcher" => {
                 if let Some(at) = origin(e) {
                     let (p, y, r) = angles(e, "angles");

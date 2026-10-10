@@ -42,6 +42,8 @@ pub enum Vis {
     Mover(usize),
     /// A pellet catcher's lens (lit once it's caught one).
     PelletLens(usize),
+    /// A turret's laser sight.
+    TurretSight(usize),
     /// One of the pooled pieces (cubes, beams, bridges, blobs).
     Pool,
 }
@@ -59,6 +61,8 @@ pub struct Pools {
     blobs: Vec<Entity>,
     /// High energy pellets (each a glowing ball with its light).
     pellets: Vec<Entity>,
+    /// Turrets' shots this frame.
+    tracers: Vec<Entity>,
     /// Each prop slot's cube, and its copy through the portal it's in (so the half of it
     /// that's through shows at the far side).
     props: Vec<[Entity; 2]>,
@@ -102,6 +106,8 @@ pub struct ChamberMats {
     pub blob_paint: [Handle<StandardMaterial>; 3],
     /// A high energy pellet: glowing (under ray tracing it lights the chamber).
     pub pellet: Handle<StandardMaterial>,
+    /// A turret's shot.
+    pub tracer: Handle<StandardMaterial>,
     pub goo: Handle<StandardMaterial>,
     pub wire_off: Handle<StandardMaterial>,
     pub wire_on: Handle<StandardMaterial>,
@@ -430,6 +436,7 @@ pub fn setup(
         lens_off: materials.add(std(Color::srgb(0.25, 0.08, 0.06), None, 0.2, 0.0)),
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
         paint: paint.clone().map(|p| materials.add(p)),
+        tracer: materials.add(glow(LinearRgba::rgb(4.0, 2.6, 0.8), 0.7)),
         pellet: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.9, 0.6), emissive: LinearRgba::rgb(9.0, 6.5, 2.2), ..default() }),
         blob_paint: paint.map(|p| materials.add(StandardMaterial { opaque_render_method: bevy::material::OpaqueRendererMethod::Forward, ..p })),
         // Opaque and glossy, so it's in the ray-traced scene and the chamber shows in it.
@@ -691,6 +698,11 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             commands.entity(e).insert(Vis::Mover(i));
         }
     }
+    // Turrets' laser sights.
+    for i in 0..sim.turrets.len() {
+        let e = geom(commands, m.beam.clone(), m.laser.clone(), Transform::default());
+        commands.entity(e).insert((Vis::TurretSight(i), NotShadowCaster));
+    }
     // Pellet catchers' lenses.
     for (i, c) in sim.pellet_catchers.iter().enumerate() {
         let e = geom(commands, meshes.add(Sphere::new(0.22).mesh().ico(2).unwrap()), m.lens_off.clone(), Transform::from_translation(c.at));
@@ -843,6 +855,19 @@ pub fn update(
             }
             Vis::Catcher(i) => Some(lit(sim.catchers[i].lit, &m.lens_on, &m.lens_off)),
             Vis::PelletLens(i) => Some(lit(sim.pellet_catchers[i].lit, &m.lens_on, &m.lens_off)),
+            Vis::TurretSight(i) => {
+                let t = &sim.turrets[i];
+                if t.upright() {
+                    let (eye, dir) = (t.eye(), t.facing());
+                    let mask = aperture::Mask { portals: false, ..aperture::Mask::LASER };
+                    let len = sim.raycast(eye, dir, 18.0, mask).map_or(18.0, |h| h.t);
+                    *tf = Transform::from_translation(eye + dir * len * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Y, dir)).with_scale(Vec3::new(0.2, len, 0.2));
+                    *visible = Visibility::Inherited;
+                } else {
+                    *visible = Visibility::Hidden;
+                }
+                None
+            }
             Vis::Mover(i) => {
                 let mv = &sim.movers[i];
                 tf.translation = mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
@@ -913,6 +938,8 @@ pub fn update(
     let segs: Vec<Aabb> = sim.bridges.iter().flat_map(|b| b.segs.iter().map(|s| s.aabb)).collect();
     pooled(&mut commands, &mut pools.bridges, segs.len(), |c| spawn_pooled(c, &m.unit_cube, &m.bridge, false));
     pooled(&mut commands, &mut pools.blobs, sim.blobs.len(), |c| spawn_pooled(c, &m.blob, &m.blob_paint[0], false));
+    let shots: Vec<(Vec3, Vec3)> = sim.events.iter().filter_map(|e| if let aperture::SimEvent::TurretShot { from, to, .. } = e { Some((*from, *to)) } else { None }).collect();
+    pooled(&mut commands, &mut pools.tracers, shots.len(), |c| spawn_pooled(c, &m.beam, &m.tracer, false));
     let pellets: Vec<Vec3> = sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
     pooled(&mut commands, &mut pools.pellets, pellets.len(), |c| {
         let e = spawn_pooled(c, &m.blob, &m.pellet, false);
@@ -1014,6 +1041,18 @@ pub fn update(
     for (i, e) in pools.bridges.iter().enumerate() {
         match segs.get(i) {
             Some(s) => set(*e, Some(Transform::from_translation(s.center()).with_scale(s.size())), None),
+            None => set(*e, None, None),
+        }
+    }
+    for (i, e) in pools.tracers.iter().enumerate() {
+        match shots.get(i) {
+            // A streak along the shot's last few metres.
+            Some((a, b)) => {
+                let d = (*b - *a).normalize_or(Vec3::Y);
+                let len = a.distance(*b).min(3.0);
+                let mid = *b - d * len * 0.5;
+                set(*e, Some(Transform::from_translation(mid).with_rotation(Quat::from_rotation_arc(Vec3::Y, d)).with_scale(Vec3::new(0.3, len, 0.3))), None)
+            }
             None => set(*e, None, None),
         }
     }

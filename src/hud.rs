@@ -275,8 +275,8 @@ pub fn update(
         let burn = (sim.burn / aperture::sim::LASER_KILL).clamp(0.0, 1.0);
         bg.0 = if death > 0.0 {
             Color::srgba(0.0, 0.0, 0.0, death)
-        } else if burn > 0.0 {
-            Color::srgba(0.9, 0.1, 0.05, burn * 0.45)
+        } else if burn > 0.0 || sim.hurt > 0.0 {
+            Color::srgba(0.9, 0.1, 0.05, burn.max(sim.hurt) * 0.45)
         } else {
             Color::NONE
         };

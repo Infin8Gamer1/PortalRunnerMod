@@ -179,6 +179,8 @@ pub enum Item {
     /// A high energy pellet launcher at `at`, firing along `dir` while its inputs are on: a
     /// pellet that lives `life` seconds, and a new one each time the last is gone.
     PelletLauncher { at: Vec3, dir: Vec3, inputs: Inputs, life: f32 },
+    /// A sentry turret standing at `at`, facing `yaw` (faith_move's: 0 looks down -Z).
+    Turret { at: Vec3, yaw: f32 },
     /// A pellet catcher: its lens at `at`, facing `facing`; on for good once a pellet's in.
     PelletCatcher { sig: Sig, at: Vec3, facing: Vec3 },
     /// Something solid that moves along a path (Portal's maps: doors, elevators, walls that
@@ -508,6 +510,10 @@ impl Level {
     pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
         let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
         self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true }))
+    }
+
+    pub fn turret(&mut self, at: [f32; 3], yaw_deg: f32) -> &mut Self {
+        self.item(Item::Turret { at: Vec3::from(at), yaw: yaw_deg.to_radians() })
     }
 
     pub fn pellet_launcher(&mut self, at: [f32; 3], dir: [f32; 3], inputs: Inputs) -> &mut Self {

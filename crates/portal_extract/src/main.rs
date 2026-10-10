@@ -85,6 +85,75 @@ fn arg(args: &[String], name: &str) -> Option<PathBuf> {
 
 /// (our name, candidate paths in order: the first one found is used).
 const SOUNDS: &[(&str, &[&str])] = &[
+    // Sentry turrets: their voice, and their guns.
+    ("turret_deploy_1", &["sound/npc/turret_floor/turret_deploy_1.wav"]),
+    ("turret_deploy_2", &["sound/npc/turret_floor/turret_deploy_2.wav"]),
+    ("turret_deploy_3", &["sound/npc/turret_floor/turret_deploy_3.wav"]),
+    ("turret_deploy_4", &["sound/npc/turret_floor/turret_deploy_4.wav"]),
+    ("turret_deploy_5", &["sound/npc/turret_floor/turret_deploy_5.wav"]),
+    ("turret_deploy_6", &["sound/npc/turret_floor/turret_deploy_6.wav"]),
+    ("turret_active_1", &["sound/npc/turret_floor/turret_active_1.wav"]),
+    ("turret_active_2", &["sound/npc/turret_floor/turret_active_2.wav"]),
+    ("turret_active_3", &["sound/npc/turret_floor/turret_active_3.wav"]),
+    ("turret_active_4", &["sound/npc/turret_floor/turret_active_4.wav"]),
+    ("turret_active_5", &["sound/npc/turret_floor/turret_active_5.wav"]),
+    ("turret_active_6", &["sound/npc/turret_floor/turret_active_6.wav"]),
+    ("turret_active_7", &["sound/npc/turret_floor/turret_active_7.wav"]),
+    ("turret_active_8", &["sound/npc/turret_floor/turret_active_8.wav"]),
+    ("turret_search_1", &["sound/npc/turret_floor/turret_search_1.wav"]),
+    ("turret_search_2", &["sound/npc/turret_floor/turret_search_2.wav"]),
+    ("turret_search_3", &["sound/npc/turret_floor/turret_search_3.wav"]),
+    ("turret_search_4", &["sound/npc/turret_floor/turret_search_4.wav"]),
+    ("turret_autosearch_1", &["sound/npc/turret_floor/turret_autosearch_1.wav"]),
+    ("turret_autosearch_2", &["sound/npc/turret_floor/turret_autosearch_2.wav"]),
+    ("turret_autosearch_3", &["sound/npc/turret_floor/turret_autosearch_3.wav"]),
+    ("turret_autosearch_4", &["sound/npc/turret_floor/turret_autosearch_4.wav"]),
+    ("turret_autosearch_5", &["sound/npc/turret_floor/turret_autosearch_5.wav"]),
+    ("turret_autosearch_6", &["sound/npc/turret_floor/turret_autosearch_6.wav"]),
+    ("turret_tipped_1", &["sound/npc/turret_floor/turret_tipped_1.wav"]),
+    ("turret_tipped_2", &["sound/npc/turret_floor/turret_tipped_2.wav"]),
+    ("turret_tipped_3", &["sound/npc/turret_floor/turret_tipped_3.wav"]),
+    ("turret_tipped_4", &["sound/npc/turret_floor/turret_tipped_4.wav"]),
+    ("turret_tipped_5", &["sound/npc/turret_floor/turret_tipped_5.wav"]),
+    ("turret_tipped_6", &["sound/npc/turret_floor/turret_tipped_6.wav"]),
+    ("turret_retire_1", &["sound/npc/turret_floor/turret_retire_1.wav"]),
+    ("turret_retire_2", &["sound/npc/turret_floor/turret_retire_2.wav"]),
+    ("turret_retire_3", &["sound/npc/turret_floor/turret_retire_3.wav"]),
+    ("turret_retire_4", &["sound/npc/turret_floor/turret_retire_4.wav"]),
+    ("turret_retire_5", &["sound/npc/turret_floor/turret_retire_5.wav"]),
+    ("turret_retire_6", &["sound/npc/turret_floor/turret_retire_6.wav"]),
+    ("turret_retire_7", &["sound/npc/turret_floor/turret_retire_7.wav"]),
+    ("turret_disabled_1", &["sound/npc/turret_floor/turret_disabled_1.wav"]),
+    ("turret_disabled_2", &["sound/npc/turret_floor/turret_disabled_2.wav"]),
+    ("turret_disabled_3", &["sound/npc/turret_floor/turret_disabled_3.wav"]),
+    ("turret_disabled_4", &["sound/npc/turret_floor/turret_disabled_4.wav"]),
+    ("turret_disabled_5", &["sound/npc/turret_floor/turret_disabled_5.wav"]),
+    ("turret_disabled_6", &["sound/npc/turret_floor/turret_disabled_6.wav"]),
+    ("turret_disabled_7", &["sound/npc/turret_floor/turret_disabled_7.wav"]),
+    ("turret_disabled_8", &["sound/npc/turret_floor/turret_disabled_8.wav"]),
+    ("turret_pickup_1", &["sound/npc/turret_floor/turret_pickup_1.wav"]),
+    ("turret_pickup_2", &["sound/npc/turret_floor/turret_pickup_2.wav"]),
+    ("turret_pickup_3", &["sound/npc/turret_floor/turret_pickup_3.wav"]),
+    ("turret_pickup_4", &["sound/npc/turret_floor/turret_pickup_4.wav"]),
+    ("turret_pickup_5", &["sound/npc/turret_floor/turret_pickup_5.wav"]),
+    ("turret_pickup_6", &["sound/npc/turret_floor/turret_pickup_6.wav"]),
+    ("turret_pickup_7", &["sound/npc/turret_floor/turret_pickup_7.wav"]),
+    ("turret_pickup_8", &["sound/npc/turret_floor/turret_pickup_8.wav"]),
+    ("turret_pickup_9", &["sound/npc/turret_floor/turret_pickup_9.wav"]),
+    ("turret_pickup_10", &["sound/npc/turret_floor/turret_pickup_10.wav"]),
+    ("turret_shotat_1", &["sound/npc/turret_floor/turret_shotat_1.wav"]),
+    ("turret_shotat_2", &["sound/npc/turret_floor/turret_shotat_2.wav"]),
+    ("turret_shotat_3", &["sound/npc/turret_floor/turret_shotat_3.wav"]),
+    ("turret_collide_1", &["sound/npc/turret_floor/turret_collide_1.wav"]),
+    ("turret_collide_2", &["sound/npc/turret_floor/turret_collide_2.wav"]),
+    ("turret_collide_3", &["sound/npc/turret_floor/turret_collide_3.wav"]),
+    ("turret_collide_4", &["sound/npc/turret_floor/turret_collide_4.wav"]),
+    ("turret_collide_5", &["sound/npc/turret_floor/turret_collide_5.wav"]),
+    ("turret_shoot_1", &["sound/npc/turret_floor/shoot1.wav"]),
+    ("turret_shoot_2", &["sound/npc/turret_floor/shoot2.wav"]),
+    ("turret_shoot_3", &["sound/npc/turret_floor/shoot3.wav"]),
+    ("turret_die", &["sound/npc/turret_floor/die.wav"]),
+    ("turret_ping", &["sound/npc/turret_floor/ping.wav"]),
     // High energy pellets (Portal's are Half-Life 2's energy balls).
     ("pellet_bounce", &["sound/weapons/physcannon/energy_bounce1.wav"]),
     ("pellet_bounce2", &["sound/weapons/physcannon/energy_bounce2.wav"]),
@@ -201,6 +270,8 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     // High energy pellets' launcher and catcher (Portal's).
     ("pellet_launcher", "portal", "models/props/combine_ball_launcher.mdl", 0, 0.0),
     ("pellet_catcher", "portal", "models/props/combine_ball_catcher.mdl", 0, 0.0),
+    // A sentry turret (Portal's).
+    ("turret", "portal", "models/props/turret_01.mdl", 0, 0.0),
     ("door_upper", "portal2", "models/props/vert_door/vert_door_upper.mdl", 0, 0.0),
     ("door_lower", "portal2", "models/props/vert_door/vert_door_lower.mdl", 0, 0.0),
     ("door_frame", "portal2", "models/props/vert_door/vert_door_frame.mdl", 0, 0.0),
@@ -302,6 +373,8 @@ const MAPS: &[&str] = &[
 const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
     // The paddle snapping up to throw, holding, then settling back into its pit.
     ("faith_plate", &[("@angled", "angled"), ("@straightup", "straightup")]),
+    // (Its bind pose has it hanging upside down: its idle stands it up.)
+    ("turret", &[("@idle", "idle")]),
 ];
 
 fn main() {
@@ -475,16 +548,22 @@ fn main() {
             }
         }
         println!("  {n} of Portal's maps ({mats} materials)");
-        // Their props' models, once each (kept from an earlier run, unless they animate), with
+        // Their props' models, once each (kept from an earlier run unless they animate, or with
+        // `--props`), with
         // the animations the maps play on them (under the sequence's name, or `@` and it).
         let (mut made, mut failed, mut animated) = (0, 0, 0);
         if let Some(g) = games.iter().find(|g| g.name == "portal") {
             for (model, skin, anims) in &models {
                 let file = out.join("models").join(format!("{}.glb", maps::prop_glb(model, *skin)));
-                if file.exists() && anims.is_empty() {
+                if file.exists() && anims.is_empty() && !args.iter().any(|a| a == "--props") {
                     continue;
                 }
+                // Posed by its idle where it has one (some models' bind pose isn't how they
+                // stand: Portal's turret hangs upside down in its).
                 let mut want: Vec<(String, String)> = anims.iter().map(|a| (a.clone(), a.clone())).collect();
+                if !want.iter().any(|(t, _)| t == "idle") {
+                    want.push(("@idle".into(), "idle".into()));
+                }
                 let bytes = loop {
                     let pairs: Vec<(&str, &str)> = want.iter().map(|(t, o)| (t.as_str(), o.as_str())).collect();
                     match convert_model(g, &games, model, *skin as usize, 0.0, &pairs) {

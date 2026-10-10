@@ -46,6 +46,7 @@ pub const NAMES: &[&str] = &[
     "fizzler_emitter",
     "pellet_launcher",
     "pellet_catcher",
+    "turret",
     "door_upper",
     "door_lower",
     "door_frame",
@@ -83,6 +84,8 @@ pub enum PropKind {
     DropperCover(usize),
     /// A catcher, unlit or lit.
     Catcher(usize, bool),
+    /// A sentry turret (standing, or falling over).
+    Turret(usize),
     DoorUpper(usize),
     DoorLower(usize),
     /// Portal's round door (both leaves, `door_left` and `door_right`, which slide apart).
@@ -142,6 +145,7 @@ pub struct Replaced {
     pub fizzlers: bool,
     pub doors: bool,
     pub pellets: bool,
+    pub turrets: bool,
 }
 
 /// Spawn the models for the chamber's pieces; says which stand-ins they replace.
@@ -245,6 +249,12 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             let (right, up) = frame_for(c.facing);
             let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, c.facing)).with_scale(Vec3::splat(s));
             spawn_model(commands, catcher.clone(), tf, PropKind::Static);
+        }
+    }
+    if let Some(scene) = models.get("turret") {
+        r.turrets = true;
+        for (i, t) in sim.turrets.iter().enumerate() {
+            spawn_model(commands, scene.clone(), Transform::from_translation(t.at).with_rotation(Quat::from_rotation_y(t.yaw)), PropKind::Turret(i));
         }
     }
     if let Some(scene) = models.get("laser_relay") {
@@ -448,9 +458,17 @@ pub fn animate_plates(game: Res<Game>, models: Res<PropModels>, clips: Res<Asset
 }
 
 /// Move the models' parts, and show the right look, from the simulation.
-pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, mut roots: Query<(&PropKind, &mut Visibility)>) {
+pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, mut roots: Query<(&PropKind, &mut Visibility, &mut Transform), Without<PropPart>>) {
     let sim = &game.sim;
-    for (kind, mut vis) in &mut roots {
+    for (kind, mut vis, mut tf) in &mut roots {
+        // A turret falls over the way it was knocked.
+        if let PropKind::Turret(i) = *kind {
+            if let Some(t) = sim.turrets.get(i) {
+                let tilt = if t.fall_dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_axis_angle(Vec3::Y.cross(t.fall_dir).normalize(), t.fallen * std::f32::consts::FRAC_PI_2) };
+                tf.rotation = tilt * Quat::from_rotation_y(t.yaw);
+            }
+            continue;
+        }
         let show = match *kind {
             PropKind::Button(i, Some(lit)) => sim.buttons.get(i).is_some_and(|b| b.pressed == lit),
             PropKind::Catcher(i, lit) => sim.catchers.get(i).is_some_and(|c| c.lit == lit),
