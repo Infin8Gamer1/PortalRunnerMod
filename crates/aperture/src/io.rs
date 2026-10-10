@@ -86,6 +86,8 @@ pub enum Kind {
     Auto,
     /// Finishes the level.
     ChangeLevel,
+    /// A model that animates (prop_dynamic): see [`Io::animations`].
+    Animated,
     Other,
 }
 
@@ -118,6 +120,10 @@ pub struct Io {
     /// Signals to set as the level starts.
     pub initial: Vec<(Sig, bool)>,
     signals: usize,
+    /// Each animated prop's (entity's) last animation, and a count that goes up each time
+    /// one's started (so the host can tell a replay).
+    pub animations: HashMap<usize, (String, u32)>,
+    animation_count: u32,
     /// Which preset portal (entity) is open in each colour.
     open: [Option<usize>; 2],
     rng: u32,
@@ -173,9 +179,12 @@ impl Io {
                 }
             }
             for e in 0..self.ents.len() {
+                // (Arriving from the last chamber, as the game plays them in order: the
+                // elevator's arrival logic runs too.)
                 if self.ents[e].kind == Kind::Auto {
                     self.fire(e, "OnMapSpawn", None);
                     self.fire(e, "OnNewGame", None);
+                    self.fire(e, "OnMapTransition", None);
                 }
             }
             for e in 0..self.ents.len() {
@@ -503,6 +512,10 @@ impl Io {
                     sim.spawn_prop(kind, at, None);
                     sim.events.push(SimEvent::CubeDropped { at });
                 }
+            }
+            Kind::Animated if i == "setanimation" => {
+                self.animation_count += 1;
+                self.animations.insert(e, (param.trim().to_ascii_lowercase(), self.animation_count));
             }
             Kind::ChangeLevel if i == "changelevel" => {
                 if !sim.complete {

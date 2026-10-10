@@ -69,6 +69,17 @@ pub struct MapModel(pub usize);
 pub struct MapProp {
     base: Vec3,
     mover: Option<usize>,
+    /// Its entity in the map's logic, and its model (for its animations), if it animates.
+    animated: Option<(usize, Handle<bevy::gltf::Gltf>)>,
+}
+
+/// A map prop's animation player (on a node inside its model): its entity in the logic, and
+/// the last animation it started.
+#[derive(Component)]
+pub struct MapPropPlayer {
+    ent: usize,
+    gltf: Handle<bevy::gltf::Gltf>,
+    played: u32,
 }
 
 /// Source's angles (pitch, yaw, roll; degrees) as a turn in our space.
@@ -257,6 +268,13 @@ pub fn sync(
     }
     // Its props: models where the map puts them, riding with what they're parented to.
     let text = std::fs::read_to_string(root.join("maps").join(format!("{name}.props"))).unwrap_or_default();
+    let animated: HashMap<&str, usize> = game
+        .sim
+        .io
+        .iter()
+        .flat_map(|io| io.ents.iter().enumerate())
+        .filter_map(|(i, e)| (e.kind == aperture::io::Kind::Animated).then_some((e.name.as_str(), i)))
+        .collect();
     let movers: HashMap<&str, usize> = game
         .sim
         .io
@@ -280,9 +298,10 @@ pub fn sync(
         let mover = movers.get(f[4]).copied();
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
         let at = aperture::source::to_ours(floats(f[2])) + shift;
+        let animated = animated.get(f[5]).map(|&e| (e, assets.load(path.clone())));
         commands.spawn((
             ChamberGeom,
-            MapProp { base: at, mover },
+            MapProp { base: at, mover, animated },
             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
             Visibility::default(),
             Transform::from_translation(at).with_rotation(source_rotation(floats(f[3]))),
@@ -330,5 +349,44 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
         if *vis != want {
             *vis = want;
         }
+    }
+}
+
+/// Give each animated prop's player what it needs to play the map's animations.
+pub fn tag_prop_players(mut commands: Commands, added: Query<Entity, Added<AnimationPlayer>>, parents: Query<&ChildOf>, props: Query<&MapProp>) {
+    for e in &added {
+        let mut cur = e;
+        for _ in 0..8 {
+            if let Ok(MapProp { animated: Some((ent, gltf)), .. }) = props.get(cur) {
+                commands.entity(e).insert(MapPropPlayer { ent: *ent, gltf: gltf.clone(), played: 0 });
+                break;
+            }
+            let Ok(p) = parents.get(cur) else { break };
+            cur = p.parent();
+        }
+    }
+}
+
+/// Play what the map's logic last told each prop to (once, holding its last frame).
+pub fn animate_props(
+    mut commands: Commands,
+    game: Res<Game>,
+    gltfs: Res<Assets<bevy::gltf::Gltf>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut players: Query<(Entity, &mut MapPropPlayer, &mut AnimationPlayer)>,
+) {
+    let Some(io) = &game.sim.io else { return };
+    for (e, mut pp, mut player) in &mut players {
+        let Some((name, n)) = io.animations.get(&pp.ent) else { continue };
+        if *n == pp.played {
+            continue;
+        }
+        let Some(gltf) = gltfs.get(&pp.gltf) else { continue };
+        pp.played = *n;
+        let Some(clip) = gltf.named_animations.get(name.as_str()) else { continue };
+        let (graph, node) = AnimationGraph::from_clip(clip.clone());
+        commands.entity(e).insert(AnimationGraphHandle(graphs.add(graph)));
+        player.stop_all();
+        player.start(node);
     }
 }

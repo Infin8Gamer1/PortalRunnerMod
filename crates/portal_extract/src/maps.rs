@@ -124,23 +124,52 @@ pub fn prop_glb(model: &str, skin: i32) -> String {
     if skin > 0 { format!("map/{stem}_skin{skin}") } else { format!("map/{stem}") }
 }
 
+/// A prop model the map uses: (model, skin, the animations the map plays on it).
+pub type UsedModel = (String, i32, Vec<String>);
+
 /// Write a map's props out (`maps/<name>.props`, a line each: `kind|model file|x y z|pitch
-/// yaw roll|parent|name`, Source space), and say which (model, skin)s they use.
-fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<(String, i32)>, String> {
+/// yaw roll|parent|name`, Source space), and say which models they use.
+fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<UsedModel>, String> {
+    // The animations the map's logic plays on each named prop.
+    let mut anims: HashMap<String, Vec<String>> = HashMap::new();
+    for e in ents {
+        for (k, v) in e {
+            if !(k.starts_with("On") || k.starts_with("Out")) {
+                continue;
+            }
+            let f: Vec<&str> = v.split([',', '\x1b']).collect();
+            if f.len() >= 3 && (f[1].eq_ignore_ascii_case("SetAnimation") || f[1].eq_ignore_ascii_case("SetDefaultAnimation")) && !f[2].trim().is_empty() {
+                let list = anims.entry(f[0].trim().to_ascii_lowercase()).or_default();
+                let a = f[2].trim().to_ascii_lowercase();
+                if !list.contains(&a) {
+                    list.push(a);
+                }
+            }
+        }
+    }
     let mut text = String::new();
-    let mut used = Vec::new();
-    let mut add = |kind: &str, model: &str, skin: i32, o: Vec3, a: Vec3, parent: &str, name: &str| {
+    let mut used: Vec<UsedModel> = Vec::new();
+    let mut add = |kind: &str, model: &str, skin: i32, o: Vec3, a: Vec3, parent: &str, name: &str, default_anim: Option<&str>| {
         let model = model.to_ascii_lowercase().replace('\\', "/");
         if OWN_MODELS.contains(&model.as_str()) || model.contains("portal_cleanser") || !model.ends_with(".mdl") {
             return;
         }
         text.push_str(&format!("{kind}|{}|{} {} {}|{} {} {}|{parent}|{name}\n", prop_glb(&model, skin), o.x, o.y, o.z, a.x, a.y, a.z));
-        if !used.contains(&(model.clone(), skin)) {
-            used.push((model, skin));
+        let mut its: Vec<String> = anims.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default();
+        its.extend(default_anim.map(|d| d.to_ascii_lowercase()));
+        match used.iter_mut().find(|(m, s, _)| *m == model && *s == skin) {
+            Some((_, _, list)) => {
+                for a in its {
+                    if !list.contains(&a) {
+                        list.push(a);
+                    }
+                }
+            }
+            None => used.push((model, skin, its)),
         }
     };
     for p in &bsp.static_props {
-        add("static", &p.model, p.skin, p.origin, p.angles, "", "");
+        add("static", &p.model, p.skin, p.origin, p.angles, "", "", None);
     }
     for e in ents {
         let class = bsp::key(e, "classname").unwrap_or("");
@@ -151,7 +180,8 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<(String, i3
         let a = bsp::vec3_key(e, "angles").unwrap_or(Vec3::ZERO);
         let skin = bsp::key(e, "skin").and_then(|s| s.parse().ok()).unwrap_or(0);
         let kind = if class.starts_with("prop_physics") { "physics" } else { "dynamic" };
-        add(kind, model, skin, o, a, bsp::key(e, "parentname").unwrap_or(""), bsp::key(e, "targetname").unwrap_or(""));
+        let default_anim = bsp::key(e, "DefaultAnim").filter(|d| !d.trim().is_empty());
+        add(kind, model, skin, o, a, bsp::key(e, "parentname").unwrap_or(""), bsp::key(e, "targetname").unwrap_or(""), default_anim);
     }
     std::fs::write(path, text).map_err(|e| e.to_string())?;
     Ok(used)
@@ -159,7 +189,7 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<(String, i3
 
 /// Write a map out (see the module notes). Returns (groups, boxes, materials) written, and
 /// the prop models it uses.
-pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<(usize, usize, usize, Vec<(String, i32)>), String> {
+pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<(usize, usize, usize, Vec<UsedModel>), String> {
     let bsp = Bsp::parse(bytes)?;
     let ents = bsp::parse_entities(&bsp.entities);
     let origins = bsp::model_origins(&ents);

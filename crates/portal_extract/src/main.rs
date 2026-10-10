@@ -448,16 +448,17 @@ fn main() {
     // Portal's own test chambers (`--no-maps` skips them).
     if let Some(dir) = maps_dir.filter(|d| d.is_dir() && !args.iter().any(|a| a == "--no-maps")) {
         let (mut n, mut mats) = (0, 0);
-        let mut models: Vec<(String, i32)> = Vec::new();
+        let mut models: Vec<maps::UsedModel> = Vec::new();
         for name in MAPS {
             let Ok(bytes) = std::fs::read(dir.join(format!("{name}.bsp"))) else { continue };
             match maps::extract(name, &bytes, &read_any, remix.as_ref(), &out) {
                 Ok((_, _, m, used)) => {
                     n += 1;
                     mats += m;
-                    for u in used {
-                        if !models.contains(&u) {
-                            models.push(u);
+                    for (model, skin, anims) in used {
+                        match models.iter_mut().find(|(m, s, _)| *m == model && *s == skin) {
+                            Some((_, _, list)) => list.extend(anims.into_iter().filter(|a| !list.contains(a)).collect::<Vec<_>>()),
+                            None => models.push((model, skin, anims)),
                         }
                     }
                 }
@@ -465,19 +466,39 @@ fn main() {
             }
         }
         println!("  {n} of Portal's maps ({mats} materials)");
-        // Their props' models, once each (kept from an earlier run).
-        let (mut made, mut failed) = (0, 0);
+        // Their props' models, once each (kept from an earlier run, unless they animate), with
+        // the animations the maps play on them (under the sequence's name, or `@` and it).
+        let (mut made, mut failed, mut animated) = (0, 0, 0);
         if let Some(g) = games.iter().find(|g| g.name == "portal") {
-            for (model, skin) in &models {
+            for (model, skin, anims) in &models {
                 let file = out.join("models").join(format!("{}.glb", maps::prop_glb(model, *skin)));
-                if file.exists() {
+                if file.exists() && anims.is_empty() {
                     continue;
                 }
-                match convert_model(g, &games, model, *skin as usize, 0.0, &[]) {
+                let mut want: Vec<(String, String)> = anims.iter().map(|a| (a.clone(), a.clone())).collect();
+                let bytes = loop {
+                    let pairs: Vec<(&str, &str)> = want.iter().map(|(t, o)| (t.as_str(), o.as_str())).collect();
+                    match convert_model(g, &games, model, *skin as usize, 0.0, &pairs) {
+                        Err(e) if e.starts_with("no animation ") => {
+                            let missing = e.trim_start_matches("no animation ").to_string();
+                            let k = want.iter().position(|(t, _)| *t == missing).unwrap();
+                            if missing.starts_with('@') {
+                                want.remove(k);
+                            } else {
+                                want[k].0 = format!("@{missing}");
+                            }
+                        }
+                        // Animations it can't read: still, then.
+                        Err(_) if !want.is_empty() => want.clear(),
+                        r => break r,
+                    }
+                };
+                match bytes {
                     Ok(bytes) => {
                         let _ = std::fs::create_dir_all(file.parent().unwrap());
                         std::fs::write(&file, bytes).expect("write model");
                         made += 1;
+                        animated += usize::from(!want.is_empty());
                     }
                     Err(e) => {
                         eprintln!("    {model}: {e}");
@@ -486,7 +507,7 @@ fn main() {
                 }
             }
         }
-        println!("  {} prop models in them ({made} new, {failed} not converted)", models.len());
+        println!("  {} prop models in them ({made} written, {animated} with animations, {failed} not converted)", models.len());
     }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));

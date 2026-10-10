@@ -368,6 +368,7 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
             "logic_auto" => kind = io::Kind::Auto,
             "logic_choreographed_scene" => kind = io::Kind::Scene,
             "trigger_changelevel" => kind = io::Kind::ChangeLevel,
+            "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
             "env_entity_maker" => {
                 if let (Some(at), Some((_, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
                     kind = io::Kind::Maker { at, kind: k };

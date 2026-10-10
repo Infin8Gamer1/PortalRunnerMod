@@ -810,6 +810,12 @@ fn portals_maps_stand_her_up() {
             bad.push(format!("{name}: spawn {spawn}, after 1 s {:?} at {}", c.state, c.feet));
             continue;
         }
+        // The arrival elevator rides; she stays on her feet in it.
+        let ev = run(&mut sim, &mut c, 20.0, |_, _| Input::default());
+        if ev.contains(&SimEvent::PlayerDied) || c.state != State::Ground {
+            bad.push(format!("{name}: after 20 s waiting, {:?} at {} (died: {})", c.state, c.feet, ev.contains(&SimEvent::PlayerDied)));
+            continue;
+        }
         let stood_at = c.feet;
         run(&mut sim, &mut c, 3.0, |_, _| forward());
         if c.feet.y < stood_at.y - 2.0 {
