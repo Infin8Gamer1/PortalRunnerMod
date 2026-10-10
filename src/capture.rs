@@ -156,6 +156,29 @@ fn script(name: &str) -> Vec<Act> {
             Wait(2),
             Shot("p6_fire"),
         ],
+        // A cube held half through a wall portal: the half that's through shows at the
+        // other portal (and through the first one), not the cube's inside.
+        "cubethrough" => vec![
+            Map(0),
+            Wait(60),
+            Teleport(Vec3::new(18.0, 0.0, 19.6)),
+            Look(0.0, -40.0),
+            Wait(60),
+            Use,
+            Wait(30),
+            Portal(PortalColor::Blue, Vec3::new(24.0, 1.2, 18.0), Vec3::NEG_X, Vec3::Y),
+            Portal(PortalColor::Orange, Vec3::new(-24.0, 1.2, 14.0), Vec3::X, Vec3::Y),
+            Teleport(Vec3::new(21.0, 0.0, 18.0)),
+            Look(-90.0, -10.0),
+            Wait(40),
+            Film("c", MoveInput { move_axis: Vec2::new(0.0, 0.35), ..default() }, 56),
+            Look(-75.0, -10.0),
+            Wait(3),
+            Shot("c_side"),
+            Look(-105.0, -10.0),
+            Wait(3),
+            Shot("c_other_side"),
+        ],
         // Speed: sprinting, then far past it on Chamber 04's propulsion gel.
         "speed" => vec![
             Map(4),

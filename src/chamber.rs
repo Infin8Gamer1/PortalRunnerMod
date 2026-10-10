@@ -53,9 +53,12 @@ pub struct Pools {
     glows: Vec<Entity>,
     bridges: Vec<Entity>,
     blobs: Vec<Entity>,
-    props: Vec<Entity>,
-    /// Each prop slot's models (storage, companion, reflector), when there are models.
-    prop_models: Vec<Option<[Entity; 3]>>,
+    /// Each prop slot's cube, and its copy through the portal it's in (so the half of it
+    /// that's through shows at the far side).
+    props: Vec<[Entity; 2]>,
+    /// Each prop slot's models (storage, companion, reflector), when there are models, and
+    /// their copies through a portal.
+    prop_models: Vec<Option<[[Entity; 3]; 2]>>,
     gel_version: u64,
 }
 
@@ -773,11 +776,14 @@ pub fn update(
         }
         e.id()
     };
-    pooled(&mut commands, &mut pools.props, sim.props.len(), |c| spawn_pooled(c, &m.cube_mesh, &m.cube[0], true));
+    while pools.props.len() < sim.props.len() {
+        let e = [0, 1].map(|_| spawn_pooled(&mut commands, &m.cube_mesh, &m.cube[0], true));
+        pools.props.push(e);
+    }
     while pools.prop_models.len() < pools.props.len() {
         let slot = pools.prop_models.len();
-        let e = crate::props::spawn_cubes(&mut commands, &models, slot);
-        pools.prop_models.push(e);
+        let e = crate::props::spawn_cubes(&mut commands, &models, slot).zip(crate::props::spawn_cubes(&mut commands, &models, slot));
+        pools.prop_models.push(e.map(|(a, b)| [a, b]));
     }
     let beams: Vec<(Vec3, Vec3)> = sim.lasers.iter().filter(|l| l.on).flat_map(|l| l.path.iter().copied()).collect();
     pooled(&mut commands, &mut pools.beams, beams.len(), |c| spawn_pooled(c, &m.beam, &m.laser, false));
@@ -803,26 +809,34 @@ pub fn update(
         }
     };
     for (i, e) in pools.props.iter().enumerate() {
+        // Where it is, and where its copy through the portal it's in is.
+        let at = sim.props.get(i).filter(|p| p.alive).map(|p| {
+            let through = p.env.and_then(|c| sim.link(c)).map(|l| (l.point(p.pos), l.quat() * p.rot));
+            [Some((p.pos, p.rot)), through]
+        });
+        let at = at.unwrap_or([None, None]);
         // Portal's cube models, unless it's coated in gel or vaporising (the stand-in shows that).
         let model = pools.prop_models.get(i).copied().flatten();
         let modelled = sim.props.get(i).filter(|p| p.alive && p.fizzle.is_none() && p.coat.is_none()).map(|p| p.kind);
-        if let Some(ents) = model {
-            for (k, kind) in [CubeKind::Storage, CubeKind::Companion, CubeKind::Reflector].into_iter().enumerate() {
-                if let Ok((mut tf, mut v)) = cube_models.get_mut(ents[k]) {
-                    let want = modelled == Some(kind);
-                    if want {
-                        let p = &sim.props[i];
-                        tf.translation = p.pos;
-                        tf.rotation = p.rot;
-                    }
-                    let w = if want { Visibility::Inherited } else { Visibility::Hidden };
-                    if *v != w {
-                        *v = w;
+        if let Some(copies) = model {
+            for (ents, at) in copies.iter().zip(at) {
+                for (k, kind) in [CubeKind::Storage, CubeKind::Companion, CubeKind::Reflector].into_iter().enumerate() {
+                    if let Ok((mut tf, mut v)) = cube_models.get_mut(ents[k]) {
+                        let want = at.filter(|_| modelled == Some(kind));
+                        if let Some((pos, rot)) = want {
+                            tf.translation = pos;
+                            tf.rotation = rot;
+                        }
+                        let w = if want.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+                        if *v != w {
+                            *v = w;
+                        }
                     }
                 }
             }
             if modelled.is_some() {
-                set(*e, None, None);
+                set(e[0], None, None);
+                set(e[1], None, None);
                 continue;
             }
         }
@@ -842,9 +856,14 @@ pub fn update(
                         (_, CubeKind::Reflector) => &base[2],
                     }
                 };
-                set(*e, Some(tf), Some(mat));
+                set(e[0], Some(tf), Some(mat));
+                let through = at[1].map(|(pos, rot)| Transform { translation: pos, rotation: rot, ..tf });
+                set(e[1], through, Some(mat));
             }
-            _ => set(*e, None, None),
+            _ => {
+                set(e[0], None, None);
+                set(e[1], None, None);
+            }
         }
     }
     let flicker = 1.0 + 0.15 * (t * 40.0).sin();
