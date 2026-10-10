@@ -44,14 +44,23 @@ const MAPS: &[(&str, &str)] = &[
     ("escape_02", "Portal: Escape 3"),
 ];
 
+fn available(dir: &Path) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+    MAPS.iter().copied().filter(move |(name, _)| dir.join(format!("{name}.mesh")).is_file())
+}
+
+/// BSP names of the extracted maps, in the same order as [`levels`].
+pub fn map_names(root: Option<&Path>) -> Vec<String> {
+    let Some(dir) = root.map(|r| r.join("maps")) else { return Vec::new() };
+    available(&dir).map(|(name, _)| name.to_string()).collect()
+}
+
 /// The extracted maps there are, as levels.
 pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
     let Some(dir) = root.map(|r| r.join("maps")) else { return Vec::new() };
     // GLaDOS's scenes, shared by every map.
     let scenes = Arc::new(aperture::source::parse_scenes(&std::fs::read_to_string(dir.join("scenes.txt")).unwrap_or_default()));
-    MAPS.iter()
-        .filter(|(name, _)| dir.join(format!("{name}.mesh")).is_file())
-        .map(|&(name, title)| {
+    available(&dir)
+        .map(|(name, title)| {
             let dir: PathBuf = dir.clone();
             let scenes = scenes.clone();
             let f: LevelFn = Arc::new(move || {
@@ -112,6 +121,9 @@ const BULB_RADIUS: f32 = 0.1;
 const BULB_GLOW: f32 = 6.0;
 /// At most this many of a map's lights are lights here.
 const MAX_LIGHTS: usize = 96;
+/// Dimmer than this, a light is not also drawn as a bulb. The elevator shafts' lights
+/// (about 40-60) are those bulbs: a dot of light in an otherwise dark car.
+const BULB_MIN_BRIGHTNESS: f32 = 80.0;
 
 struct Group {
     /// The brush model it's part of (0: the world).
@@ -307,13 +319,23 @@ pub fn sync(
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
         let at = aperture::source::to_ours(floats(f[2])) + shift;
         let animated = animated.get(f[5]).map(|&e| (e, assets.load(path.clone())));
-        commands.spawn((
+        let mut spawned = commands.spawn((
             ChamberGeom,
             MapProp { base: at, mover, animated },
             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
             Visibility::default(),
             Transform::from_translation(at).with_rotation(source_rotation(floats(f[3]))),
         ));
+        // The shaft lights stay where they are, so the car goes dark as it leaves them.
+        // A light on the car rides with it (`move_models` moves this prop).
+        if f[1].contains("round_elevator_body") {
+            spawned.with_children(|c| {
+                c.spawn((
+                    PointLight { intensity: 80_000.0, color: Color::srgb(1.0, 0.95, 0.88), range: 4.5, radius: 0.0, shadow_maps_enabled: false, ..default() },
+                    Transform::from_xyz(0.0, 1.45, 0.0),
+                ));
+            });
+        }
     }
     // The map's lights, brightest first.
     let mut lights = level.lights.clone();
@@ -324,19 +346,21 @@ pub fn sync(
         let intensity = l.brightness * LUMENS_PER_BRIGHTNESS;
         // Ray tracing lights by what glows, not by lights: a bulb where each one is.
         if let Some(bulb) = &bulb {
-            let glow = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::from_vec3(l.color * l.brightness * BULB_GLOW), ..default() });
-            commands.spawn((ChamberGeom, Mesh3d(bulb.clone()), MeshMaterial3d(glow), Transform::from_translation(l.at), NotShadowCaster));
+            if l.brightness >= BULB_MIN_BRIGHTNESS {
+                let glow = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::from_vec3(l.color * l.brightness * BULB_GLOW), ..default() });
+                commands.spawn((ChamberGeom, Mesh3d(bulb.clone()), MeshMaterial3d(glow), Transform::from_translation(l.at), NotShadowCaster));
+            }
         }
         match l.spot {
             Some((dir, cone)) => {
                 commands.spawn((
                     ChamberGeom,
-                    SpotLight { intensity, color, range: 25.0, radius: 0.1, outer_angle: cone.min(1.5), inner_angle: cone.min(1.5) * 0.7, shadow_maps_enabled: false, ..default() },
+                    SpotLight { intensity, color, range: 25.0, radius: 0.0, outer_angle: cone.min(1.5), inner_angle: cone.min(1.5) * 0.7, shadow_maps_enabled: false, ..default() },
                     Transform::from_translation(l.at).looking_to(dir, if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y }),
                 ));
             }
             None => {
-                commands.spawn((ChamberGeom, PointLight { intensity, color, range: 20.0, radius: 0.2, shadow_maps_enabled: false, ..default() }, Transform::from_translation(l.at)));
+                commands.spawn((ChamberGeom, PointLight { intensity, color, range: 20.0, radius: 0.0, shadow_maps_enabled: false, ..default() }, Transform::from_translation(l.at)));
             }
         }
     }

@@ -61,6 +61,8 @@ pub struct Pools {
     blobs: Vec<Entity>,
     /// High energy pellets (each a glowing ball with its light).
     pellets: Vec<Entity>,
+    /// The pellets are Portal's energy ball, not the stand-in sphere.
+    pellet_model: bool,
     /// Turrets' shots this frame.
     tracers: Vec<Entity>,
     /// Each prop slot's cube, and its copy through the portal it's in (so the half of it
@@ -816,6 +818,8 @@ pub fn update(
     gel: Query<(&GelVis, &Mesh3d)>,
     models: Res<crate::props::PropModels>,
     mut cube_models: Query<(&mut Transform, &mut Visibility), Without<Vis>>,
+    extracted: Res<Extracted>,
+    assets: Res<AssetServer>,
 ) {
     let sim = &game.sim;
     let t = time.elapsed_secs();
@@ -941,9 +945,31 @@ pub fn update(
     let shots: Vec<(Vec3, Vec3)> = sim.events.iter().filter_map(|e| if let aperture::SimEvent::TurretShot { from, to, .. } = e { Some((*from, *to)) } else { None }).collect();
     pooled(&mut commands, &mut pools.tracers, shots.len(), |c| spawn_pooled(c, &m.beam, &m.tracer, false));
     let pellets: Vec<Vec3> = sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
+    // combineball.glb is about 0.40 m across (measured: x/y ±0.402, z −0.284..0.159). Scale it
+    // to the sim's radius. The parent carries the light and the visibility; a sphere under it
+    // would still show, so the model replaces the sphere.
+    const COMBINE_BALL_RADIUS: f32 = 0.402;
+    const COMBINE_BALL_CENTER_Z: f32 = (-0.284 + 0.159) * 0.5;
+    let pellet_path = extracted.model("map/effects/combineball");
+    pools.pellet_model = pellet_path.is_some();
     pooled(&mut commands, &mut pools.pellets, pellets.len(), |c| {
-        let e = spawn_pooled(c, &m.blob, &m.pellet, false);
-        c.entity(e).insert(PointLight { intensity: 60_000.0, range: 8.0, radius: 0.2, color: Color::srgb(1.0, 0.8, 0.45), shadow_maps_enabled: false, ..default() });
+        let e = c.spawn((
+            ChamberGeom,
+            Vis::Pool,
+            Transform::default(),
+            Visibility::Hidden,
+            PointLight { intensity: 60_000.0, range: 8.0, radius: 0.0, color: Color::srgb(1.0, 0.8, 0.45), shadow_maps_enabled: false, ..default() },
+        )).id();
+        if let Some(path) = pellet_path.clone() {
+            let model = c.spawn((
+                WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
+                Transform::from_translation(Vec3::new(0.0, 0.0, -COMBINE_BALL_CENTER_Z)),
+                Visibility::default(),
+            )).id();
+            c.entity(e).add_child(model);
+        } else {
+            c.entity(e).insert((Mesh3d(m.blob.clone()), MeshMaterial3d(m.pellet.clone()), NotShadowCaster));
+        }
         e
     });
 
@@ -1056,9 +1082,10 @@ pub fn update(
             None => set(*e, None, None),
         }
     }
+    let pellet_scale = if pools.pellet_model { aperture::sim::PELLET_RADIUS / COMBINE_BALL_RADIUS } else { aperture::sim::PELLET_RADIUS };
     for (i, e) in pools.pellets.iter().enumerate() {
         match pellets.get(i) {
-            Some(p) => set(*e, Some(Transform::from_translation(*p).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS))), None),
+            Some(p) => set(*e, Some(Transform::from_translation(*p).with_scale(Vec3::splat(pellet_scale))), None),
             None => set(*e, None, None),
         }
     }

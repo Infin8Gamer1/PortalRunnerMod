@@ -16,7 +16,7 @@ use faith_move::{Aabb, Controller};
 
 use crate::level::{CubeKind, Sig};
 use crate::portal::{Portal, PortalColor};
-use crate::sim::{Sim, SimEvent};
+use crate::sim::{MapTransition, Sim, SimEvent};
 
 /// How long a GLaDOS scene is taken to run (its lines aren't played).
 const SCENE_SECONDS: f32 = 3.0;
@@ -87,8 +87,8 @@ pub enum Kind {
     PathNode { mover: usize, node: usize },
     /// Fires its outputs as the map starts.
     Auto,
-    /// Finishes the level.
-    ChangeLevel,
+    /// Finishes the level and names the next map and the landmark the two maps share.
+    ChangeLevel { map: String, landmark: String },
     /// A model that animates (prop_dynamic): see [`Io::animations`].
     Animated,
     Other,
@@ -176,6 +176,8 @@ impl Io {
 
     /// One frame of logic (from [`Sim::step`]).
     pub fn step(&mut self, sim: &mut Sim, ctrl: &Controller, dt: f32) {
+        sim.player_feet = ctrl.feet;
+        sim.player_yaw = ctrl.yaw;
         if !self.started {
             self.started = true;
             for &(s, on) in &self.initial {
@@ -183,13 +185,19 @@ impl Io {
                     *v = on;
                 }
             }
+            // Source fires OnMapSpawn whenever a map loads, OnNewGame only for a fresh start,
+            // and OnMapTransition only when arriving from the previous map. The arrival
+            // elevator's doors open on that last one.
+            let arrived = sim.arrived;
             for e in 0..self.ents.len() {
-                // (Arriving from the last chamber, as the game plays them in order: the
-                // elevator's arrival logic runs too.)
                 if self.ents[e].kind == Kind::Auto {
                     self.fire(e, "OnMapSpawn", None);
-                    self.fire(e, "OnNewGame", None);
-                    self.fire(e, "OnMapTransition", None);
+                    if !arrived {
+                        self.fire(e, "OnNewGame", None);
+                    }
+                    if arrived {
+                        self.fire(e, "OnMapTransition", None);
+                    }
                 }
             }
             for e in 0..self.ents.len() {
@@ -560,9 +568,11 @@ impl Io {
                 self.animation_count += 1;
                 self.animations.insert(e, (param.trim().to_ascii_lowercase(), self.animation_count));
             }
-            Kind::ChangeLevel if i == "changelevel" => {
+            Kind::ChangeLevel { map, landmark } if i == "changelevel" => {
                 if !sim.complete {
                     sim.complete = true;
+                    let offset = sim.level.landmarks.iter().find(|(n, _)| n.eq_ignore_ascii_case(&landmark)).map(|(_, p)| sim.player_feet - *p).unwrap_or(Vec3::ZERO);
+                    sim.transition = Some(MapTransition { map, landmark, offset, yaw: sim.player_yaw });
                     sim.events.push(SimEvent::LevelComplete);
                 }
             }

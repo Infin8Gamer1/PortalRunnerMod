@@ -151,7 +151,7 @@ pub struct Replaced {
 /// Spawn the models for the chamber's pieces; says which stand-ins they replace.
 pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replaced {
     let mut r = Replaced::default();
-    // Floor buttons: Portal with RTX's remaster or Portal 2's (each 3.2 m across, at 60%),
+    // Floor buttons: Portal with RTX's remaster or Portal 2's (each 3.2 m across, at 84%),
     // sunk so the top is where a cube rests; Portal 2's comes unlit and lit. Cube-only buttons
     // are Portal 2's box sockets (Portal has none).
     let floor = match (models.get("rtx_floor_button"), models.get("floor_button"), models.get("floor_button_on")) {
@@ -163,7 +163,9 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
     if let (Some((floor, floor_on)), (Some(cube_off), Some(cube_on))) = (floor, socket) {
         r.buttons = true;
         for (i, b) in sim.buttons.iter().enumerate() {
-            let (off, on, s, top) = if b.cube_only { (&cube_off, Some(&cube_on), 0.72, 0.356) } else { (&floor, floor_on.as_ref(), 0.6, 0.346) };
+            // Floor buttons read about 33-50% small at 0.6. 0.84 is 40% larger; the top stays
+            // at BUTTON_TOP because the sink is `top * s`.
+            let (off, on, s, top) = if b.cube_only { (&cube_off, Some(&cube_on), 0.72, 0.356) } else { (&floor, floor_on.as_ref(), 0.84, 0.346) };
             let tf = Transform::from_translation(b.at + Vec3::Y * (BUTTON_TOP - top * s)).with_scale(Vec3::splat(s));
             match on {
                 Some(on) => {
@@ -237,6 +239,8 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
     }
     // High energy pellet launchers and catchers: Portal's, at 60%. A launcher's mouth (1.09 m
     // along the model's front) is where the pellet leaves; a catcher's opening faces its way.
+    // A source map already places these as props, and those are the ones its logic animates.
+    if sim.level.source.is_none() {
     if let (Some(launcher), Some(catcher)) = (models.get("pellet_launcher"), models.get("pellet_catcher")) {
         r.pellets = true;
         let s = 0.6;
@@ -250,6 +254,7 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, c.facing)).with_scale(Vec3::splat(s));
             spawn_model(commands, catcher.clone(), tf, PropKind::Static);
         }
+    }
     }
     if let Some(scene) = models.get("turret") {
         r.turrets = true;

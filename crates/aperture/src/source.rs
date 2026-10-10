@@ -402,12 +402,22 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             "math_counter" => kind = io::Kind::Counter { value: num(e, "startvalue", 0.0), min: num(e, "min", 0.0), max: num(e, "max", 0.0) },
             "logic_case" => kind = io::Kind::Case { cases: (1..=16).map(|k| key(e, &format!("Case{k:02}")).unwrap_or("").to_string()).collect() },
             "logic_auto" => kind = io::Kind::Auto,
+            "info_landmark" if !name.is_empty() => {
+                if let Some(at) = origin(e) {
+                    l.landmarks.push((name.to_ascii_lowercase(), at));
+                }
+            }
             "logic_choreographed_scene" => {
                 let file = key(e, "SceneFile").unwrap_or("").replace('\\', "/").to_ascii_lowercase();
                 let (length, lines) = scenes.get(&file).cloned().unwrap_or_default();
                 kind = io::Kind::Scene { lines, length };
             }
-            "trigger_changelevel" => kind = io::Kind::ChangeLevel,
+            "trigger_changelevel" => {
+                kind = io::Kind::ChangeLevel {
+                    map: key(e, "map").unwrap_or("").to_ascii_lowercase(),
+                    landmark: key(e, "landmark").unwrap_or("").to_ascii_lowercase(),
+                }
+            }
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
             "env_entity_maker" => {
                 if let (Some(at), Some((_, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {

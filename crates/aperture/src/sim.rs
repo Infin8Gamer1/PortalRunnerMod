@@ -444,6 +444,25 @@ impl Mask {
     pub const SOLID: Mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: true, glass: true, skip_prop: None };
 }
 
+/// A change of map: the next map, the landmark the two share, and where Faith stood
+/// relative to that landmark.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapTransition {
+    pub map: String,
+    pub landmark: String,
+    /// Feet minus the landmark, in the map being left.
+    pub offset: Vec3,
+    pub yaw: f32,
+}
+
+impl MapTransition {
+    /// Where to stand in `level`: the landmark of the same name, plus [`Self::offset`].
+    pub fn spawn_in(&self, level: &Level) -> Option<(Vec3, f32)> {
+        let at = level.landmarks.iter().find(|(n, _)| n.eq_ignore_ascii_case(&self.landmark)).map(|(_, p)| *p)?;
+        Some((at + self.offset, self.yaw))
+    }
+}
+
 /// Where Faith looks from, for the gun, holding and using.
 #[derive(Clone, Copy, Debug)]
 pub struct Aim {
@@ -512,6 +531,13 @@ pub struct Sim {
     /// Seconds spent in a laser (it kills at [`LASER_KILL`]).
     pub burn: f32,
     pub complete: bool,
+    /// Set when a `trigger_changelevel` fired: the next map, and where to stand in it.
+    pub transition: Option<MapTransition>,
+    /// This map was entered from the previous one, so its arrival logic runs.
+    pub arrived: bool,
+    /// Feet and yaw at the start of this frame's logic (a level change is read from them).
+    pub(crate) player_feet: Vec3,
+    pub(crate) player_yaw: f32,
     /// Camera roll left over from the last portal (radians), for the host to ease out.
     pub roll: f32,
     /// Steer Faith into portals she's falling at (Portal's funnel).
@@ -565,6 +591,10 @@ impl Sim {
             time: 0.0,
             burn: 0.0,
             complete: false,
+            transition: None,
+            arrived: false,
+            player_feet: Vec3::ZERO,
+            player_yaw: 0.0,
             roll: 0.0,
             funnel: true,
             rng: Rng::new(0x5eed_1234),

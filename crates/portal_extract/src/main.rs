@@ -370,12 +370,15 @@ const MAPS: &[&str] = &[
 ];
 
 /// Animations to bring along: (our model name, [(the MDL's animation, our name for it)]). A
-/// model with any is drawn as its `@idle` animation poses it (its bind pose if it has none).
+/// model with any is drawn as its `@idle` pose, or `@idle_closed` when it has no `@idle`
+/// (the pellet launcher). With neither, it keeps its bind pose.
 const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
     // The paddle snapping up to throw, holding, then settling back into its pit.
     ("faith_plate", &[("@angled", "angled"), ("@straightup", "straightup")]),
     // (Its bind pose has it hanging upside down: its idle stands it up.)
     ("turret", &[("@idle", "idle")]),
+    // Rest pose is `@idle_closed` (see `convert_model`): the bind pose isn't the closed mouth.
+    ("pellet_launcher", &[("@idle_closed", "idle_closed"), ("@open", "open"), ("@close", "close"), ("@idle_open", "idle_open")]),
 ];
 
 fn main() {
@@ -432,6 +435,45 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--inspect") {
         for path in &args[i + 1..] {
             inspect(&games, path);
+        }
+        return;
+    }
+    // One model, without rewriting the other extracted files. The pellet launcher's bind
+    // pose isn't its closed mouth; `--only-launchers` writes it resting on `@idle_closed`.
+    if args.iter().any(|a| a == "--only-launchers") {
+        let Some(g) = games.iter().find(|g| g.name == "portal") else {
+            eprintln!("Portal's files weren't found");
+            std::process::exit(1);
+        };
+        let mut want: Vec<(String, String)> = ANIMATIONS
+            .iter()
+            .find(|(n, _)| *n == "pellet_launcher")
+            .map(|(_, a)| a.iter().map(|(t, o)| (t.to_string(), o.to_string())).collect())
+            .unwrap_or_default();
+        let bytes = loop {
+            let pairs: Vec<(&str, &str)> = want.iter().map(|(t, o)| (t.as_str(), o.as_str())).collect();
+            match convert_model(g, &games, "models/props/combine_ball_launcher.mdl", 0, 0.0, &pairs) {
+                Err(e) if e.starts_with("no animation ") && !want.is_empty() => {
+                    let missing = e.trim_start_matches("no animation ").to_string();
+                    let k = want.iter().position(|(t, _)| *t == missing).unwrap();
+                    if missing.starts_with('@') {
+                        want.remove(k);
+                    } else {
+                        want[k].0 = format!("@{missing}");
+                    }
+                }
+                r => break r,
+            }
+        };
+        let bytes = bytes.unwrap_or_else(|e| {
+            eprintln!("launcher: {e}");
+            std::process::exit(1);
+        });
+        for rel in ["models/pellet_launcher.glb", "models/map/props/combine_ball_launcher.glb"] {
+            let file = out.join(rel);
+            std::fs::create_dir_all(file.parent().unwrap()).expect("create model dir");
+            std::fs::write(&file, &bytes).expect("write launcher");
+            println!("  {}", file.display());
         }
         return;
     }
@@ -564,6 +606,14 @@ fn main() {
                 let mut want: Vec<(String, String)> = anims.iter().map(|a| (a.clone(), a.clone())).collect();
                 if !want.iter().any(|(t, _)| t == "idle") {
                     want.push(("@idle".into(), "idle".into()));
+                }
+                // The launcher's mouth: the maps only play `close`, and it rests closed.
+                if model.contains("combine_ball_launcher") {
+                    for a in ["open", "close", "idle_closed", "idle_open"] {
+                        if !want.iter().any(|(_, o)| o == a) {
+                            want.push((format!("@{a}"), a.to_string()));
+                        }
+                    }
                 }
                 let bytes = loop {
                     let pairs: Vec<(&str, &str)> = want.iter().map(|(t, o)| (t.as_str(), o.as_str())).collect();
@@ -878,9 +928,15 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
         let bones: Vec<&vmdl::mdl::Bone> = model.bones().collect();
         let mut decoded = anim::read(&mdl, &bones)?;
         let to_bone = pose_to_bone(&model);
-        let rest = match decoded.iter().find(|a| a.name.eq_ignore_ascii_case("@idle")) {
-            Some(idle) => idle.world(0, &parents),
-            None => to_bone.iter().map(|m| m.inverse()).collect(),
+        // `@idle` where the model has one (a turret's bind pose hangs upside down). A pellet
+        // launcher has no `@idle`; `@idle_closed` is how it rests. Anything else keeps the
+        // bind pose, so this doesn't move models that already posed from `@idle`.
+        let rest = if let Some(idle) = decoded.iter().find(|a| a.name.eq_ignore_ascii_case("@idle")) {
+            idle.world(0, &parents)
+        } else if let Some(closed) = decoded.iter().find(|a| a.name.eq_ignore_ascii_case("@idle_closed")) {
+            closed.world(0, &parents)
+        } else {
+            to_bone.iter().map(|m| m.inverse()).collect()
         };
         let skinning: Vec<glam::Affine3A> = rest.iter().zip(&to_bone).map(|(r, m)| *r * *m).collect();
         let mut clips = Vec::new();

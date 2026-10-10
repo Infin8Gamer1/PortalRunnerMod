@@ -37,7 +37,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use aperture::{Aim, Level, PortalColor, Sim, SimEvent};
+use aperture::{Aim, Level, MapTransition, PortalColor, Sim, SimEvent};
 use faith_move::greybox;
 use faith_move::{CameraFx, Controller, Event as MoveEvent, Input as MoveInput, Shot, State as MoveState};
 
@@ -151,9 +151,13 @@ pub struct Game {
     /// The chamber as Mirror's Edge's sounds see it (footstep surfaces, checkpoints).
     pub level: greybox::Level,
     pub levels: Vec<(String, source_map::LevelFn)>,
+    /// Parallel to `levels`: the BSP name of a Portal map, or none for a built chamber.
+    pub source_names: Vec<Option<String>>,
     pub level_index: usize,
     /// Load this level next frame (chamber finished, or a key).
     pub pending: Option<usize>,
+    /// Where to stand when `pending` is a map entered from the previous one.
+    pub arrival: Option<MapTransition>,
     /// Counting down to the next chamber after finishing one.
     pub next_in: Option<f32>,
     pub locked: bool,
@@ -196,8 +200,11 @@ pub struct Sun;
 fn setup_world(mut commands: Commands) {
     commands.insert_resource(progress::Progress::load());
     // The game's chambers, then Portal's own maps where they were extracted.
+    let root = extracted::find_root();
     let mut levels: Vec<(String, source_map::LevelFn)> = aperture::levels::all().into_iter().map(|(name, f)| (name.to_string(), std::sync::Arc::new(f) as source_map::LevelFn)).collect();
-    levels.extend(source_map::levels(extracted::find_root().as_deref()));
+    let mut source_names = vec![None; levels.len()];
+    levels.extend(source_map::levels(root.as_deref()));
+    source_names.extend(source_map::map_names(root.as_deref()).into_iter().map(Some));
     let first = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(levels.len() - 1);
     let level = (levels[first].1)();
     let cp = level.checkpoints[0].clone();
@@ -225,7 +232,9 @@ fn setup_world(mut commands: Commands) {
         sim: Sim::new(level.clone()),
         level: level.greybox(),
         levels,
+        source_names,
         level_index: first,
+        arrival: None,
         pending: None,
         next_in: None,
         locked: false,
@@ -408,16 +417,24 @@ fn switch_level(
     let n = game.levels.len();
     let mut to = game.pending.take();
     let keys_on = !menu.open;
+    let mut keyed = false;
     if keys_on && keys.just_pressed(KeyCode::KeyM) {
         to = Some((game.level_index + 1) % n);
+        keyed = true;
     }
     if keys_on && keys.just_pressed(KeyCode::KeyN) {
         to = Some((game.level_index + n - 1) % n);
+        keyed = true;
     }
     if keys_on && keys.just_pressed(KeyCode::Backspace) {
         to = Some(game.level_index);
+        keyed = true;
+    }
+    if keyed {
+        game.arrival = None;
     }
     let Some(i) = to else { return };
+    let arrival = game.arrival.take();
     for e in &geom {
         commands.entity(e).despawn();
     }
@@ -426,13 +443,15 @@ fn switch_level(
     let level = (g.levels[i].1)();
     g.sim = Sim::new(level.clone());
     g.sim.funnel = settings.funnel > 0.5;
+    g.sim.arrived = arrival.is_some();
     g.level = level.greybox();
     g.loads += 1;
     chamber::spawn(&mut commands, &mut meshes, &mats, &g.sim, &mut pools, &models);
     light_for(&level, &mut sun, camera.single().ok(), &mut commands, &mut clear, &mut ambient);
     let cp = &level.checkpoints[0];
-    g.ctrl.spawn = cp.spawn;
-    g.ctrl.spawn_yaw = cp.yaw;
+    let (spawn, yaw) = arrival.as_ref().and_then(|tr| tr.spawn_in(&level)).unwrap_or((cp.spawn, cp.yaw));
+    g.ctrl.spawn = spawn;
+    g.ctrl.spawn_yaw = yaw;
     g.ctrl.respawn();
     g.ctrl.state = MoveState::Ground;
     g.timer = 0.0;
@@ -632,7 +651,21 @@ fn play(
                 progress.save();
                 game.last_time = Some(t);
                 game.flash = Some((format!("CHAMBER COMPLETE  {}{}", hud::fmt_time(t), if pb { "  - NEW BEST" } else { "" }), -2.0));
-                game.next_in = Some(3.0);
+                // A Portal changelevel names its map. Switch without the three-second wait, so
+                // the elevator's delayed door-open doesn't play on the map being left, and
+                // stand in the next map's elevator rather than at its player start.
+                let next = game.sim.transition.clone().and_then(|tr| {
+                    let i = game.source_names.iter().position(|n| n.as_deref() == Some(tr.map.as_str()))?;
+                    Some((i, tr))
+                });
+                match next {
+                    Some((i, tr)) => {
+                        game.arrival = Some(tr);
+                        game.pending = Some(i);
+                        game.next_in = None;
+                    }
+                    None => game.next_in = Some(3.0),
+                }
             }
             _ => {}
         }

@@ -897,6 +897,48 @@ fn portals_chamber_00_exit_elevator_finishes_it() {
     let ev = run(&mut sim, &mut c, 40.0, |_, _| Input::default());
     assert!(sim.complete, "the ride didn't end the chamber (at {})", c.feet);
     assert!(ev.contains(&SimEvent::LevelComplete));
+    let tr = sim.transition.clone().expect("the ride didn't record which map it changes to");
+    assert_eq!(tr.map, "testchmb_a_01");
+    assert_eq!(tr.landmark, "a00-a01_landmark_elevator");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_01.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let level = crate::source::level("testchmb_a_01", "01", &solids, &ents);
+    let (feet, yaw) = tr.spawn_in(&level).expect("chamber 01 has no landmark of that name");
+    let mut arrived = Sim::new(level);
+    let start = arrived.level.checkpoints[0].spawn;
+    assert!(feet.distance(start) > 2.0, "arrived at the player start {feet}, outside the elevator (start {start})");
+    let on_car = arrived.movers.iter().flat_map(|m| m.boxes()).any(|b| {
+        let s = b.size();
+        s.y < 0.35 && s.x > 2.5 && s.z > 2.5 && (feet.x - b.center().x).abs() < 1.2 && (feet.z - b.center().z).abs() < 1.2 && feet.y >= b.max.y - 0.08 && feet.y <= b.max.y + 0.4
+    });
+    assert!(on_car, "not on the arrival elevator's floor: feet {feet}, start {start}");
+    // Arriving runs the map's transition logic, which opens those doors a second later.
+    arrived.arrived = true;
+    let mut c = Controller::new(crate::tuning(5.3, 10.0), feet, yaw);
+    c.state = State::Ground;
+    run(&mut arrived, &mut c, 1.3, |_, _| Input::default());
+    let opened = arrived.io.as_ref().is_some_and(|io| io.animations.values().any(|(n, _)| n == "open"));
+    assert!(opened, "arrival didn't open the elevator doors");
+}
+
+/// A 16-unit riser (Portal's stairs) is under Source's 18-unit step and over Mirror's Edge's.
+#[test]
+fn walks_a_sixteen_unit_stair() {
+    let rise = 16.0 * 0.0254;
+    let mut w = faith_move::BoxWorld::default();
+    w.add(faith_move::Aabb::new(Vec3::new(-4.0, -1.0, -4.0), Vec3::new(4.0, 0.0, 4.0)));
+    for i in 0..4 {
+        let z0 = -2.0 - i as f32 * 0.48;
+        w.add(faith_move::Aabb::new(Vec3::new(-2.0, 0.0, -20.0), Vec3::new(2.0, rise * (i + 1) as f32, z0)));
+    }
+    let mut c = Controller::new(crate::tuning(5.3, 10.0), Vec3::ZERO, 0.0);
+    c.state = State::Ground;
+    let mut top = 0.0f32;
+    for _ in 0..(5.0 / DT) as i32 {
+        c.step(DT, &forward(), &w);
+        top = top.max(c.feet.y);
+    }
+    assert!(top > rise * 4.0 - 0.02, "didn't walk the stair: {top} (feet {})", c.feet);
 }
 
 /// Portal's white walls take portals: in each map with a gun, shots from a few metres in front

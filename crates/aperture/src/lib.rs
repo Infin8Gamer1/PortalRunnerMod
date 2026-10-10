@@ -17,7 +17,7 @@ pub mod source;
 
 pub use level::{CubeKind, Gun, Inputs, Item, Level, Mat, MeProp, Paint, Sig};
 pub use portal::{Link, Portal, PortalColor};
-pub use sim::{Aim, Hit, HitWhat, Mask, Prop, Sim, SimEvent};
+pub use sim::{Aim, Hit, HitWhat, MapTransition, Mask, Prop, Sim, SimEvent};
 
 /// Movement tuning for Faith in a portal game: Mirror's Edge's, with a skid instead of a hard
 /// clamp when a fling lands her faster than she can run, and no floor to fall out of (the
@@ -29,6 +29,9 @@ pub fn tuning(hard_land_height: f32, lethal_fall_height: f32) -> faith_move::Tun
         lethal_fall_height,
         kill_y: None,
         respawn_on_death: true,
+        // Source's stepsize is 18 units. Mirror's Edge's 35 units (0.35 m) stops on a
+        // 16-unit stair (0.406 m).
+        step_height: 18.0 * 0.0254,
         ..Default::default()
     }
 }

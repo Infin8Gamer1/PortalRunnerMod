@@ -280,6 +280,9 @@ pub struct Level {
     pub hidden_models: Vec<usize>,
     /// Its logic.
     pub io: Option<crate::io::Io>,
+    /// `info_landmark` points (name, position). A level change keeps the offset from the
+    /// landmark of the same name.
+    pub landmarks: Vec<(String, Vec3)>,
 }
 
 /// A light in one of Portal's maps.
@@ -333,6 +336,7 @@ impl Level {
             lights: Vec::new(),
             hidden_models: Vec::new(),
             io: None,
+            landmarks: Vec::new(),
         }
     }
 
