@@ -38,6 +38,10 @@ pub enum Vis {
     Wire(usize),
     /// A Mirror's Edge door swinging on its hinge.
     Swing { fixture: usize, hinge: Vec3, away: Vec3 },
+    /// A hand-built chamber's mover (a platform), drawn from its boxes.
+    Mover(usize),
+    /// A pellet catcher's lens (lit once it's caught one).
+    PelletLens(usize),
     /// One of the pooled pieces (cubes, beams, bridges, blobs).
     Pool,
 }
@@ -53,6 +57,8 @@ pub struct Pools {
     glows: Vec<Entity>,
     bridges: Vec<Entity>,
     blobs: Vec<Entity>,
+    /// High energy pellets (each a glowing ball with its light).
+    pellets: Vec<Entity>,
     /// Each prop slot's cube, and its copy through the portal it's in (so the half of it
     /// that's through shows at the far side).
     props: Vec<[Entity; 2]>,
@@ -94,6 +100,8 @@ pub struct ChamberMats {
     /// The same, for gel in flight: drawn forward, with the ordinary lights (too small and
     /// fast for traced light to settle on).
     pub blob_paint: [Handle<StandardMaterial>; 3],
+    /// A high energy pellet: glowing (under ray tracing it lights the chamber).
+    pub pellet: Handle<StandardMaterial>,
     pub goo: Handle<StandardMaterial>,
     pub wire_off: Handle<StandardMaterial>,
     pub wire_on: Handle<StandardMaterial>,
@@ -422,6 +430,7 @@ pub fn setup(
         lens_off: materials.add(std(Color::srgb(0.25, 0.08, 0.06), None, 0.2, 0.0)),
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
         paint: paint.clone().map(|p| materials.add(p)),
+        pellet: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.9, 0.6), emissive: LinearRgba::rgb(9.0, 6.5, 2.2), ..default() }),
         blob_paint: paint.map(|p| materials.add(StandardMaterial { opaque_render_method: bevy::material::OpaqueRendererMethod::Forward, ..p })),
         // Opaque and glossy, so it's in the ray-traced scene and the chamber shows in it.
         goo: materials.add(match extracted.texture("goo") {
@@ -479,6 +488,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     let emitter_modelled = |b: &Aabb| {
         (r.lasers && sim.lasers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.32)))
             || (r.bridges && sim.bridges.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.2)))
+            || (r.pellets && (sim.launchers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.35)) || sim.pellet_catchers.iter().any(|x| aperture::geom::contains(b, x.at - x.facing * 0.45))))
     };
     // Faith plate models sit in pits: holes in the floor as drawn (her feet stay on the
     // plate as before).
@@ -669,6 +679,23 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             commands.entity(e).insert(Vis::Hatch { dropper: i, side });
         }
     }
+    // A hand-built chamber's movers: their boxes, moving together.
+    for (i, mv) in sim.movers.iter().enumerate() {
+        if mv.def.model != aperture::level::NO_MODEL {
+            continue;
+        }
+        for b in &mv.def.boxes {
+            let e = geom(commands, meshes.add(box_faces(&b.b, |n| n.y < 0.5)), m.black.clone(), Transform::default());
+            commands.entity(e).insert(Vis::Mover(i));
+            let e = geom(commands, meshes.add(box_faces(&b.b, |n| n.y >= 0.5)), m.black_floor.clone(), Transform::default());
+            commands.entity(e).insert(Vis::Mover(i));
+        }
+    }
+    // Pellet catchers' lenses.
+    for (i, c) in sim.pellet_catchers.iter().enumerate() {
+        let e = geom(commands, meshes.add(Sphere::new(0.22).mesh().ico(2).unwrap()), m.lens_off.clone(), Transform::from_translation(c.at));
+        commands.entity(e).insert(Vis::PelletLens(i));
+    }
     for g in &sim.goo {
         let top = Aabb::new(Vec3::new(g.min.x, g.max.y - 0.3, g.min.z), g.max);
         let e = geom(commands, meshes.add(box_mesh(&top)), m.goo.clone(), Transform::default());
@@ -815,6 +842,13 @@ pub fn update(
                 None
             }
             Vis::Catcher(i) => Some(lit(sim.catchers[i].lit, &m.lens_on, &m.lens_off)),
+            Vis::PelletLens(i) => Some(lit(sim.pellet_catchers[i].lit, &m.lens_on, &m.lens_off)),
+            Vis::Mover(i) => {
+                let mv = &sim.movers[i];
+                tf.translation = mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
+                *visible = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
+                None
+            }
             Vis::Relay(i) => Some(lit(sim.relays[i].lit, &m.lens_on, &m.lens_off)),
             Vis::RelayGlow(i) => {
                 *visible = if sim.relays[i].lit { Visibility::Inherited } else { Visibility::Hidden };
@@ -879,6 +913,12 @@ pub fn update(
     let segs: Vec<Aabb> = sim.bridges.iter().flat_map(|b| b.segs.iter().map(|s| s.aabb)).collect();
     pooled(&mut commands, &mut pools.bridges, segs.len(), |c| spawn_pooled(c, &m.unit_cube, &m.bridge, false));
     pooled(&mut commands, &mut pools.blobs, sim.blobs.len(), |c| spawn_pooled(c, &m.blob, &m.blob_paint[0], false));
+    let pellets: Vec<Vec3> = sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
+    pooled(&mut commands, &mut pools.pellets, pellets.len(), |c| {
+        let e = spawn_pooled(c, &m.blob, &m.pellet, false);
+        c.entity(e).insert(PointLight { intensity: 60_000.0, range: 8.0, radius: 0.2, color: Color::srgb(1.0, 0.8, 0.45), shadow_maps_enabled: false, ..default() });
+        e
+    });
 
     let mut set = |e: Entity, tf: Option<Transform>, mat: Option<&Handle<StandardMaterial>>| {
         if let Ok((_, mut t, mut v, mm)) = vis.get_mut(e) {
@@ -974,6 +1014,12 @@ pub fn update(
     for (i, e) in pools.bridges.iter().enumerate() {
         match segs.get(i) {
             Some(s) => set(*e, Some(Transform::from_translation(s.center()).with_scale(s.size())), None),
+            None => set(*e, None, None),
+        }
+    }
+    for (i, e) in pools.pellets.iter().enumerate() {
+        match pellets.get(i) {
+            Some(p) => set(*e, Some(Transform::from_translation(*p).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS))), None),
             None => set(*e, None, None),
         }
     }

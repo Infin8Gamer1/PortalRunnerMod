@@ -325,7 +325,7 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
                         }
                     }
                 }
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, present, shift }));
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, present, shift, inputs: None, shuttle: false }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }
@@ -334,18 +334,20 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
                     let s = sig();
                     l.items.push(Item::Fizzler { b, inputs: Inputs::on(s) });
                     initial.push((s, !start_disabled));
-                    kind = io::Kind::Fizzler { sig: s };
+                    kind = io::Kind::Switch { sig: s };
                     l.hidden_models.extend(model);
                 }
             }
             "trigger_once" | "trigger_multiple" | "trigger_look" => {
                 if let Some(b) = mb {
                     let f = flags(e);
-                    let (players, cubes) = (f & 1 != 0 || f & 64 != 0 || class == "trigger_look", f & 8 != 0 || f & 64 != 0);
+                    // A filter that lets only pellets through: Portal's pellet catchers.
+                    let pellets = key(e, "filtername").and_then(|f| named.get(&f.to_ascii_lowercase())).is_some_and(|f| key(f, "classname") == Some("filter_combineball_type"));
+                    let (players, cubes) = if pellets { (false, false) } else { (f & 1 != 0 || f & 64 != 0 || class == "trigger_look", f & 8 != 0 || f & 64 != 0) };
                     let enabled = !start_disabled;
                     kind = match buttons.iter().position(|bt| class == "trigger_multiple" && b.overlaps(&Aabb::new(bt.min - Vec3::splat(0.6), bt.max + Vec3::splat(0.6)))) {
                         Some(button) => io::Kind::ButtonTrigger { button, enabled, players, cubes, on: false },
-                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, player_in: false, cubes_in: Vec::new() },
+                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, pellets, player_in: false, cubes_in: Vec::new() },
                     };
                 }
             }
@@ -355,6 +357,15 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
                     let (normal, up) = angle_vectors(p, y, r);
                     let color = if key(e, "PortalTwo") == Some("1") { PortalColor::Orange } else { PortalColor::Blue };
                     kind = io::Kind::Portal { color, portal: Portal::new(at, normal, up), start: key(e, "Activated") == Some("1") };
+                }
+            }
+            "point_energy_ball_launcher" => {
+                if let Some(at) = origin(e) {
+                    let (p, y, r) = angles(e, "angles");
+                    let s = sig();
+                    l.items.push(Item::PelletLauncher { at, dir: angle_vectors(p, y, r).0, inputs: Inputs::on(s), life: num(e, "BallLifetime", 12.0) });
+                    initial.push((s, !start_disabled));
+                    kind = io::Kind::Switch { sig: s };
                 }
             }
             "logic_relay" => kind = io::Kind::Relay { enabled: !start_disabled, once: flags(e) & 1 != 0 },

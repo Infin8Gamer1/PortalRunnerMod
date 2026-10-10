@@ -101,6 +101,46 @@ impl Door {
     }
 }
 
+/// How fast a high energy pellet flies (m/s).
+pub const PELLET_SPEED: f32 = 7.0;
+/// Its size (radius, m): it hits Faith and catchers within this.
+pub const PELLET_RADIUS: f32 = 0.25;
+/// After going through a portal, it lives at least this much longer (Portal's
+/// MinLifeAfterPortal).
+const PELLET_LIFE_AFTER_PORTAL: f32 = 6.0;
+/// A launcher waits this long after its last pellet before the next.
+const PELLET_RELOAD: f32 = 1.5;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PelletLauncher {
+    pub at: Vec3,
+    pub dir: Vec3,
+    pub inputs: Inputs,
+    pub life: f32,
+    pub on: bool,
+    /// Its pellet in the air, and how long since it last had one.
+    pub pellet: Option<u32>,
+    pub idle: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pellet {
+    pub id: u32,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub age: f32,
+    pub life: f32,
+    pub alive: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PelletCatcher {
+    pub sig: Sig,
+    pub at: Vec3,
+    pub facing: Vec3,
+    pub lit: bool,
+}
+
 /// A brush entity on the move (see [`MoverDef`](crate::level::MoverDef)).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mover {
@@ -113,7 +153,12 @@ pub struct Mover {
     pub goal: Option<usize>,
     pub present: bool,
     pub speed: f32,
+    /// A shuttle's pause at the end it's reached (seconds left).
+    pub wait: f32,
 }
+
+/// How long a shuttling platform waits at each end.
+const SHUTTLE_WAIT: f32 = 1.5;
 
 impl Mover {
     /// Its boxes where it is now.
@@ -265,6 +310,10 @@ pub enum SimEvent {
     PlayerDied,
     Checkpoint { index: usize },
     LevelComplete,
+    PelletLaunched { at: Vec3 },
+    PelletBounced { at: Vec3 },
+    /// A pellet's gone: worn out, into a grill, or caught (`caught`).
+    PelletGone { at: Vec3, caught: bool },
     /// A mover reached a point on its path (and `arrived`: the one it was heading for).
     MoverAt { mover: usize, node: usize, arrived: bool },
 }
@@ -338,6 +387,10 @@ pub struct Sim {
     next_prop: u32,
     pub doors: Vec<Door>,
     pub movers: Vec<Mover>,
+    pub launchers: Vec<PelletLauncher>,
+    pub pellets: Vec<Pellet>,
+    pub pellet_catchers: Vec<PelletCatcher>,
+    next_pellet: u32,
     pub buttons: Vec<Button>,
     pub pedestals: Vec<Pedestal>,
     pub droppers: Vec<Dropper>,
@@ -394,6 +447,10 @@ impl Sim {
             next_prop: 1,
             doors: Vec::new(),
             movers: Vec::new(),
+            launchers: Vec::new(),
+            pellets: Vec::new(),
+            pellet_catchers: Vec::new(),
+            next_pellet: 1,
             buttons: Vec::new(),
             pedestals: Vec::new(),
             droppers: Vec::new(),
@@ -489,9 +546,17 @@ impl Sim {
                     sim.gel.fill(c, geom::snap_axis(normal), u, v, half, paint);
                 }
                 Item::Goo { b } => sim.goo.push(b),
+                Item::PelletLauncher { at, dir, inputs, life } => {
+                    statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
+                    sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: PELLET_RELOAD });
+                }
+                Item::PelletCatcher { sig, at, facing } => {
+                    statics.push(Static { b: Aabb::from_center_size(at - facing * 0.45, Vec3::splat(0.9)), mat: Mat::Prop, owner: Owner::Emitter });
+                    sim.pellet_catchers.push(PelletCatcher { sig, at, facing, lit: false });
+                }
                 Item::Mover(def) => {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, def });
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, def });
                 }
             }
         }
@@ -1213,6 +1278,7 @@ impl Sim {
         let player_box = ctrl.body().aabb(ctrl.feet);
 
         self.update_movers(dt, ctrl);
+        self.update_pellets(dt, ctrl);
         if let Some(mut io) = self.io.take() {
             io.step(self, ctrl, dt);
             self.io = Some(io);
@@ -1251,6 +1317,7 @@ impl Sim {
         self.pedestals.iter().filter(|p| p.left > 0.0).for_each(|p| set(p.sig));
         self.catchers.iter().filter(|c| c.lit).for_each(|c| set(c.sig));
         self.relays.iter().filter(|r| r.lit).for_each(|r| set(r.sig));
+        self.pellet_catchers.iter().filter(|c| c.lit).for_each(|c| set(c.sig));
         for (i, on) in self.io_signals.iter().enumerate() {
             if *on {
                 set(i);
@@ -1259,9 +1326,122 @@ impl Sim {
         self.signals = sig;
     }
 
+    /// Take a pellet out (a map's catcher took it).
+    pub fn remove_pellet(&mut self, id: u32, caught: bool) {
+        if let Some(p) = self.pellets.iter_mut().find(|p| p.id == id && p.alive) {
+            p.alive = false;
+            self.events.push(SimEvent::PelletGone { at: p.pos, caught });
+        }
+    }
+
+    /// High energy pellets: launched, flying, bouncing off what they hit, through portals,
+    /// into catchers; deadly to Faith.
+    fn update_pellets(&mut self, dt: f32, ctrl: &mut Controller) {
+        for i in 0..self.launchers.len() {
+            let l = &mut self.launchers[i];
+            l.on = l.inputs.eval(&self.signals);
+            if l.pellet.is_some_and(|id| !self.pellets.iter().any(|p| p.id == id && p.alive)) {
+                l.pellet = None;
+                l.idle = 0.0;
+            }
+            l.idle += dt;
+            if l.on && l.pellet.is_none() && l.idle >= PELLET_RELOAD {
+                let id = self.next_pellet;
+                self.next_pellet += 1;
+                let at = l.at + l.dir * 0.3;
+                l.pellet = Some(id);
+                self.pellets.retain(|p| p.alive);
+                self.pellets.push(Pellet { id, pos: at, vel: l.dir * PELLET_SPEED, age: 0.0, life: l.life, alive: true });
+                self.events.push(SimEvent::PelletLaunched { at });
+            }
+        }
+        let me = ctrl.body().aabb(ctrl.feet);
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: true, portals: true, grates: false, glass: true, skip_prop: None };
+        let mut killed = false;
+        for k in 0..self.pellets.len() {
+            if !self.pellets[k].alive {
+                continue;
+            }
+            let mut p = self.pellets[k];
+            p.age += dt;
+            let mut gone = p.age >= p.life;
+            let mut left = p.vel.length() * dt;
+            let mut bounces = 0;
+            while !gone && left > 1e-5 && bounces < 4 {
+                let d = p.vel.normalize_or_zero();
+                match self.raycast(p.pos, d, left, mask) {
+                    None => {
+                        p.pos += d * left;
+                        left = 0.0;
+                    }
+                    Some(hit) => {
+                        left -= hit.t;
+                        bounces += 1;
+                        match hit.what {
+                            HitWhat::Portal(c) => {
+                                let link = self.link(c).unwrap();
+                                p.vel = link.dir(p.vel);
+                                p.pos = link.point(hit.point) + p.vel.normalize_or_zero() * 2e-3;
+                                p.age = p.age.min(p.life - PELLET_LIFE_AFTER_PORTAL);
+                            }
+                            HitWhat::Fizzler(_) => gone = true,
+                            _ => {
+                                p.vel -= 2.0 * p.vel.dot(hit.normal) * hit.normal;
+                                p.pos = hit.point + hit.normal * 0.01;
+                                self.events.push(SimEvent::PelletBounced { at: hit.point });
+                            }
+                        }
+                    }
+                }
+            }
+            // Into a catcher.
+            let mut caught = false;
+            for c in self.pellet_catchers.iter_mut() {
+                if !c.lit && c.at.distance(p.pos) < PELLET_RADIUS + 0.3 {
+                    c.lit = true;
+                    caught = true;
+                }
+            }
+            if caught || gone {
+                p.alive = false;
+                self.events.push(SimEvent::PelletGone { at: p.pos, caught });
+            } else if me.overlaps(&Aabb::from_center_size(p.pos, Vec3::splat(PELLET_RADIUS * 2.0))) {
+                p.alive = false;
+                self.events.push(SimEvent::PelletGone { at: p.pos, caught: false });
+                killed = true;
+            }
+            self.pellets[k] = p;
+        }
+        if killed {
+            self.player_died(ctrl, true);
+        }
+    }
+
     /// Movers along their paths, carrying Faith and cubes that stand on them.
     fn update_movers(&mut self, dt: f32, ctrl: &mut Controller) {
         const STANDING: f32 = 0.08;
+        for m in self.movers.iter_mut() {
+            let Some(inputs) = &m.def.inputs else { continue };
+            let last = m.def.path.len().saturating_sub(1);
+            let on = inputs.eval(&self.signals);
+            if m.wait > 0.0 {
+                m.wait -= dt;
+                continue;
+            }
+            m.goal = match (on, m.def.shuttle) {
+                (true, true) => Some(match m.goal {
+                    Some(g) => g,
+                    None if m.node == last => 0,
+                    None => last,
+                }),
+                (true, false) => Some(last),
+                (false, true) => None,
+                (false, false) => Some(0),
+            };
+            if m.goal == Some(m.node) && m.at == m.def.path[m.node] {
+                m.goal = None;
+            }
+        }
         for i in 0..self.movers.len() {
             let Some(goal) = self.movers[i].goal else { continue };
             let m = &self.movers[i];
@@ -1303,6 +1483,9 @@ impl Sim {
             m.node = node;
             if node == goal {
                 m.goal = None;
+                if m.def.shuttle {
+                    m.wait = SHUTTLE_WAIT;
+                }
             }
             for n in passed {
                 self.events.push(SimEvent::MoverAt { mover: i, node: n, arrived: n == goal });

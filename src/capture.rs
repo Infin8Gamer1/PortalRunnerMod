@@ -414,6 +414,26 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // High energy pellets and the platform they power (#23, #22): Chamber 06, its pellet
+        // sent through portals into the catcher.
+        "pellets" => vec![
+            Map(6),
+            Wait(200),
+            Teleport(Vec3::new(4.0, 0.0, 4.0)),
+            Look(59.0, 15.0),
+            Wait(40),
+            Shot("pellet_a_launcher"),
+            Portal(PortalColor::Blue, Vec3::new(10.0, 6.0, -4.0), Vec3::NEG_X, Vec3::Y),
+            Portal(PortalColor::Orange, Vec3::new(10.0, 1.2, -36.0), Vec3::NEG_X, Vec3::Y),
+            Teleport(Vec3::new(4.0, 0.0, -6.0)),
+            Look(10.0, 0.0),
+            Wait(560),
+            Shot("pellet_b_caught"),
+            Teleport(Vec3::new(0.0, 0.0, -8.0)),
+            Look(0.0, -15.0),
+            Wait(200),
+            Shot("pellet_c_platform"),
+        ],
         "plate" => vec![
             Map(0),
             Wait(90),

@@ -68,13 +68,14 @@ pub enum Kind {
     Timer { enabled: bool, refire: f32, next: f32, random: Option<(f32, f32)> },
     Counter { value: f32, min: f32, max: f32 },
     Case { cases: Vec<String> },
-    /// Touched by Faith (`players`) and/or cubes (`cubes`); once: then it's done.
-    Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, player_in: bool, cubes_in: Vec<u32> },
+    /// Touched by Faith (`players`), cubes (`cubes`) or high energy pellets (`pellets`: Portal's
+    /// catchers, which take the pellet); once: then it's done.
+    Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, pellets: bool, player_in: bool, cubes_in: Vec<u32> },
     /// A floor button's trigger: the sim's button `button` pressing it.
     ButtonTrigger { button: usize, enabled: bool, players: bool, cubes: bool, on: bool },
     Mover { index: usize, kind: MoverKind },
-    /// A grill (its signal on: working).
-    Fizzler { sig: Sig },
+    /// Something switched by a signal: a grill, a pellet launcher (on: working).
+    Switch { sig: Sig },
     /// A preset portal (`start`: open as the map starts).
     Portal { color: PortalColor, portal: Portal, start: bool },
     Scene,
@@ -237,8 +238,21 @@ impl Io {
             if !self.ents[e].alive {
                 continue;
             }
-            let Kind::Trigger { b, once, enabled, players, cubes: takes_cubes, player_in, ref cubes_in } = self.ents[e].kind else { continue };
+            let Kind::Trigger { b, once, enabled, players, cubes: takes_cubes, pellets, player_in, ref cubes_in } = self.ents[e].kind else { continue };
             if !enabled {
+                continue;
+            }
+            if pellets {
+                let inside: Vec<u32> = sim.pellets.iter().filter(|p| p.alive && b.overlaps(&Aabb::from_center_size(p.pos, Vec3::splat(0.4)))).map(|p| p.id).collect();
+                for id in inside {
+                    sim.remove_pellet(id, true);
+                    self.fire(e, "OnStartTouch", None);
+                    self.fire(e, "OnTrigger", None);
+                    if once {
+                        self.ents[e].alive = false;
+                        break;
+                    }
+                }
                 continue;
             }
             let player_now = players && b.overlaps(&me);
@@ -459,10 +473,23 @@ impl Io {
                         let open = m.goal.map_or(m.node == last, |g| g == last);
                         self.input(sim, e, if open { "Close" } else { "Open" }, "", caller);
                     }
+                    (MoverKind::Train, "startforward" | "resume" | "toggle" | "startbackward" | "reverse") if m.speed == 0.0 => {
+                        m.speed = m.def.speed;
+                        m.goal = Some(if i == "startbackward" || i == "reverse" { 0 } else { last });
+                    }
                     (MoverKind::Train, "startforward" | "resume" | "toggle") => m.goal = Some(last),
                     (MoverKind::Train, "startbackward" | "reverse") => m.goal = Some(0),
                     (MoverKind::Train, "stop") => m.goal = None,
-                    (MoverKind::Train, "setspeed" | "setspeedreal") => m.speed = num(param) * 0.0254,
+                    // A fraction of its top speed, and off it goes (0: it stops).
+                    (MoverKind::Train, "setspeed" | "setspeeddir") => {
+                        let f = num(param);
+                        m.speed = m.def.speed * f.abs();
+                        m.goal = if f == 0.0 { None } else if f > 0.0 { Some(last) } else { Some(0) };
+                    }
+                    (MoverKind::Train, "setspeedreal") => {
+                        m.speed = num(param).abs() * 0.0254;
+                        m.goal = if m.speed == 0.0 { None } else { Some(last) };
+                    }
                     (_, "enable" | "turnon" | "enablecollision") => m.present = true,
                     (_, "disable" | "turnoff" | "disablecollision") => m.present = false,
                     (MoverKind::Brush, "toggle") => m.present = !m.present,
@@ -472,7 +499,7 @@ impl Io {
                     _ => {}
                 }
             }
-            Kind::Fizzler { sig } => {
+            Kind::Switch { sig } => {
                 let on = match i.as_str() {
                     "enable" => Some(true),
                     "disable" => Some(false),

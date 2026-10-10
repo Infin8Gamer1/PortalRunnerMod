@@ -85,6 +85,12 @@ fn arg(args: &[String], name: &str) -> Option<PathBuf> {
 
 /// (our name, candidate paths in order: the first one found is used).
 const SOUNDS: &[(&str, &[&str])] = &[
+    // High energy pellets (Portal's are Half-Life 2's energy balls).
+    ("pellet_bounce", &["sound/weapons/physcannon/energy_bounce1.wav"]),
+    ("pellet_bounce2", &["sound/weapons/physcannon/energy_bounce2.wav"]),
+    ("pellet_gone", &["sound/weapons/physcannon/energy_disintegrate4.wav"]),
+    ("pellet_launch", &["sound/weapons/physcannon/energy_sing_flyby1.wav"]),
+    ("pellet_caught", &["sound/weapons/physcannon/energy_sing_explosion2.wav"]),
     // The gun and portals (Portal).
     ("gun_blue", &["sound/weapons/portalgun/portalgun_shoot_blue1.wav"]),
     ("gun_orange", &["sound/weapons/portalgun/portalgun_shoot_red1.wav"]),
@@ -192,6 +198,9 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("laser_catcher_on", "portal2", "models/props/laser_catcher_center.mdl", 1, 0.0),
     ("laser_relay", "portal2", "models/props/laser_receptacle.mdl", 0, 0.0),
     ("fizzler_emitter", "portal2", "models/props/fizzler_dynamic.mdl", 0, 0.0),
+    // High energy pellets' launcher and catcher (Portal's).
+    ("pellet_launcher", "portal", "models/props/combine_ball_launcher.mdl", 0, 0.0),
+    ("pellet_catcher", "portal", "models/props/combine_ball_catcher.mdl", 0, 0.0),
     ("door_upper", "portal2", "models/props/vert_door/vert_door_upper.mdl", 0, 0.0),
     ("door_lower", "portal2", "models/props/vert_door/vert_door_lower.mdl", 0, 0.0),
     ("door_frame", "portal2", "models/props/vert_door/vert_door_frame.mdl", 0, 0.0),

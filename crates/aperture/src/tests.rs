@@ -944,3 +944,100 @@ fn portals_maps_white_walls_take_portals() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+#[test]
+fn a_pellet_through_portals_lights_its_catcher() {
+    // Fired along +X into blue (on a wall at x 6), out of orange (on a wall at z -10, facing +Z),
+    // along +Z into the catcher.
+    let mut l = flat();
+    l.solid(Mat::White, [6.0, 0.0, -3.0], [6.5, 4.0, 3.0]);
+    l.solid(Mat::White, [-3.0, 0.0, -10.5], [3.0, 4.0, -10.0]);
+    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(0.0, 1.2, 0.0), dir: Vec3::X, inputs: Inputs::always(), life: 12.0 });
+    l.item(crate::level::Item::PelletCatcher { sig: 0, at: Vec3::new(0.0, 1.2, -5.0), facing: Vec3::NEG_Z });
+    l.spawn([-8.0, 0.0, 8.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    sim.set_portal(PortalColor::Blue, Some(Portal::new(Vec3::new(6.0, 1.2, 0.0), Vec3::NEG_X, Vec3::Y)));
+    sim.set_portal(PortalColor::Orange, Some(Portal::new(Vec3::new(0.0, 1.2, -10.0), Vec3::Z, Vec3::Y)));
+    let ev = run(&mut sim, &mut c, 6.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletGone { caught: true, .. })), "never caught");
+    assert!(sim.pellet_catchers[0].lit && sim.signals[0]);
+}
+
+#[test]
+fn a_pellet_bounces_off_walls_and_kills() {
+    // Fired across the room at a wall: it bounces off.
+    let mut l = flat();
+    l.solid(Mat::Black, [-3.0, 0.0, -12.5], [3.0, 4.0, -12.0]);
+    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(-2.0, 1.0, -2.0), dir: Vec3::new(0.3, 0.0, -1.0).normalize(), inputs: Inputs::always(), life: 12.0 });
+    l.spawn([8.0, 0.0, 8.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletBounced { .. })), "didn't bounce");
+    assert!(!ev.contains(&SimEvent::PlayerDied));
+    // Fired straight at her: it kills.
+    let mut l = flat();
+    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(0.0, 1.0, -6.0), dir: Vec3::Z, inputs: Inputs::always(), life: 12.0 });
+    l.spawn([0.0, 0.0, 1.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+    assert!(ev.contains(&SimEvent::PlayerDied), "didn't kill her");
+}
+
+/// Portal's Chamber 06 (where it's been extracted): its ceiling launcher fires a pellet, and a
+/// pellet in the catcher is taken and raises the lift.
+#[test]
+fn portals_chamber_06_pellet_catcher_raises_the_lift() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_03.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let level = crate::source::level("testchmb_a_03", "06", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    let ev = run(&mut sim, &mut c, 3.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletLaunched { .. })), "the launcher didn't fire");
+    let k = sim.pellets.iter().position(|p| p.alive).expect("a pellet in the air");
+    // Into the catcher (its trigger, Source's ball_trap_10).
+    sim.pellets[k].pos = Vec3::new(-10.5, 15.2, 67.9);
+    sim.pellets[k].vel = Vec3::ZERO;
+    let ev = run(&mut sim, &mut c, 6.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletGone { caught: true, .. })), "not caught");
+    let io = sim.io.as_ref().unwrap();
+    let lift = io.ents.iter().find_map(|e| match e.kind {
+        crate::io::Kind::Mover { index, .. } if e.name == "lift_a" => Some(index),
+        _ => None,
+    });
+    assert_eq!(sim.movers[lift.unwrap()].node, 1, "the lift didn't go up");
+}
+
+#[test]
+fn chamber06_can_be_solved() {
+    use crate::levels::c06_scaffold::*;
+    let (mut sim, mut c) = start(crate::levels::chamber06());
+    // Blue where the pellet hits the right wall; orange low on the right wall, facing the catcher.
+    sim.set_portal(PortalColor::Blue, Some(Portal::new(Vec3::new(10.0, LAUNCHER[1], LAUNCHER[2]), Vec3::NEG_X, Vec3::Y)));
+    sim.set_portal(PortalColor::Orange, Some(Portal::new(Vec3::new(10.0, CATCHER[1], CATCHER[2]), Vec3::NEG_X, Vec3::Y)));
+    let mut t = 0.0;
+    while !sim.pellet_catchers[0].lit && t < 10.0 {
+        run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+        t += 0.5;
+    }
+    assert!(sim.pellet_catchers[0].lit, "the pellet never reached its catcher");
+    // Onto the platform when it's back at the near side, and ride it over.
+    let mut t = 0.0;
+    while !(sim.movers[0].node == 0 && sim.movers[0].goal.is_none()) && t < 20.0 {
+        run(&mut sim, &mut c, 0.1, |_, _| Input::default());
+        t += 0.1;
+    }
+    c.feet = glam::Vec3::new(0.0, 0.0, -11.5);
+    c.vel = glam::Vec3::ZERO;
+    run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+    let mut t = 0.0;
+    while !(sim.movers[0].node == 1 && sim.movers[0].goal.is_none()) && t < 12.0 {
+        run(&mut sim, &mut c, 0.1, |_, _| Input::default());
+        t += 0.1;
+    }
+    assert!(c.feet.z < -26.0 && c.feet.y > -0.2, "didn't ride over: {}", c.feet);
+    // Off it and out.
+    run(&mut sim, &mut c, 8.0, |_, _| forward());
+    assert!(sim.complete, "not out: {}", c.feet);
+}
+

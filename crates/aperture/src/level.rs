@@ -176,6 +176,11 @@ pub enum Item {
     Painted { b: Aabb, normal: Vec3, paint: Paint },
     /// Deadly goo (or a bottomless drop): falling in kills you, and cubes are lost.
     Goo { b: Aabb },
+    /// A high energy pellet launcher at `at`, firing along `dir` while its inputs are on: a
+    /// pellet that lives `life` seconds, and a new one each time the last is gone.
+    PelletLauncher { at: Vec3, dir: Vec3, inputs: Inputs, life: f32 },
+    /// A pellet catcher: its lens at `at`, facing `facing`; on for good once a pellet's in.
+    PelletCatcher { sig: Sig, at: Vec3, facing: Vec3 },
     /// Something solid that moves along a path (Portal's maps: doors, elevators, walls that
     /// come and go), driven by the map's logic ([`crate::io`]).
     Mover(MoverDef),
@@ -198,7 +203,15 @@ pub struct MoverDef {
     /// How far it was moved from where the map has it (a train put on its first path node):
     /// models riding on it move as far.
     pub shift: Vec3,
+    /// Driven by signals rather than a map's logic: while on, to the end of its path (and
+    /// with `shuttle`, back and forth along it); off, back to the start (or, shuttling, it
+    /// stops where it is).
+    pub inputs: Option<Inputs>,
+    pub shuttle: bool,
 }
+
+/// No brush model (a mover in a hand-built chamber, drawn from its boxes).
+pub const NO_MODEL: usize = usize::MAX;
 
 /// A cable from a button to what it drives, drawn on the walls and floor (Portal's
 /// indicator lights: dots that turn on with the signal).
@@ -490,6 +503,21 @@ impl Level {
         self.item(Item::Painted { b: Aabb::new(Vec3::from(a), Vec3::from(b)), normal: Vec3::from(normal), paint })
     }
 
+    /// A platform (box `a`..`b`) that shuttles back and forth by `travel` at `speed` while
+    /// its inputs are on.
+    pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
+        let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
+        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true }))
+    }
+
+    pub fn pellet_launcher(&mut self, at: [f32; 3], dir: [f32; 3], inputs: Inputs) -> &mut Self {
+        self.item(Item::PelletLauncher { at: Vec3::from(at), dir: Vec3::from(dir).normalize(), inputs, life: 12.0 })
+    }
+
+    pub fn pellet_catcher(&mut self, sig: Sig, at: [f32; 3], facing: [f32; 3]) -> &mut Self {
+        self.item(Item::PelletCatcher { sig, at: Vec3::from(at), facing: Vec3::from(facing) })
+    }
+
     pub fn goo(&mut self, a: [f32; 3], b: [f32; 3]) -> &mut Self {
         self.item(Item::Goo { b: Aabb::new(Vec3::from(a), Vec3::from(b)) })
     }
@@ -517,14 +545,16 @@ impl Level {
         let mut see = |s: Sig| n = n.max(s + 1);
         for it in &self.items {
             match it {
-                Item::FloorButton { sig, .. } | Item::Pedestal { sig, .. } | Item::Catcher { sig, .. } | Item::Relay { sig, .. } => see(*sig),
+                Item::FloorButton { sig, .. } | Item::Pedestal { sig, .. } | Item::Catcher { sig, .. } | Item::Relay { sig, .. } | Item::PelletCatcher { sig, .. } => see(*sig),
                 Item::Door { inputs, .. }
                 | Item::Dropper { inputs, .. }
                 | Item::Fizzler { inputs, .. }
                 | Item::FaithPlate { inputs, .. }
                 | Item::Bridge { inputs, .. }
                 | Item::Laser { inputs, .. }
-                | Item::GelDispenser { inputs, .. } => inputs.all.iter().for_each(|s| see(*s)),
+                | Item::GelDispenser { inputs, .. }
+                | Item::PelletLauncher { inputs, .. } => inputs.all.iter().for_each(|s| see(*s)),
+                Item::Mover(MoverDef { inputs: Some(inputs), .. }) => inputs.all.iter().for_each(|s| see(*s)),
                 _ => {}
             }
         }

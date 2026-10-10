@@ -119,6 +119,9 @@ M and N cycle through them; finishing one moves on to the next.
    gel up a wall too tall to climb, conversion gel to put a portal on a black floor.
 6. **Chamber 05: Rooftop Run**: outside. Slide, wallrun, climb the water tower, then a fling off
    it over the last gap. Roll the landing.
+7. **Chamber 06: Unstationary Scaffold**: a high energy pellet bounces across the room. A portal
+   where it hits, the other facing its catcher across the goo; the platform it powers carries
+   you over.
 
 Then Mirror's Edge's own courses from Faith Runner (Rooftops, Moves, Springboard, Training),
 where every roof and wall takes portals.
@@ -129,8 +132,8 @@ with RTX's materials), white surfaces taking portals as in Portal, goo, cubes an
 colours from the map, with their props (Portal's models: doors, elevators, droppers, furniture),
 and their logic: Source's entity I/O runs (relays, timers, counters, triggers), so buttons
 open doors, preset portals come and go, droppers make cubes, elevators ride and the exit
-elevator ends the chamber. GLaDOS isn't heard yet (her scenes are a short wait), and the
-energy pellets (#23) and turrets (#24) aren't in, so not every chamber can be finished.
+elevator ends the chamber, pellets fly from their launchers into their catchers. GLaDOS isn't
+heard yet (her scenes are a short wait), and turrets (#24) aren't in.
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
@@ -232,7 +235,7 @@ The capture mode plays a scripted run and saves screenshots into the folder: scr
 `portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
 screenshot every frame), `flingfilm` (the same, falling through a floor portal),
 `cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors),
-`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `p1` (Portal's maps, each one's start; `PORTAL_FIRST_MAP`/`PORTAL_LAST_MAP` pick them, `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from), `rtx` (close-ups of Portal with RTX's pieces) and
+`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `pellets` (Chamber 06's pellet and platform), `p1` (Portal's maps, each one's start; `PORTAL_FIRST_MAP`/`PORTAL_LAST_MAP` pick them, `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from), `rtx` (close-ups of Portal with RTX's pieces) and
 `tour` (each map's start), in `src/capture.rs`. Each screenshot's line says how long frames
 really take (the game's own clock is fixed at 60 a second while capturing). `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 

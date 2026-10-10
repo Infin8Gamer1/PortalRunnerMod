@@ -44,6 +44,8 @@ pub const NAMES: &[&str] = &[
     "laser_catcher_on",
     "laser_relay",
     "fizzler_emitter",
+    "pellet_launcher",
+    "pellet_catcher",
     "door_upper",
     "door_lower",
     "door_frame",
@@ -139,6 +141,7 @@ pub struct Replaced {
     pub relays: bool,
     pub fizzlers: bool,
     pub doors: bool,
+    pub pellets: bool,
 }
 
 /// Spawn the models for the chamber's pieces; says which stand-ins they replace.
@@ -226,6 +229,22 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             let tf = Transform::from_translation(c.at - c.facing * 0.762 * s).with_rotation(basis(right, up, -c.facing)).with_scale(Vec3::splat(s));
             spawn_model(commands, off.clone(), tf, PropKind::Catcher(i, false));
             spawn_model(commands, on.clone(), tf, PropKind::Catcher(i, true));
+        }
+    }
+    // High energy pellet launchers and catchers: Portal's, at 60%. A launcher's mouth (1.09 m
+    // along the model's front) is where the pellet leaves; a catcher's opening faces its way.
+    if let (Some(launcher), Some(catcher)) = (models.get("pellet_launcher"), models.get("pellet_catcher")) {
+        r.pellets = true;
+        let s = 0.6;
+        for l in &sim.launchers {
+            let (right, up) = frame_for(l.dir);
+            let tf = Transform::from_translation(l.at - l.dir * 1.09 * s).with_rotation(basis(right, up, -l.dir)).with_scale(Vec3::splat(s));
+            spawn_model(commands, launcher.clone(), tf, PropKind::Static);
+        }
+        for c in &sim.pellet_catchers {
+            let (right, up) = frame_for(c.facing);
+            let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, c.facing)).with_scale(Vec3::splat(s));
+            spawn_model(commands, catcher.clone(), tf, PropKind::Static);
         }
     }
     if let Some(scene) = models.get("laser_relay") {
