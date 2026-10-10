@@ -19,6 +19,10 @@ use crate::Game;
 
 /// Every model the game uses, by its extracted name.
 pub const NAMES: &[&str] = &[
+    // Portal with RTX's remasters, preferred where they were extracted.
+    "rtx_storage_cube",
+    "rtx_pedestal_button",
+    // Portal 2's.
     "metal_box",
     "companion_cube",
     "reflection_cube",
@@ -57,8 +61,9 @@ impl PropModels {
         self.scenes.get(name).cloned()
     }
 
-    pub fn has(&self, name: &str) -> bool {
-        self.scenes.contains_key(name)
+    /// The first of these models that was extracted, and which it was.
+    fn first<'a>(&self, names: &[&'a str]) -> Option<(Handle<WorldAsset>, &'a str)> {
+        names.iter().find_map(|n| Some((self.get(n)?, *n)))
     }
 }
 
@@ -145,7 +150,8 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
             spawn_model(commands, on.clone(), tf, PropKind::Button(i, true));
         }
     }
-    if let Some(scene) = models.get("pedestal_button") {
+    // Pedestal buttons: Portal with RTX's remaster or Portal 2's (the same size and parts).
+    if let Some((scene, _)) = models.first(&["rtx_pedestal_button", "pedestal_button"]) {
         r.pedestals = true;
         for (i, p) in sim.pedestals.iter().enumerate() {
             spawn_model(commands, scene.clone(), Transform::from_translation(p.at).with_scale(Vec3::splat(0.9)), PropKind::Pedestal(i));
@@ -289,12 +295,20 @@ fn frame_for(dir: Vec3) -> (Vec3, Vec3) {
 
 /// Spawn the cube models for a pooled prop slot (one per kind; the pool shows the right one).
 pub fn spawn_cubes(commands: &mut Commands, models: &PropModels, slot: usize) -> Option<[Entity; 3]> {
-    let kinds = [(CubeKind::Storage, "metal_box", CUBE_HALF / 0.514), (CubeKind::Companion, "companion_cube", CUBE_HALF / 0.514), (CubeKind::Reflector, "reflection_cube", CUBE_HALF / 0.47)];
-    if !kinds.iter().all(|(_, n, _)| models.has(n)) {
+    // Each kind's models, best first, with each one's half size. Portal with RTX remastered the
+    // storage cube only.
+    let kinds: [(CubeKind, &[(&str, f32)]); 3] = [
+        (CubeKind::Storage, &[("rtx_storage_cube", 0.503), ("metal_box", 0.514)]),
+        (CubeKind::Companion, &[("companion_cube", 0.514)]),
+        (CubeKind::Reflector, &[("reflection_cube", 0.47)]),
+    ];
+    let found = kinds.map(|(kind, options)| options.iter().find_map(|(n, half)| Some((kind, models.get(n)?, CUBE_HALF / half))));
+    if found.iter().any(Option::is_none) {
         return None;
     }
-    Some(kinds.map(|(kind, name, s)| {
-        let e = spawn_model(commands, models.get(name).unwrap(), Transform::from_scale(Vec3::splat(s)), PropKind::Cube(slot, kind));
+    Some(found.map(|f| {
+        let (kind, scene, s) = f.unwrap();
+        let e = spawn_model(commands, scene, Transform::from_scale(Vec3::splat(s)), PropKind::Cube(slot, kind));
         commands.entity(e).insert(Visibility::Hidden);
         e
     }))

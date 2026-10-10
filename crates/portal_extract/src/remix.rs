@@ -262,8 +262,9 @@ pub enum NormalEncoding {
     DirectX,
 }
 
-/// One replacement material's maps (paths as the USD gives them) and constants.
-#[derive(Debug, Default)]
+/// One replacement material's maps (paths as the USD gives them, relative to the
+/// `gameReadyAssets` folder once [`Material::resolve`]d) and constants.
+#[derive(Debug, Default, Clone)]
 pub struct Material {
     pub albedo: Option<String>,
     pub normal: Option<(String, NormalEncoding)>,
@@ -272,6 +273,117 @@ pub struct Material {
     pub emissive: Option<String>,
     pub roughness_constant: Option<f32>,
     pub metallic_constant: Option<f32>,
+    /// How bright what glows is (Remix's `emissive_intensity`), when emission is on.
+    pub emissive_intensity: Option<f32>,
+    pub emission_enabled: Option<bool>,
+    /// See-through (Remix's translucent shader, for glass).
+    pub translucent: bool,
+    encoding: Option<NormalEncoding>,
+}
+
+/// A shader input's value.
+pub enum Input {
+    Asset(String),
+    Number(f32),
+    Flag(bool),
+}
+
+impl Material {
+    /// Take one AperturePBR shader input (`inputs:<name>`).
+    pub fn set(&mut self, name: &str, value: Input) {
+        let asset = |v: &Input| match v {
+            Input::Asset(a) if !a.is_empty() => Some(a.clone()),
+            _ => None,
+        };
+        let number = |v: &Input| match v {
+            Input::Number(n) => Some(*n),
+            _ => None,
+        };
+        match name {
+            "diffuse_texture" => self.albedo = asset(&value),
+            "normalmap_texture" => {
+                let encoding = self.normal.as_ref().map_or(NormalEncoding::Octahedral, |n| n.1);
+                self.normal = asset(&value).map(|p| (p, encoding));
+            }
+            "reflectionroughness_texture" => self.roughness = asset(&value),
+            "metallic_texture" => self.metallic = asset(&value),
+            "emissive_mask_texture" => self.emissive = asset(&value),
+            "reflection_roughness_constant" => self.roughness_constant = number(&value),
+            "metallic_constant" => self.metallic_constant = number(&value),
+            "emissive_intensity" => self.emissive_intensity = number(&value),
+            "enable_emission" => {
+                self.emission_enabled = match value {
+                    Input::Flag(b) => Some(b),
+                    Input::Number(n) => Some(n != 0.0),
+                    _ => None,
+                }
+            }
+            "transmittance_texture" | "transmittance_color" => self.translucent = true,
+            "encoding" => {
+                let e = match number(&value).unwrap_or(0.0) as i32 {
+                    1 => NormalEncoding::OpenGl,
+                    2 => NormalEncoding::DirectX,
+                    _ => NormalEncoding::Octahedral,
+                };
+                // The encoding can come before or after the map it describes.
+                self.encoding = Some(e);
+                if let Some(n) = &mut self.normal {
+                    n.1 = e;
+                }
+            }
+            _ => {}
+        }
+        if let (Some(e), Some(n)) = (self.encoding, &mut self.normal) {
+            n.1 = e;
+        }
+    }
+
+    /// Make its texture paths relative to the `gameReadyAssets` folder, given the folder (also
+    /// relative to it) of the USD file that names them.
+    pub fn resolve(&mut self, usd_dir: &str) {
+        let fix = |p: &mut String| *p = join(usd_dir, p);
+        for p in [&mut self.albedo, &mut self.roughness, &mut self.metallic, &mut self.emissive].into_iter().flatten() {
+            fix(p);
+        }
+        if let Some((p, _)) = &mut self.normal {
+            fix(p);
+        }
+    }
+}
+
+/// `rel` (with `./` and `../`) from folder `dir`, both relative to the same root.
+fn join(dir: &str, rel: &str) -> String {
+    let mut parts: Vec<&str> = dir.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
+    for p in rel.split(['/', '\\']) {
+        match p {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    parts.join("/")
+}
+
+/// A material's maps, decoded and ready to save: its base colour, a tangent-space normal map
+/// (green up), glTF's metallic-roughness map (roughness in green, metallic in blue) and what
+/// glows.
+pub struct Baked {
+    pub albedo: Option<RgbaImage>,
+    pub normal: Option<RgbaImage>,
+    pub metallic_roughness: Option<RgbaImage>,
+    pub emissive: Option<RgbaImage>,
+}
+
+/// Shrink an image to fit `to` pixels square, keeping its shape.
+pub fn shrink(img: RgbaImage, to: u32) -> RgbaImage {
+    if img.width() <= to && img.height() <= to {
+        return img;
+    }
+    let k = to as f32 / img.width().max(img.height()) as f32;
+    let (w, h) = (((img.width() as f32 * k).round() as u32).max(1), ((img.height() as f32 * k).round() as u32).max(1));
+    image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle)
 }
 
 /// Portal with RTX's replacements: its packages, and its USD layers' text.
@@ -334,37 +446,57 @@ impl Remix {
             Err(_) => Err(format!("{path}: not found")),
         }
     }
+
+    /// Decode a material's maps, each shrunk to at most `max` pixels square.
+    pub fn bake(&self, m: &Material, max: u32) -> Result<Baked, String> {
+        let albedo = m.albedo.as_deref().map(|p| self.image(p).map(|i| shrink(i, max))).transpose()?;
+        let normal = m.normal.as_ref().map(|(p, e)| self.image(p).map(|i| shrink(tangent_normals(&i, *e), max))).transpose()?;
+        let rough = m.roughness.as_deref().map(|p| self.image(p)).transpose()?;
+        let metal = m.metallic.as_deref().map(|p| self.image(p)).transpose()?;
+        let metallic_roughness = (rough.is_some() || metal.is_some() || m.roughness_constant.is_some() || m.metallic_constant.is_some()).then(|| {
+            let size = [&rough, &metal].iter().filter_map(|i| i.as_ref().map(|i| i.width().max(i.height()))).max().unwrap_or(4).min(max);
+            let fit = |i: Option<RgbaImage>| i.map(|i| image::imageops::resize(&i, size, size, image::imageops::FilterType::Triangle));
+            let (rough, metal) = (fit(rough), fit(metal));
+            let constant = |c: Option<f32>, fallback: f32| (c.unwrap_or(fallback).clamp(0.0, 1.0) * 255.0).round() as u8;
+            RgbaImage::from_fn(size, size, |x, y| {
+                let g = rough.as_ref().map_or(constant(m.roughness_constant, 0.5), |i| i.get_pixel(x, y).0[0]);
+                let b = metal.as_ref().map_or(constant(m.metallic_constant, 0.0), |i| i.get_pixel(x, y).0[0]);
+                image::Rgba([255, g, b, 255])
+            })
+        });
+        let glows = m.emission_enabled.unwrap_or(m.emissive.is_some());
+        let emissive = m.emissive.as_deref().filter(|_| glows).map(|p| self.image(p).map(|i| shrink(i, max))).transpose()?;
+        Ok(Baked { albedo, normal, metallic_roughness, emissive })
+    }
+
+    /// The `gameReadyAssets` folder.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
-/// A material block's shader inputs.
+/// A material block's shader inputs (from the USDA text).
 fn parse_material(block: &str) -> Material {
     let mut m = Material::default();
-    let mut encoding = 0;
     for line in block.lines() {
         let l = line.trim();
         let Some(rest) = l.split_once("inputs:").map(|(_, r)| r) else { continue };
         let Some((key, value)) = rest.split_once('=') else { continue };
         let (key, value) = (key.trim(), value.trim());
-        let asset = || value.strip_prefix('@').and_then(|v| v.split('@').next()).filter(|v| !v.is_empty()).map(str::to_string);
-        let number = || value.split_whitespace().next().and_then(|v| v.parse::<f32>().ok());
-        match key {
-            "diffuse_texture" => m.albedo = asset(),
-            "normalmap_texture" => m.normal = asset().map(|p| (p, NormalEncoding::Octahedral)),
-            "reflectionroughness_texture" => m.roughness = asset(),
-            "metallic_texture" => m.metallic = asset(),
-            "emissive_mask_texture" => m.emissive = asset(),
-            "reflection_roughness_constant" => m.roughness_constant = number(),
-            "metallic_constant" => m.metallic_constant = number(),
-            "encoding" => encoding = number().unwrap_or(0.0) as i32,
-            _ => {}
-        }
-    }
-    if let Some((_, e)) = &mut m.normal {
-        *e = match encoding {
-            1 => NormalEncoding::OpenGl,
-            2 => NormalEncoding::DirectX,
-            _ => NormalEncoding::Octahedral,
+        let input = if let Some(v) = value.strip_prefix('@') {
+            Input::Asset(v.split('@').next().unwrap_or_default().to_string())
+        } else {
+            let v = value.split_whitespace().next().unwrap_or_default();
+            match v {
+                "true" => Input::Flag(true),
+                "false" => Input::Flag(false),
+                v => match v.parse::<f32>() {
+                    Ok(n) => Input::Number(n),
+                    Err(_) => continue,
+                },
+            }
         };
+        m.set(key, input);
     }
     m
 }

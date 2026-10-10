@@ -307,6 +307,20 @@ fn script(name: &str) -> Vec<Act> {
             Wait(20),
             Shot("p12_bridge_emitter"),
         ],
+        // Close-ups of Portal with RTX's remastered pieces (#17), under the ray-traced light.
+        "rtx" => vec![
+            Map(0),
+            Wait(240),
+            // The storage cube the dropper let go of.
+            Teleport(Vec3::new(-16.0, 0.0, 15.2)),
+            Look(180.0, -38.0),
+            Wait(30),
+            Shot("r01_storage_cube"),
+            Teleport(Vec3::new(-5.0, 0.0, -5.6)),
+            Look(0.0, -25.0),
+            Wait(30),
+            Shot("r02_pedestal"),
+        ],
         // The faith plate at rest from two sides, then (from beside it, after it's thrown her)
         // its paddle snapping up, holding, and settling back into its pit.
         "plate" => vec![

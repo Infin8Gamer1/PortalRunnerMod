@@ -17,3 +17,5 @@ half = "2"
 gdeflate-sys = "0.4"
 texture2ddecoder = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
+# Its remastered models are USD (binary crate files).
+openusd = "0.7"

@@ -4,12 +4,19 @@
 
 use serde_json::{json, Value};
 
+#[derive(Default)]
 pub struct Material {
     pub texture_png: Option<Vec<u8>>,
     /// See-through (glass): alpha-blended.
     pub blend: bool,
     /// Cut out where the texture's alpha is low (grilles, decals).
     pub mask: bool,
+    /// Physically based maps, when there are any (Portal with RTX's): a tangent-space normal
+    /// map, glTF's metallic-roughness map, and what glows (with how brightly).
+    pub normal_png: Option<Vec<u8>>,
+    pub metallic_roughness_png: Option<Vec<u8>>,
+    pub emissive_png: Option<Vec<u8>>,
+    pub emissive_strength: f32,
 }
 
 /// One rigid piece of a model, named after the bone that moves it.
@@ -48,21 +55,39 @@ pub fn write(parts: &[Part], mats: &[Material], clips: &[Clip]) -> Vec<u8> {
 
     for m in mats {
         let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 0.6});
-        if let Some(png) = &m.texture_png {
-            pad4(&mut bin, 0);
+        let mut texture = |bin: &mut Vec<u8>, png: &[u8]| -> usize {
+            pad4(bin, 0);
             let start = bin.len();
             bin.extend_from_slice(png);
             views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": png.len()}));
             images.push(json!({"bufferView": views.len() - 1, "mimeType": "image/png"}));
             textures.push(json!({"source": images.len() - 1, "sampler": 0}));
-            pbr["baseColorTexture"] = json!({"index": textures.len() - 1});
+            textures.len() - 1
+        };
+        if let Some(png) = &m.texture_png {
+            pbr["baseColorTexture"] = json!({"index": texture(&mut bin, png)});
         } else {
             pbr["baseColorFactor"] = json!([0.8, 0.8, 0.82, 1.0]);
         }
         if m.blend {
             pbr["roughnessFactor"] = json!(0.1);
         }
+        if let Some(png) = &m.metallic_roughness_png {
+            pbr["metallicRoughnessTexture"] = json!({"index": texture(&mut bin, png)});
+            pbr["metallicFactor"] = json!(1.0);
+            pbr["roughnessFactor"] = json!(1.0);
+        }
         let mut mat = json!({"pbrMetallicRoughness": pbr, "doubleSided": true});
+        if let Some(png) = &m.normal_png {
+            mat["normalTexture"] = json!({"index": texture(&mut bin, png)});
+        }
+        if let Some(png) = &m.emissive_png {
+            mat["emissiveTexture"] = json!({"index": texture(&mut bin, png)});
+            mat["emissiveFactor"] = json!([1.0, 1.0, 1.0]);
+            if m.emissive_strength > 1.0 {
+                mat["extensions"] = json!({"KHR_materials_emissive_strength": {"emissiveStrength": m.emissive_strength}});
+            }
+        }
         if m.blend {
             mat["alphaMode"] = json!("BLEND");
         } else if m.mask {
@@ -161,6 +186,9 @@ pub fn write(parts: &[Part], mats: &[Material], clips: &[Clip]) -> Vec<u8> {
     });
     if !animations.is_empty() {
         doc["animations"] = json!(animations);
+    }
+    if mats.iter().any(|m| m.emissive_png.is_some() && m.emissive_strength > 1.0) {
+        doc["extensionsUsed"] = json!(["KHR_materials_emissive_strength"]);
     }
     if !images.is_empty() {
         doc["images"] = json!(images);

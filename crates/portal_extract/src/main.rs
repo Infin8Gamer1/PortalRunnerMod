@@ -14,6 +14,7 @@
 mod anim;
 mod glb;
 mod remix;
+mod usd;
 mod vpk;
 
 use std::collections::HashMap;
@@ -189,6 +190,18 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("sign_frame", "portal2", "models/props/sign_frame02/sign_frame02.mdl", 0, 0.0),
 ];
 
+/// Portal with RTX's remastered models: (our name, USD files under `gameReadyAssets`, what to
+/// call each part by the joint or mesh it comes from (parts not listed are left out), and a
+/// turn about the vertical in degrees to line it up with the Source model it replaces).
+/// Each is written as `<name>.glb` beside the Portal and Portal 2 models; the game prefers it.
+const RTX_MODELS: &[(&str, &[&str], &[(&str, &str)], f32)] = &[
+    // The Weighted Storage Cube.
+    ("rtx_storage_cube", &["SubUSDs/SM_Prop_CompanionCube_A1_01.usd"], &[("SM_Prop_CompanionCube_A1_01", "body")], 0.0),
+    // The pedestal button: its base, and the button that goes down. (Remix's skinned capture
+    // is a quarter turn round from the MDL.)
+    ("rtx_pedestal_button", &["skinned/switch001.usd"], &[("Root", "Root"), ("Button", "Button")], 90.0),
+];
+
 /// Animations to bring along: (our model name, [(the MDL's animation, our name for it)]). A
 /// model with any is drawn as its `@idle` animation poses it (its bind pose if it has none).
 const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
@@ -320,6 +333,27 @@ fn main() {
         }
     }
     println!("  {n} models");
+    if let Some(r) = &remix {
+        let mut n = 0;
+        for (name, files, parts, yaw) in RTX_MODELS {
+            let to_ours = glam::Quat::from_rotation_y(yaw.to_radians()) * glam::Quat::from_mat3(&glam::Mat3::from_cols(glam::Vec3::NEG_Z, glam::Vec3::NEG_X, glam::Vec3::Y));
+            let convert = |p: glam::Vec3| to_ours * (p * 0.0254);
+            let rename = |joint: &str| parts.iter().find(|(j, _)| *j == joint).map(|(_, ours)| ours.to_string());
+            match usd::convert(r, files, &convert, to_ours, &rename) {
+                Ok((parts, materials)) if !parts.is_empty() => {
+                    std::fs::write(out.join("models").join(format!("{name}.glb")), glb::write(&parts, &materials, &[])).expect("write model");
+                    n += 1;
+                }
+                Ok(_) => eprintln!("  {name}: no parts"),
+                Err(e) => eprintln!("  {name}: {e}"),
+            }
+        }
+        println!("  {n} of Portal with RTX's models");
+    } else {
+        for (name, ..) in RTX_MODELS {
+            let _ = std::fs::remove_file(out.join("models").join(format!("{name}.glb")));
+        }
+    }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));
     }
@@ -359,9 +393,18 @@ fn inspect(games: &[Game], mdl_path: &str) {
         hi = hi.max(p);
     }
     println!("  posed vertices: {:.3?} .. {:.3?}", lo, hi);
+    let mut bone_bounds = vec![(glam::Vec3::splat(f32::INFINITY), glam::Vec3::splat(f32::NEG_INFINITY)); uses.len()];
+    for v in model.vertices() {
+        if let Some(b) = v.bone_weights.weights().max_by(|a, b| a.weight.total_cmp(&b.weight)).and_then(|b| bone_bounds.get_mut(b.bone_id as usize)) {
+            let p = glam::Vec3::from(convert_point(root_turn(&model, v.position.into())));
+            *b = (b.0.min(p), b.1.max(p));
+        }
+    }
     for (i, b) in model.bones().enumerate() {
         let p = convert_point(root_turn(&model, world[i].to_array()));
-        println!("  bone {i} {:?} parent {} at {:.3?} ({} vertices)", b.name, b.parent, p, uses[i]);
+        let (lo, hi) = bone_bounds[i];
+        let span = if uses[i] > 0 { format!(", {lo:.3} .. {hi:.3}") } else { String::new() };
+        println!("  bone {i} {:?} parent {} at {:.3?} ({} vertices{span})", b.name, b.parent, p, uses[i]);
     }
     for (i, t) in model.textures().iter().enumerate() {
         println!("  material {i}: {}", t.name);
@@ -384,42 +427,14 @@ const PBR_SUFFIXES: [&str; 3] = ["_normal", "_mr", "_emissive"];
 /// The largest a remastered map is kept (they come at up to 4096 square).
 const PBR_MAX: u32 = 2048;
 
-fn shrink(img: image::RgbaImage, to: u32) -> image::RgbaImage {
-    if img.width() <= to && img.height() <= to {
-        return img;
-    }
-    let k = to as f32 / img.width().max(img.height()) as f32;
-    let (w, h) = (((img.width() as f32 * k).round() as u32).max(1), ((img.height() as f32 * k).round() as u32).max(1));
-    image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle)
-}
-
 /// Write a Portal with RTX material's maps for texture `name`: its base colour over
-/// `<name>.png`, then `<name>_normal.png` (tangent space, green up), `<name>_mr.png` (glTF's
-/// metallic-roughness: roughness in green, metallic in blue) and `<name>_emissive.png`.
+/// `<name>.png`, then `<name>_normal.png`, `<name>_mr.png` and `<name>_emissive.png`.
 fn write_pbr(r: &remix::Remix, m: &remix::Material, dir: &Path, name: &str) -> Result<(), String> {
-    let save = |img: &image::RgbaImage, suffix: &str| img.save(dir.join(format!("{name}{suffix}.png"))).map_err(|e| e.to_string());
-    if let Some(p) = &m.albedo {
-        save(&shrink(r.image(p)?, PBR_MAX), "")?;
-    }
-    if let Some((p, encoding)) = &m.normal {
-        save(&shrink(remix::tangent_normals(&r.image(p)?, *encoding), PBR_MAX), "_normal")?;
-    }
-    let rough = m.roughness.as_deref().map(|p| r.image(p)).transpose()?;
-    let metal = m.metallic.as_deref().map(|p| r.image(p)).transpose()?;
-    if rough.is_some() || metal.is_some() || m.roughness_constant.is_some() || m.metallic_constant.is_some() {
-        let size = [&rough, &metal].iter().filter_map(|i| i.as_ref().map(|i| i.width().max(i.height()))).max().unwrap_or(4).min(PBR_MAX);
-        let fit = |i: Option<image::RgbaImage>| i.map(|i| image::imageops::resize(&i, size, size, image::imageops::FilterType::Triangle));
-        let (rough, metal) = (fit(rough), fit(metal));
-        let constant = |c: Option<f32>, fallback: f32| (c.unwrap_or(fallback).clamp(0.0, 1.0) * 255.0).round() as u8;
-        let mr = image::RgbaImage::from_fn(size, size, |x, y| {
-            let g = rough.as_ref().map_or(constant(m.roughness_constant, 0.5), |i| i.get_pixel(x, y).0[0]);
-            let b = metal.as_ref().map_or(constant(m.metallic_constant, 0.0), |i| i.get_pixel(x, y).0[0]);
-            image::Rgba([255, g, b, 255])
-        });
-        save(&mr, "_mr")?;
-    }
-    if let Some(p) = &m.emissive {
-        save(&shrink(r.image(p)?, PBR_MAX), "_emissive")?;
+    let baked = r.bake(m, PBR_MAX)?;
+    for (img, suffix) in [(&baked.albedo, ""), (&baked.normal, "_normal"), (&baked.metallic_roughness, "_mr"), (&baked.emissive, "_emissive")] {
+        if let Some(img) = img {
+            img.save(dir.join(format!("{name}{suffix}.png"))).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -489,7 +504,7 @@ fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_path
             }
         }
     }
-    glb::Material { texture_png, blend: flag("$translucent"), mask: flag("$alphatest") }
+    glb::Material { texture_png, blend: flag("$translucent"), mask: flag("$alphatest"), ..Default::default() }
 }
 
 /// A VMT key's value (case-insensitive, quoted or not), anywhere in the file.
@@ -609,7 +624,7 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
                 let info = skin_table.as_ref().and_then(|s| s.texture_info(m));
                 let material = match info {
                     Some(info) => read_material(&read, &info.name.replace('\\', "/").to_ascii_lowercase(), &info.search_paths),
-                    None => glb::Material { texture_png: None, blend: false, mask: false },
+                    None => glb::Material::default(),
                 };
                 materials.push(material);
                 material_of.insert(m, materials.len() - 1);
