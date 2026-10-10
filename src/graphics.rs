@@ -119,6 +119,9 @@ impl Plugin for GraphicsPlugin {
                 if !*told {
                     *told = true;
                     info!("DLSS: super resolution {}, ray reconstruction {}", if ok.is_some() { "available" } else { "not available" }, if rr.is_some() { "available" } else { "not available" });
+                    if ok.is_none() {
+                        warn!("DLSS didn't start: it needs an NVIDIA RTX GPU on Vulkan, and its libraries in $DLSS_SDK/lib (now {:?})", std::env::var_os("DLSS_SDK"));
+                    }
                 }
             },
         );
@@ -139,7 +142,7 @@ fn apply(
     settings: Res<Settings>,
     game: Res<Game>,
     mut applied: Local<Applied>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut windows: Query<(&mut Window, Option<&bevy::window::OnMonitor>), With<PrimaryWindow>>,
     main: Query<Entity, With<PlayerCamera>>,
     portals: Query<Entity, With<PortalCam>>,
     overlays: Query<Entity, (With<OverlayCamera>, Without<PlayerCamera>)>,
@@ -151,11 +154,14 @@ fn apply(
     let novsync = std::env::var_os("PORTAL_NOVSYNC").is_some();
     let window = (settings.window_mode.round() as i32, settings.resolution.round() as i32, settings.vsync > 0.5 && !novsync);
     if applied.window != Some(window) {
-        if let Ok(mut w) = windows.single_mut() {
+        if let Ok((mut w, on)) = windows.single_mut() {
             let first = applied.window.is_none();
+            // The monitor it's on, if that's known (asking for "the current one" panics when
+            // the window system won't say, as on Wayland at times); else the first.
+            let monitor = on.map(|m| MonitorSelection::Entity(m.0)).unwrap_or(MonitorSelection::Index(0));
             w.mode = match window.0 {
-                1 => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
-                2 => WindowMode::Fullscreen(MonitorSelection::Current, VideoModeSelection::Current),
+                1 => WindowMode::BorderlessFullscreen(monitor),
+                2 => WindowMode::Fullscreen(monitor, VideoModeSelection::Current),
                 _ => WindowMode::Windowed,
             };
             // The size is only ours to set when windowed (and not at startup when it's the

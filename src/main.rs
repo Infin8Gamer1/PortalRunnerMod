@@ -43,6 +43,16 @@ use faith_move::{CameraFx, Controller, Event as MoveEvent, Input as MoveInput, S
 use crate::portal_render::PLAYER_LAYER;
 
 fn main() {
+    // DLSS finds its libraries through DLSS_SDK when it starts, not only when it's built: if
+    // it isn't set now (a terminal that hasn't read the profile, a launcher), use where the SDK
+    // was when this was built.
+    #[cfg(feature = "dlss")]
+    if std::env::var_os("DLSS_SDK").is_none() {
+        if let Some(sdk) = option_env!("DLSS_SDK") {
+            // SAFETY: first thing in main, before any other thread exists.
+            unsafe { std::env::set_var("DLSS_SDK", sdk) };
+        }
+    }
     let mut app = App::new();
     // DLSS asks for an application id before the renderer starts (any fixed UUID).
     #[cfg(feature = "dlss")]

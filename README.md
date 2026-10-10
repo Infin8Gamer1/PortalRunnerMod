@@ -41,8 +41,8 @@ cd DLSS && git lfs pull
 
 Then set `DLSS_SDK` to that folder and `VULKAN_SDK` to where the Vulkan headers are (`/usr` on
 Linux with the distribution's `vulkan-headers`; the Vulkan SDK on Windows), and have clang
-installed. `DLSS_SDK` is also where the game finds DLSS's libraries when it runs, so keep it
-set (in your shell profile, say):
+installed. `DLSS_SDK` is also where DLSS finds its libraries when the game starts; if it isn't
+set then, the game uses the path it was built with. Set both in your shell profile, say:
 
 ```
 export DLSS_SDK=$HOME/Documents/Git/DLSS VULKAN_SDK=/usr
