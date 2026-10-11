@@ -74,7 +74,7 @@ impl Play {
         let level = crate::source::level_with_scenes(name, "map", &solids, &ents, &scenes);
         let cp = level.checkpoints[0].clone();
         let sim = Sim::new(level);
-        let mut c = Controller::new(crate::tuning(5.3, 10.0), cp.spawn, cp.yaw);
+        let mut c = Controller::new(crate::tuning(5.3, 15.0), cp.spawn, cp.yaw);
         c.state = State::Ground;
         let boxes: Vec<Aabb> = sim.statics.iter().map(|s| s.b).collect();
         let mut buckets: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
@@ -1567,17 +1567,24 @@ fn tilted_faces_take_portals() {
     }
 }
 
-/// Chamber 15 (testchmb_a_10), as Portal's walkthrough has it. Section 1's fling over the glass
-/// is a lethal fall under Mirror's Edge's rules (#57), so she starts past it. Section 2: orange
+/// Chamber 15 (testchmb_a_10), as Portal's walkthrough has it. Section 1: flung over the glass
+/// from the panel jutting from the back wall (twice through, to pick up speed). Section 2: orange
 /// where the trapped pellet bounces in its alcove, blue on the ceiling over the receptacle (both
 /// shot through the grill); the lift it lowers takes her up to section 3.
 #[test]
 fn solve_testchmb_a_10() {
     let Some(mut p) = Play::load("testchmb_a_10") else { return };
     p.wait(3.0);
-    p.c.feet = Vec3::new(70.0, -9.75, 16.0);
-    p.c.vel = Vec3::ZERO;
-    p.wait(0.5);
+    // Section 1: blue on the panel jutting from the back wall, high; orange on the floor in
+    // front of the glass; in, out of blue, down into orange again and out fast, over the glass
+    // and its grill.
+    p.go(Vec3::new(70.0, -9.3, 27.0), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(70.0, 1.62, 34.14));
+    p.shoot(PortalColor::Orange, Vec3::new(70.0, -9.75, 25.0));
+    p.through(PortalColor::Orange, 1.0);
+    p.wait_for(5.0, "her to land past the glass", |p| p.c.state == State::Ground && p.c.feet.z < 22.0);
+    p.assert_alive("flung over the glass");
+    eprintln!("over the glass at {}", p.c.feet);
     p.go(Vec3::new(48.3, -9.75, -1.0), 0.4);
     p.shoot(PortalColor::Orange, Vec3::new(49.9, -4.6, -12.8));
     p.go(Vec3::new(57.5, -9.75, -1.0), 0.4);

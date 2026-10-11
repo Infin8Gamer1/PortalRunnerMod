@@ -74,6 +74,11 @@ pub const VOLUME_RANGE_DB: f32 = 30.0;
 pub const OUTPUT_TRIM: f32 = 0.4;
 /// Bumped when the meaning of the volume sliders changes, so old saved values are reset.
 const AUDIO_VERSION: f32 = 2.0;
+/// Settings saved before the default lethal fall rose from 10 m to 15 m (Portal's flings fall
+/// further than Mirror's Edge's rooftops) have no `falls` line.
+const FALLS_VERSION: f32 = 2.0;
+/// The lethal fall those saved with, which is moved up to today's default.
+const OLD_LETHAL_DEFAULT: f32 = 10.0;
 
 /// The gain for a volume slider at `s` (0..=1).
 pub fn slider_gain(s: f32) -> f32 {
@@ -103,7 +108,7 @@ impl Default for Settings {
             sensitivity: 1.0,
             fov: 90.0,
             hard_land: 5.3,
-            lethal_fall: 10.0,
+            lethal_fall: 15.0,
             portal_depth: 3.0,
             funnel: 1.0,
             gun_model: 0.0,
@@ -142,12 +147,15 @@ impl Settings {
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
         let mut audio_version = 1.0;
+        let mut falls_version = 1.0;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let Ok(v) = v.trim().parse::<f32>() else { continue };
             let k = k.trim();
             if k == "audio" {
                 audio_version = v;
+            } else if k == "falls" {
+                falls_version = v;
             } else if let Some(r) = ROWS.iter().find(|r| r.key == k) {
                 r.set(&mut s, v);
             }
@@ -157,6 +165,10 @@ impl Settings {
             let d = Settings::default();
             (s.master, s.music, s.effects) = (d.master, d.music, d.effects);
         }
+        // The old default lethal fall moves up with the new one (a height chosen is kept).
+        if falls_version < FALLS_VERSION && s.lethal_fall == OLD_LETHAL_DEFAULT {
+            s.lethal_fall = Settings::default().lethal_fall;
+        }
         for r in &ROWS {
             let v = r.get(&s).clamp(r.min, r.max);
             r.set(&mut s, v);
@@ -165,7 +177,7 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        let mut t = format!("# Portal Runner settings\naudio = {AUDIO_VERSION}\n");
+        let mut t = format!("# Portal Runner settings\naudio = {AUDIO_VERSION}\nfalls = {FALLS_VERSION}\n");
         for r in &ROWS {
             t += &format!("{} = {}\n", r.key, r.get(self));
         }
@@ -487,6 +499,14 @@ mod tests {
         assert_eq!(old.master, Settings::default().master);
         assert_eq!(old.music, Settings::default().music);
         assert_eq!(old.fov, 100.0);
+    }
+
+    #[test]
+    fn the_old_default_lethal_fall_moves_up() {
+        // Saved with the old 10 m default: today's; one chosen, or saved since, is kept.
+        assert_eq!(Settings::parse("audio = 2\nlethal_fall = 10").lethal_fall, 15.0);
+        assert_eq!(Settings::parse("audio = 2\nlethal_fall = 12").lethal_fall, 12.0);
+        assert_eq!(Settings::parse("audio = 2\nfalls = 2\nlethal_fall = 10").lethal_fall, 10.0);
     }
 
     #[test]

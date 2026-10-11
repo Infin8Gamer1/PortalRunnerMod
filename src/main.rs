@@ -216,7 +216,7 @@ fn setup_world(mut commands: Commands) {
     let first = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(levels.len() - 1);
     let level = (levels[first].1)();
     let cp = level.checkpoints[0].clone();
-    let mut ctrl = Controller::new(aperture::tuning(5.3, 10.0), cp.spawn, cp.yaw);
+    let mut ctrl = Controller::new(aperture::tuning(5.3, 15.0), cp.spawn, cp.yaw);
     ctrl.state = MoveState::Ground;
 
     commands.spawn((
