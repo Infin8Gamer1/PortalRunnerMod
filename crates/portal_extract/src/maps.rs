@@ -123,6 +123,26 @@ fn material(name: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&c
     m
 }
 
+/// A face's triangles (corner indices), a fan wound to face `n`. Which way the corners go
+/// round is the whole polygon's (Newell's normal): a face's first three corners can lie on a
+/// line (Source adds corners along an edge where faces meet), and judged by those alone such
+/// faces came out wound either way, half of them backwards and culled from the room's side (a
+/// hole in the wall you could walk into). The slivers between corners on one line are left out.
+fn fan(q: &[Vec3], n: Vec3) -> Vec<u32> {
+    let winding = q.iter().zip(q.iter().cycle().skip(1)).fold(Vec3::ZERO, |w, (a, b)| w + a.cross(*b));
+    let flip = winding.dot(n) < 0.0;
+    let mut out = Vec::new();
+    for k in 1..q.len().saturating_sub(1) {
+        let (a, b, c) = (q[0], q[k], q[k + 1]);
+        if (b - a).cross(c - a).length_squared() < 1e-10 {
+            continue;
+        }
+        let k = k as u32;
+        out.extend(if flip { [0, k + 1, k] } else { [0, k, k + 1] });
+    }
+    out
+}
+
 #[derive(Default)]
 struct Group {
     pos: Vec<[f32; 3]>,
@@ -157,12 +177,13 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<UsedModel>,
                 continue;
             }
             let f: Vec<&str> = v.split([',', '\x1b']).collect();
-            if f.len() >= 3 && f[1].eq_ignore_ascii_case("Skin") {
-                if let Ok(k) = f[2].trim().parse::<i32>() {
-                    let list = skins.entry(f[0].trim().to_ascii_lowercase()).or_default();
-                    if !list.contains(&k) {
-                        list.push(k);
-                    }
+            if f.len() >= 3
+                && f[1].eq_ignore_ascii_case("Skin")
+                && let Ok(k) = f[2].trim().parse::<i32>()
+            {
+                let list = skins.entry(f[0].trim().to_ascii_lowercase()).or_default();
+                if !list.contains(&k) {
+                    list.push(k);
                 }
             }
             if f.len() >= 3 && (f[1].eq_ignore_ascii_case("SetAnimation") || f[1].eq_ignore_ascii_case("SetDefaultAnimation")) && !f[2].trim().is_empty() {
@@ -280,16 +301,8 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
                 g.nrm.push(n.to_array());
                 g.uv.push([u, v]);
             }
-            // A fan, wound to face the way the face does.
-            let (a, b, c) = (ours(pts[0]), ours(pts[1]), ours(pts[2]));
-            let flip = (b - a).cross(c - a).dot(n) < 0.0;
-            for k in 1..pts.len() as u32 - 1 {
-                if flip {
-                    g.idx.extend_from_slice(&[base, base + k + 1, base + k]);
-                } else {
-                    g.idx.extend_from_slice(&[base, base + k, base + k + 1]);
-                }
-            }
+            let q: Vec<Vec3> = pts.iter().map(|p| ours(*p)).collect();
+            g.idx.extend(fan(&q, n).into_iter().map(|k| base + k));
         }
     }
 
@@ -366,4 +379,30 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     std::fs::write(map_dir.join(format!("{name}.ents")), &bsp.entities).map_err(|e| e.to_string())?;
     let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")))?;
     Ok((groups.len(), nboxes, materials.len(), used))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wall whose first three corners are on one line (an extra corner where another face
+    /// meets its edge) is still wound to face the way it faces, every triangle of it.
+    #[test]
+    fn faces_are_wound_by_the_whole_polygon() {
+        // A 2 x 1 rectangle in the XY plane, corners going round counter-clockwise seen from
+        // +Z, starting along its bottom edge with a corner in the middle of it.
+        let q = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
+        for n in [Vec3::Z, Vec3::NEG_Z] {
+            let idx = fan(&q, n);
+            assert!(!idx.is_empty());
+            let mut area = 0.0;
+            for t in idx.chunks(3) {
+                let (a, b, c) = (q[t[0] as usize], q[t[1] as usize], q[t[2] as usize]);
+                let w = (b - a).cross(c - a);
+                assert!(w.dot(n) > 0.0, "a triangle faces away from {n}: {t:?}");
+                area += w.length() * 0.5;
+            }
+            assert!((area - 2.0).abs() < 1e-5, "covers {area} of 2");
+        }
+    }
 }

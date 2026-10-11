@@ -64,6 +64,9 @@ enum Act {
     WaitPelletX(f32, u32),
     /// Put the first cube here, still.
     PlaceCube(Vec3),
+    /// Hang at the `k`th of `of` of the map's lights, spread through its list (they're inside
+    /// its rooms), a little under it, still.
+    AtLight(usize, usize),
     /// Stand off the `n`th cube (1.6 m along +X, or -X if that's in a wall), looking at it.
     ViewCube(usize),
 }
@@ -501,6 +504,23 @@ fn script(name: &str) -> Vec<Act> {
                 if k == 2 {
                     // Its roof, and the lamp under it.
                     v.extend([Look(-90.0, 55.0), Wait(3), Shot("elevator_c_up"), Look(90.0, -5.0)]);
+                }
+            }
+            v
+        }
+        // Holes in Portal's maps (#27): from a few of each map's lights, four ways round. Run
+        // with PORTAL_DEBUG_VOID=1 and anything not drawn shows magenta. PORTAL_FIRST_MAP and
+        // PORTAL_LAST_MAP pick the maps.
+        "voids" => {
+            let first: usize = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len());
+            let last: usize = std::env::var("PORTAL_LAST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(first);
+            let mut v = Vec::new();
+            for i in first..=last {
+                v.extend([Map(i), Wait(120)]);
+                for k in 0..4 {
+                    for (j, yaw) in [0.0f32, 90.0, 180.0, 270.0].into_iter().enumerate() {
+                        v.extend([AtLight(k, 4), Look(yaw, -10.0), Wait(3), Shot(Box::leak(format!("void_{i:02}_{k}{j}").into_boxed_str()))]);
+                    }
                 }
             }
             v
@@ -1002,6 +1022,16 @@ pub fn run(
             cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
         Act::Menu(screen) => menu.open_at(*screen),
+        Act::AtLight(k, of) => {
+            let lights = &game.sim.level.lights;
+            if !lights.is_empty() {
+                let at = lights[(k * lights.len() / of.max(&1)).min(lights.len() - 1)].at;
+                game.ctrl.feet = at - Vec3::Y * 2.0;
+                game.ctrl.vel = Vec3::ZERO;
+                game.ctrl.state = MoveState::Air;
+                println!("capture: light {k} at {at}");
+            }
+        }
         Act::ViewCube(n) => {
             if let Some(c) = game.sim.props.iter().filter(|p| p.alive).nth(*n).map(|p| p.pos) {
                 let side = if game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, c + Vec3::new(1.6, 0.5, 0.0))) { -1.0 } else { 1.0 };

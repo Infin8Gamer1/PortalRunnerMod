@@ -315,6 +315,10 @@ fn light_for(
         ambient.brightness = 650.0;
         ambient.color = Color::srgb(0.85, 0.92, 1.0);
     }
+    // PORTAL_DEBUG_VOID=1: where nothing's drawn shows magenta (a hole in a map).
+    if std::env::var_os("PORTAL_DEBUG_VOID").is_some() {
+        clear.0 = Color::srgb(1.0, 0.0, 1.0);
+    }
     if let Some(cam) = camera {
         if level.indoor {
             commands.entity(cam).insert(DistanceFog {
