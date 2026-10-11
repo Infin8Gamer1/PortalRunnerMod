@@ -252,7 +252,7 @@ struct RtMeshes(HashMap<AssetId<Mesh>, Option<Handle<Mesh>>>);
 const RT_ATTRIBUTES: [bevy::mesh::MeshVertexAttributeId; 4] = [Mesh::ATTRIBUTE_POSITION.id, Mesh::ATTRIBUTE_NORMAL.id, Mesh::ATTRIBUTE_UV_0.id, Mesh::ATTRIBUTE_TANGENT.id];
 
 /// Give a mesh what Solari needs: UVs, tangents, 32-bit indices. False if it can't be.
-fn make_ready(mesh: &mut Mesh) -> bool {
+pub fn make_ready(mesh: &mut Mesh) -> bool {
     if mesh.primitive_topology() != PrimitiveTopology::TriangleList || !mesh.contains_attribute(Mesh::ATTRIBUTE_POSITION) || !mesh.contains_attribute(Mesh::ATTRIBUTE_NORMAL) {
         return false;
     }

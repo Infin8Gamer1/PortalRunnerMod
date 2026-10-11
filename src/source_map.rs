@@ -12,6 +12,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::solari::prelude::RaytracingMesh3d;
 
 use aperture::Level;
 
@@ -174,8 +175,7 @@ const BULB_RADIUS: f32 = 0.1;
 const BULB_GLOW: f32 = 6.0;
 /// At most this many of a map's lights are lights here.
 const MAX_LIGHTS: usize = 96;
-/// Dimmer than this, a light is not also drawn as a bulb. The elevator shafts' lights
-/// (about 40-60) are those bulbs: a dot of light in an otherwise dark car.
+/// Dimmer than this, a light is not also a bulb.
 const BULB_MIN_BRIGHTNESS: f32 = 80.0;
 /// How brightly an elevator's cabin lamp glows.
 const CABIN_GLOW: f32 = 25.0;
@@ -533,15 +533,20 @@ pub fn sync(
     // The map's lights, brightest first.
     let mut lights = level.lights.clone();
     lights.sort_by(|a, b| b.brightness.total_cmp(&a.brightness));
-    let bulb = crate::raytrace::active().then(|| meshes.add(Sphere::new(BULB_RADIUS).mesh().ico(1).unwrap()));
+    let bulb = crate::raytrace::active().then(|| {
+        let mut m = Sphere::new(BULB_RADIUS).mesh().ico(1).unwrap();
+        crate::raytrace::make_ready(&mut m);
+        meshes.add(m)
+    });
     for l in lights.iter().take(MAX_LIGHTS) {
         let color = Color::linear_rgb(l.color.x, l.color.y, l.color.z);
         let intensity = l.brightness * LUMENS_PER_BRIGHTNESS;
-        // Ray tracing lights by what glows, not by lights: a bulb where each one is.
+        // Ray tracing lights by what glows, not by lights: a bulb where each one is. It's in
+        // the traced scene only, not drawn: Portal's lights are often fill lights in mid-air.
         if let Some(bulb) = &bulb {
             if l.brightness >= BULB_MIN_BRIGHTNESS {
                 let glow = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::from_vec3(l.color * l.brightness * BULB_GLOW), ..default() });
-                commands.spawn((ChamberGeom, Mesh3d(bulb.clone()), MeshMaterial3d(glow), Transform::from_translation(l.at), NotShadowCaster));
+                commands.spawn((ChamberGeom, RaytracingMesh3d(bulb.clone()), MeshMaterial3d(glow), Transform::from_translation(l.at)));
             }
         }
         match l.spot {
