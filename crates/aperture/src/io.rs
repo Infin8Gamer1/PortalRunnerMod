@@ -93,7 +93,7 @@ pub enum Kind {
     /// outputs it fires as it goes (start, n: `OnTriggerN`); with none known, a short wait.
     Scene { lines: Vec<(f32, String)>, length: f32, triggers: Vec<(f32, u32)> },
     /// Spawns a cube here (env_entity_maker, point_template).
-    Maker { at: Vec3, kind: CubeKind },
+    Maker { cubes: Vec<(Vec3, CubeKind)> },
     /// A train's path point (`node` on mover `mover`).
     PathNode { mover: usize, node: usize },
     /// Fires its outputs as the map starts.
@@ -760,11 +760,13 @@ impl Io {
                 "cancel" => self.queue.retain(|p| !(p.caller == e && p.input.starts_with("__"))),
                 _ => {}
             },
-            Kind::Maker { at, kind } if i == "forcespawn" => {
-                // Not on top of a cube that's still there.
-                if !sim.props.iter().any(|p| p.alive && p.pos.distance(at) < 0.5) {
-                    sim.spawn_prop(kind, at, None);
-                    sim.events.push(SimEvent::CubeDropped { at });
+            Kind::Maker { cubes } if i == "forcespawn" => {
+                for (at, kind) in cubes {
+                    // Not on top of a cube that's still there.
+                    if !sim.props.iter().any(|p| p.alive && p.pos.distance(at) < 0.5) {
+                        sim.spawn_prop(kind, at, None);
+                        sim.events.push(SimEvent::CubeDropped { at });
+                    }
                 }
             }
             Kind::Animated if matches!(i.as_str(), "enable" | "turnon" | "disable" | "turnoff") => {

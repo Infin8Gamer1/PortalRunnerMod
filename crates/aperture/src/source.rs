@@ -216,11 +216,18 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     }
     // A template's cube: where it was put, where the template is (what it's placed from), and
     // its kind.
-    let template_cube = |template: &str| -> Option<(Vec3, Vec3, CubeKind)> {
+    // (Every entity of a member's name is in the template: Chamber 13's maker makes two cubes,
+    // both named "box".)
+    let template_cube = |template: &str| -> Option<(Vec<(Vec3, CubeKind)>, Vec3)> {
         let t = named.get(&template.to_ascii_lowercase())?;
-        let cube = t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).filter_map(|(_, v)| named.get(&v.to_ascii_lowercase())).find(|c| is_metal_box(c))?;
-        let at = origin(cube)?;
-        Some((at, origin(t).unwrap_or(at), cube_kind(cube)))
+        let members: Vec<String> = t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).map(|(_, v)| v.to_ascii_lowercase()).collect();
+        let cubes: Vec<(Vec3, CubeKind)> = ents
+            .iter()
+            .filter(|c| is_metal_box(c) && key(c, "targetname").is_some_and(|n| members.contains(&n.to_ascii_lowercase())))
+            .filter_map(|c| Some((origin(c)?, cube_kind(c))))
+            .collect();
+        let first = cubes.first()?.0;
+        Some((cubes, origin(t).unwrap_or(first)))
     };
 
     // The world.
@@ -535,25 +542,30 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             // The maker puts the template where it is (turned as it's turned): the cube keeps
             // its place relative to the template, so it sits on the floor as the map's had it.
             "env_entity_maker" => {
-                if let (Some(maker), Some((cube, template, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
+                if let (Some(maker), Some((made, template))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
                     let turn = glam::Quat::from_rotation_y(angles(e, "angles").1.to_radians());
-                    let at = maker + turn * (cube - template);
-                    // (Where that grazes a wall, a dropper's chute, Source's physics slides off it
-                    // and boxes catch on it: in from the wall, towards the maker, till it's clear.)
-                    let clear = |p: Vec3| !l.solids.iter().any(|s| s.b.overlaps(&Aabb::from_center_size(p, Vec3::splat(0.9))));
-                    let mut at = (0..=20).map(|k| at.lerp(maker, k as f32 / 20.0)).find(|p| clear(*p)).unwrap_or(at);
-                    // Over a dropper, its funnel centres the cube (Source's physics slides it down
-                    // to the hole; a box doesn't slide), so it drops through.
-                    let dropper = ents.iter().filter(|d| key(d, "model").is_some_and(|m| m.to_ascii_lowercase().ends_with("box_dropper.mdl"))).filter_map(origin).find(|d| d.y < at.y && Vec3::new(d.x - at.x, 0.0, d.z - at.z).length() < 1.6);
-                    if let Some(d) = dropper {
-                        at = Vec3::new(d.x, at.y, d.z);
+                    let mut cubes = Vec::new();
+                    for (cube, k) in made {
+                        let at = maker + turn * (cube - template);
+                        // (Where that grazes a wall, a dropper's chute, Source's physics slides off
+                        // it and boxes catch on it: in from the wall, towards the maker, till it's
+                        // clear.)
+                        let clear = |p: Vec3| !l.solids.iter().any(|s| s.b.overlaps(&Aabb::from_center_size(p, Vec3::splat(0.9))));
+                        let mut at = (0..=20).map(|k| at.lerp(maker, k as f32 / 20.0)).find(|p| clear(*p)).unwrap_or(at);
+                        // Over a dropper, its funnel centres the cube (Source's physics slides it
+                        // down to the hole; a box doesn't slide), so it drops through.
+                        let dropper = ents.iter().filter(|d| key(d, "model").is_some_and(|m| m.to_ascii_lowercase().ends_with("box_dropper.mdl"))).filter_map(origin).find(|d| d.y < at.y && Vec3::new(d.x - at.x, 0.0, d.z - at.z).length() < 1.6);
+                        if let Some(d) = dropper {
+                            at = Vec3::new(d.x, at.y, d.z);
+                        }
+                        cubes.push((at, k));
                     }
-                    kind = io::Kind::Maker { at, kind: k };
+                    kind = io::Kind::Maker { cubes };
                 }
             }
             "point_template" => {
-                if let Some((at, _, k)) = template_cube(&name) {
-                    kind = io::Kind::Maker { at, kind: k };
+                if let Some((cubes, _)) = template_cube(&name) {
+                    kind = io::Kind::Maker { cubes };
                 }
             }
             _ => {}

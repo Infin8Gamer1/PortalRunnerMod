@@ -1,9 +1,9 @@
 //! Portal's chambers played through by Faith (#21): each map from its start to its exit, with
 //! her own movement. She's walked along paths found over the map's floors (A* over 0.25 m
-//! cells: where a box's top has room for her above it, stepping up as far as Source's stairs
-//! and dropping down), shoots her portals at the walls Portal's solution uses, carries cubes to
-//! buttons and rides the lifts. A chamber that can't be finished this way fails here, saying
-//! where she got stuck.
+//! cells: where a box's top has room for her above it, stepping up as far as Source's stairs,
+//! dropping down as far as she lands on her feet, jumping gaps), shoots her portals at the walls
+//! Portal's solution uses, carries cubes to buttons and rides the lifts. A chamber that can't
+//! be finished this way fails here, saying where she got stuck.
 //!
 //! The maps are read from `assets/extracted/maps` (`cargo run --release -p portal_extract`);
 //! without them these pass trivially.
@@ -23,7 +23,7 @@ const CELL: f32 = 0.25;
 /// How far up a step she takes in her stride (Source's 18 units, as `crate::tuning` sets),
 /// and how far down she'll drop.
 const STEP: f32 = 0.65;
-const DROP: f32 = 4.0;
+const DROP: f32 = 7.5;
 /// The map's boxes are bucketed in columns this wide.
 const BUCKET: f32 = 2.0;
 /// The widest gap she's walked across with a jump (a running jump goes much further).
@@ -142,6 +142,8 @@ impl Play {
         }
         out.extend(self.sim.movers.iter().flat_map(|m| m.boxes()).filter(|m| m.overlaps(b)));
         out.extend(self.sim.doors.iter().filter(|d| d.solid()).map(|d| d.b).filter(|d| d.overlaps(b)));
+        // Cubes in the way (not the one she's carrying).
+        out.extend(self.sim.props.iter().enumerate().filter(|(i, c)| c.alive && Some(*i) != self.sim.held).map(|(_, c)| c.aabb()).filter(|c| c.overlaps(b)));
         out.into_iter()
     }
 
@@ -155,6 +157,11 @@ impl Play {
 
     /// The floors she can stand on in the cell at (x, z), between `lo` and `hi`.
     fn floors(&self, x: f32, z: f32, lo: f32, hi: f32) -> Vec<f32> {
+        self.floors_over(x, z, lo, hi, true)
+    }
+
+    /// As [`floors`](Self::floors); `holes`: not where an open floor portal is.
+    fn floors_over(&self, x: f32, z: f32, lo: f32, hi: f32, holes: bool) -> Vec<f32> {
         // (Anything under her footprint: she stands on a step's edge.)
         let hw = self.c.body().half_width - 0.05;
         let col = Aabb::new(Vec3::new(x - hw, lo - 0.01, z - hw), Vec3::new(x + hw, hi + 0.01, z + hw));
@@ -162,10 +169,12 @@ impl Play {
         // Not goo, nor an open floor portal (she'd fall in).
         tops.retain(|y| !self.sim.goo.iter().any(|g| g.max.y >= *y - 0.05 && geom_in(g, x, z)));
         tops.retain(|y| {
-            !self.sim.portals.iter().flatten().any(|q| q.normal.y > 0.5 && (q.center.y - y).abs() < 0.3 && {
-                let l = q.to_local(Vec3::new(x, q.center.y, z));
-                (l.x / (q.half.x + 0.3)).powi(2) + (l.y / (q.half.y + 0.3)).powi(2) <= 1.0
-            })
+            !holes
+                || !self.sim.portals.iter().flatten().any(|q| q.normal.y > 0.5 && (q.center.y - y).abs() < 0.3 && {
+                    let l = q.to_local(Vec3::new(x, q.center.y, z));
+                    // (Her feet clear of it: her half-width round it.)
+                    (l.x / (q.half.x + 0.35)).powi(2) + (l.y / (q.half.y + 0.35)).powi(2) <= 1.0
+                })
         });
         tops.sort_by(|a, b| a.total_cmp(b));
         tops.dedup_by(|a, b| (*a - *b).abs() < 0.01);
@@ -179,10 +188,15 @@ impl Play {
         let cell = |p: Vec3| ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
         let centre = |i: i32, k: i32| Vec2::new((i as f32 + 0.5) * CELL, (k as f32 + 0.5) * CELL);
         let at = self.c.feet;
-        let (si, sk) = cell(at);
-        let c0 = centre(si, sk);
-        let start_y = self.floors(c0.x, c0.y, at.y - 1.0, at.y + 0.3).into_iter().min_by(|a, b| (a - at.y).abs().total_cmp(&(b - at.y).abs()))?;
-        let start: Node = (si, sk, (start_y * 100.0).round() as i32);
+        // (Where she's standing, whatever's there: beside a floor portal she's come out of. Up
+        // against a wall, her cell may not have room for her: the next one that does.)
+        let (ci, ck) = cell(at);
+        let start = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)].into_iter().find_map(|(di, dk)| {
+            let (i, k) = (ci + di, ck + dk);
+            let c = centre(i, k);
+            let y = self.floors_over(c.x, c.y, at.y - 1.0, at.y + 0.3, false).into_iter().min_by(|a, b| (a - at.y).abs().total_cmp(&(b - at.y).abs()))?;
+            Some((i, k, (y * 100.0).round() as i32))
+        })?;
         let goal = |n: &Node| {
             let c = centre(n.0, n.1);
             Vec2::new(c.x - to.x, c.y - to.z).length() <= reach && (n.2 as f32 / 100.0 - to.y).abs() < 1.2
@@ -418,22 +432,31 @@ impl Play {
             }
             let feet = self.c.feet;
             let flat_q = Vec2::new(feet.x - q.center.x, feet.z - q.center.z).length();
-            if crossed && self.sim.player_env.is_none() {
-                // Out of a floor portal: once she's down beside it. Out of a wall (or
-                // ceiling) one: once she's clear of its mouth.
+            if crossed {
+                // Out of a floor portal: once she's down beside it, clear of it. Out of a wall
+                // (or ceiling) one: once she's clear of its mouth.
                 let done = if q.normal.y > 0.5 {
-                    self.c.state == State::Ground && flat_q > 1.3
+                    let l = q.to_local(feet);
+                    self.c.state == State::Ground && (l.x.abs() > q.half.x + 0.4 || l.y.abs() > q.half.y + 0.4)
                 } else {
-                    (feet - q.center).dot(q.normal) > out
+                    self.sim.player_env.is_none() && (feet - q.center).dot(q.normal) > out
                 };
                 if done {
                     break;
                 }
             }
-            assert!(self.time < end, "{}: didn't get through the {color:?} portal (at {feet})", self.name);
+            assert!(self.time < end, "{}: didn't get through the {color:?} portal (at {feet}; crossed {crossed}, env {:?}, {:?}, {flat_q} from the far one)", self.name, self.sim.player_env, self.c.state);
             // Into this one till she's through it; then on out of the far one (off to the side
             // of a floor portal, the way she was going).
-            let d = if !crossed { p.center - feet } else if q.normal.y > 0.5 { Vec3::ZERO } else { q.normal };
+            // (Off a floor portal sideways, across its narrow way.)
+            let d = if !crossed {
+                p.center - feet
+            } else if q.normal.y > 0.5 {
+                let side = q.right() * q.to_local(feet).x.signum();
+                if side.length_squared() > 0.0 { side } else { q.right() }
+            } else {
+                q.normal
+            };
             if Vec2::new(d.x, d.z).length() > 1e-3 {
                 self.c.yaw = (-d.x).atan2(-d.z);
             }
@@ -468,9 +491,14 @@ impl Play {
         let held = self.sim.held.expect("not holding anything");
         // Looking level, the cube rides about 2 m out in front: stand that far back from the
         // button, facing it, and line the cube up over it.
+        // (Her side of it, or round it: somewhere with floor, not over a portal.)
         let back = {
-            let d = Vec2::new(self.c.feet.x - at.x, self.c.feet.z - at.z).normalize_or(Vec2::Y);
-            at + Vec3::new(d.x, 0.0, d.y) * 1.9
+            let d0 = Vec2::new(self.c.feet.x - at.x, self.c.feet.z - at.z).normalize_or(Vec2::Y);
+            (0..8)
+                .map(|k| Vec2::from_angle(k as f32 * std::f32::consts::FRAC_PI_4).rotate(d0))
+                .map(|d| at + Vec3::new(d.x, 0.0, d.y) * 1.9)
+                .find(|p| !self.floors(p.x, p.z, at.y - 0.6, at.y + 0.6).is_empty())
+                .unwrap_or(at + Vec3::new(d0.x, 0.0, d0.y) * 1.9)
         };
         self.go(back, 0.5);
         for _ in 0..5 {
@@ -554,7 +582,7 @@ impl Play {
                 self.step(&Input::default());
             }
             self.wait_for(60.0, &format!("the {color:?} portal at {at} and the other at {to:?}"), both);
-            if self.through_at(color, Some(at), to, 1.0) {
+            if self.through_at(color, Some(at), to, 0.4) {
                 return;
             }
         }
@@ -1093,4 +1121,82 @@ fn solve_testchmb_a_07() {
     eprintln!("up to Chamber 12 at {}", p.c.feet);
     // Chamber 12 (the panels the pistons push out, flung off them and the tilted ones) isn't
     // played yet.
+}
+
+/// Chamber 13 (testchmb_a_08): Portal's first with both colours. The first cube's up on a
+/// ledge: up to it by her portals, down off the ledge with it onto the first button; back up
+/// and through the door it opens into the big room; the pellet from the wall it bounces off to
+/// a ceiling portal over the catcher; down onto the cart from a ceiling portal for its cube,
+/// onto the second button from another; herself onto the third; the exit through her portals.
+#[test]
+fn solve_testchmb_a_08() {
+    let Some(mut p) = Play::load("testchmb_a_08") else { return };
+    p.go(Vec3::new(5.0, 3.5, 12.5), 0.6);
+    // (To the side of the cube: it stands just in front of the wall.)
+    p.shoot(PortalColor::Blue, Vec3::new(-6.5, 8.33, 13.2));
+    let ledge = p.sim.portals[0].unwrap().center;
+    p.shoot(PortalColor::Orange, Vec3::new(6.5, 4.9, 12.34));
+    let near = p.sim.portals[1].unwrap().center;
+    p.enter_now(PortalColor::Orange, near, Some(ledge));
+    p.pick_up(Vec3::new(-5.54, 7.14, 11.94));
+    p.cube_on_button(Vec3::new(-0.79, 3.5, 11.46));
+    // Back up to the ledge, through the door the button opened, down into the big room.
+    p.enter_now(PortalColor::Orange, near, Some(ledge));
+    p.go(Vec3::new(-2.0, 0.0, 3.0), 0.6);
+    p.assert_alive("dropping into the big room");
+    // The pellet: blue on the ceiling over the catcher, orange on the wall it bounces off.
+    p.shoot(PortalColor::Blue, Vec3::new(-0.39, 9.75, -2.19));
+    let wall_z = p.sim.raycast(Vec3::new(-4.88, 4.3, 0.0), Vec3::Z, 20.0, crate::sim::Mask::SOLID).unwrap().point.z;
+    p.shoot(PortalColor::Orange, Vec3::new(-4.88, 4.3, wall_z));
+    p.wait_for(20.0, "the pellet caught", |p| p.events.iter().any(|e| matches!(e, SimEvent::PelletGone { caught: true, .. })));
+    let cart = p.mover("func_tracktrain_lvl7");
+    // The cart's cube: blue on the ceiling over its track, orange low on the south wall; in as
+    // the cube comes up, down onto the cart, the cube, off with it.
+    let low = Vec3::new(0.0, 1.42, 6.5);
+    p.go(Vec3::new(0.0, 0.0, 3.5), 0.4);
+    p.shoot(PortalColor::Orange, low);
+    let low = p.sim.portals[1].unwrap().center;
+    p.shoot(PortalColor::Blue, Vec3::new(7.2, 9.75, -6.0));
+    let over = p.sim.portals[0].unwrap().center;
+    let cube = p.sim.props.iter().position(|c| c.alive && c.pos.x > 5.0).expect("the cart's cube");
+    p.wait_for(40.0, "the cube coming up under the ceiling portal", |p| p.sim.movers[cart].goal == Some(1) && (p.sim.props[cube].pos.z - over.z - 3.0).abs() < 0.3);
+    p.enter_now(PortalColor::Orange, low, Some(over));
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("landed at {} (cube at {})", p.c.feet, p.sim.props[cube].pos);
+    p.pick_up(p.sim.props[cube].pos);
+    // Over button C (on its platform) by a ceiling portal beside it, with the cube.
+    p.go(Vec3::new(2.0, 0.0, -4.0), 0.6);
+    p.shoot(PortalColor::Blue, Vec3::new(-3.0, 9.75, -7.24));
+    let over_c = p.sim.portals[0].unwrap().center;
+    p.enter_now(PortalColor::Orange, low, Some(over_c));
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("over button C at {}", p.c.feet);
+    // (Its platform's too small to stand back from it: from beside it, looking down at it.)
+    let c = p.sim.buttons.iter().position(|b| b.at.distance(Vec3::new(-4.75, 3.25, -7.24)) < 1.0).expect("button C");
+    let at = p.sim.buttons[c].at;
+    p.look_at(at);
+    p.wait(0.6);
+    p.sim.use_key(Aim::of(&p.c));
+    p.wait(1.5);
+    assert!(p.sim.buttons[c].pressed, "the cube's not on button C (it's at {})", p.sim.props[cube].pos);
+    p.assert_alive("putting the second cube down");
+    // Herself onto button B (on its pillar) by a ceiling portal over it.
+    p.shoot(PortalColor::Blue, Vec3::new(-7.36, 9.75, 0.89));
+    let over_b = p.sim.portals[0].unwrap().center;
+    p.enter_now(PortalColor::Orange, low, Some(over_b));
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    let b = p.sim.buttons.iter().position(|x| x.at.distance(Vec3::new(-7.36, 5.69, 0.89)) < 1.0).expect("button B");
+    eprintln!("on button B at {}: pressed {}", p.c.feet, p.sim.buttons[b].pressed);
+    let door = p.mover("exit_door_left_a08");
+    p.wait_for(5.0, "the exit doors", |p| p.sim.movers[door].node == 1);
+    // Orange through the open doors onto the floor beyond, blue low on the south wall; down off
+    // the pillar (the doors shut again) and through.
+    p.shoot(PortalColor::Orange, Vec3::new(0.0, 3.25, -15.0));
+    let beyond = p.sim.portals[1].unwrap().center;
+    p.shoot(PortalColor::Blue, Vec3::new(0.0, 1.42, 6.5));
+    let low = p.sim.portals[0].unwrap().center;
+    p.enter_now(PortalColor::Blue, low, Some(beyond));
+    eprintln!("past the exit doors at {}", p.c.feet);
+    p.assert_alive("in Chamber 13");
+    p.ride_exit("testchmb_a_09");
 }
