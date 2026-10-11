@@ -281,7 +281,7 @@ impl Play {
                     if !over {
                         break;
                     }
-                    let land = self.floors(c.x, c.y, y - 1.5, y + 0.35).into_iter().reduce(f32::max);
+                    let land = self.floors(c.x, c.y, y - 1.5, y + 0.5).into_iter().reduce(f32::max);
                     let Some(ny) = land else { continue };
                     let m: Node = (i, k, (ny * 100.0).round() as i32);
                     let ng = g + len as f32 * CELL * 1.5 + 1.0;
@@ -1199,4 +1199,18 @@ fn solve_testchmb_a_08() {
     eprintln!("past the exit doors at {}", p.c.feet);
     p.assert_alive("in Chamber 13");
     p.ride_exit("testchmb_a_09");
+}
+
+/// Chamber 14 (testchmb_a_09): up the stairs (they rise as she comes to them). The rest needs a
+/// portal on the tilted ceiling panel, flinging her up to the cube: portals don't go on tilted
+/// surfaces yet.
+#[test]
+fn solve_testchmb_a_09() {
+    let Some(mut p) = Play::load("testchmb_a_09") else { return };
+    // The stairs rise as she comes up to them.
+    p.go(Vec3::new(4.0, 0.0, -13.8), 0.5);
+    let top = p.mover("door_stair_a09_16");
+    p.wait_for(10.0, "the stairs to rise", |p| p.sim.movers[top].node == 0 && p.sim.movers[top].goal.is_none());
+    p.go(Vec3::new(17.0, 6.5, -13.8), 0.6);
+    p.assert_alive("on the stairs");
 }
