@@ -1149,7 +1149,7 @@ impl Sim {
         offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
         for o in offs {
             let c = point + right * o.x + up * o.y;
-            let cand = Portal::new(c, n, up);
+            let cand = Portal::sized(c, n, up, half);
             if self.portal_fits(&cand, other.as_ref()) {
                 return Some(cand);
             }

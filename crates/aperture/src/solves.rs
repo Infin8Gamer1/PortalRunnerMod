@@ -143,7 +143,8 @@ impl Play {
     fn fits(&self, feet: Vec3) -> bool {
         let body = self.c.body();
         let b = Aabb::new(feet + Vec3::new(-body.half_width + 0.02, 0.02, -body.half_width + 0.02), feet + Vec3::new(body.half_width - 0.02, body.height - 0.05, body.half_width - 0.02));
-        self.near(&b).next().is_none() && !self.sim.goo.iter().any(|g| g.overlaps(&b))
+        // (Not what she'd step up onto: a ramp's slices, the next stair.)
+        self.near(&b).all(|x| x.max.y <= feet.y + 0.3) && !self.sim.goo.iter().any(|g| g.overlaps(&b))
     }
 
     /// The floors she can stand on in the cell at (x, z), between `lo` and `hi`.
@@ -323,14 +324,17 @@ impl Play {
         self.c.pitch = (d.y / Vec2::new(d.x, d.z).length().max(1e-3)).atan();
     }
 
-    #[allow(dead_code)]
     /// Shoot a portal of `color` at the point `at` (from where she stands): it must open
     /// within a portal's size of it.
     pub fn shoot(&mut self, color: PortalColor, at: Vec3) {
         self.look_at(at);
         let eye = self.c.view().eye;
         let aim = Aim { eye, dir: (at - eye).normalize(), yaw: self.c.yaw };
+        let (legs, hit) = self.sim.trace(aim.eye, aim.dir, 200.0, crate::sim::Mask::SHOT, 4);
         let opened = self.sim.fire(color, aim);
+        if !opened {
+            eprintln!("shot: legs {legs:?} hit {:?}", hit.map(|h| (h.point, h.normal, h.what)));
+        }
         let p = self.sim.portals[color.index()];
         assert!(opened && p.is_some_and(|p| p.center.distance(at) < 1.6), "{}: the {color:?} portal didn't open at {at} (from {eye}; it's at {:?})", self.name, p.map(|p| p.center));
         self.step(&Input::default());
@@ -421,7 +425,6 @@ impl Play {
         b
     }
 
-    #[allow(dead_code)]
     /// The mover of the map's entity `name` (a door, a lift, a train).
     pub fn mover(&self, name: &str) -> usize {
         let io = self.sim.io.as_ref().unwrap();
@@ -590,4 +593,64 @@ impl Play {
             k += 1;
         }
     }
+}
+
+/// Chamber 02 (the first half of testchmb_a_01): the turning gun shoots blue portals round
+/// the rooms, orange is fixed in the exit room. Through blue from the left room to orange,
+/// back through orange to the gun's room while blue's there, the gun; then her own blue back
+/// to orange, through the exit doors (opened as she took it) to the lift up.
+#[test]
+fn solve_testchmb_a_01() {
+    let Some(mut p) = Play::load("testchmb_a_01") else { return };
+    let orange = Vec3::new(-7.32, 1.32, 9.75);
+    let blue_left = Vec3::new(-14.6, -1.9, -2.5);
+    let blue_south = Vec3::new(-4.1, -1.9, 3.3);
+    // Out onto the balcony: GLaDOS's welcome, then the way in opens.
+    p.go(Vec3::new(-2.0, 0.16, -12.1), 0.5);
+    let door = p.mover("entrance_door_left_a_a01");
+    p.wait_for(60.0, "the entrance doors", |p| p.sim.movers[door].node == 1);
+    p.enter(PortalColor::Blue, blue_left, Some(orange));
+    eprintln!("in the exit room at {}", p.c.feet);
+    p.enter(PortalColor::Orange, orange, Some(blue_south));
+    eprintln!("in the gun's room at {}", p.c.feet);
+    let gun = p.sim.gun_pose(0).0;
+    p.go(Vec3::new(gun.x, p.c.feet.y, gun.z), 0.6);
+    p.wait_for(3.0, "her to pick up the gun", |p| p.sim.gun.blue);
+    eprintln!("got the gun at {}", p.c.feet);
+    // Her own blue on the gun room's far wall (the gun's last one is on the near wall: a
+    // shot at it would go through it), and through to orange.
+    p.wait(1.0);
+    let blue_north = Vec3::new(-4.1, -1.9, -8.1);
+    p.go(blue_north - Vec3::new(0.0, 1.35, -4.5), 0.5);
+    p.shoot(PortalColor::Blue, blue_north);
+    p.enter(PortalColor::Blue, blue_north, Some(orange));
+    eprintln!("back in the exit room at {}", p.c.feet);
+    // Through the exit doors to the lift up to Chamber 03.
+    p.go(Vec3::new(1.2, 0.0, 6.5), 0.5);
+    let floor = p.c.feet.y;
+    p.go(Vec3::new(10.0, 0.0, 6.5), 0.4);
+    p.wait_for(30.0, "the lift up", |p| p.c.feet.y > floor + 10.0 && p.c.state == State::Ground);
+    p.assert_alive("in Chamber 02");
+    let lift = p.mover("a01-middleelevator_body");
+    p.wait_for(30.0, "the lift to reach the top", |p| p.sim.movers[lift].node + 1 == p.sim.movers[lift].def.path.len() && p.sim.movers[lift].goal.is_none());
+    p.wait(2.0);
+    eprintln!("up to Chamber 03 at {}", p.c.feet);
+    // Chamber 03: orange fixed across a pit.
+    p.go(Vec3::new(0.4, p.c.feet.y, 11.4), 0.5);
+    p.wait_portal(PortalColor::Orange, Vec3::new(-27.64, 16.05, 15.44), 10.0);
+    // Blue on the room's west wall, through to orange...
+    let orange2 = Vec3::new(-27.64, 16.05, 15.44);
+    let blue_west = Vec3::new(-1.6, 16.15, 6.5);
+    p.go(Vec3::new(1.5, 14.63, 6.5), 0.5);
+    p.shoot(PortalColor::Blue, blue_west);
+    p.enter(PortalColor::Blue, blue_west, Some(orange2));
+    eprintln!("across the first pit at {}", p.c.feet);
+    // ...then blue on the far wall past the second pit, and back through orange to it.
+    let blue_far = Vec3::new(-25.0, 16.1, 40.0);
+    p.go(Vec3::new(-25.0, 14.63, 21.5), 0.5);
+    p.shoot(PortalColor::Blue, blue_far);
+    p.enter(PortalColor::Orange, orange2, Some(blue_far));
+    eprintln!("across the second pit at {}", p.c.feet);
+    p.ride_exit("testchmb_a_02");
+    p.assert_alive("in Chamber 03");
 }
