@@ -26,8 +26,9 @@ pub struct PortalAudio {
     recent: std::collections::HashMap<AssetId<AudioSource>, f32>,
     /// GLaDOS's last line played: (the level load it was in, its count).
     voice: (u64, u32),
-    /// Turret shots heard (every other one plays).
+    /// Turret shots heard, and each turret's gun's sound playing (one at a time).
     shots: u64,
+    guns: std::collections::HashMap<usize, Entity>,
 }
 
 /// The same sound doesn't start again within this long (s).
@@ -175,12 +176,19 @@ pub fn play(
                 one_shot(&mut commands, pick(&ex, "turret_active_", n), at_volume(at, 0.9), 1.0);
             }
             SimEvent::TurretSearching { at } => one_shot(&mut commands, pick(&ex, "turret_search_", n), at_volume(at, 0.9), 1.0),
-            // (Every other shot, counted by shots: the frame count went in step with them and
-            // could leave every shot on an odd frame, silent.)
-            SimEvent::TurretShot { from, .. } => {
+            // Every shot, on the turret's own channel (as Source's CHAN_WEAPON): each cuts off
+            // the one before.
+            SimEvent::TurretShot { turret, from, .. } => {
                 st.shots += 1;
-                if st.shots % 2 == 0 {
-                    one_shot(&mut commands, pick(&ex, "turret_shoot_", st.shots / 2), at_volume(from, 0.35), 1.0);
+                if let Some(h) = pick(&ex, "turret_shoot_", st.shots) {
+                    if let Some(old) = st.guns.insert(turret, Entity::PLACEHOLDER).filter(|e| *e != Entity::PLACEHOLDER) {
+                        if let Ok(mut ec) = commands.get_entity(old) {
+                            ec.despawn();
+                        }
+                    }
+                    let v = at_volume(from, 0.6) * ex.gain(&h);
+                    let e = commands.spawn((AudioPlayer::new(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(v)))).id();
+                    st.guns.insert(turret, e);
                 }
             }
             SimEvent::TurretTipped { at } => one_shot(&mut commands, pick(&ex, "turret_tipped_", n), at_volume(at, 0.9), 1.0),

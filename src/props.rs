@@ -467,9 +467,44 @@ pub fn tag_parts(
                 if depth > 0 && !matches!(kind, PropKind::PelletLauncher(_)) {
                     commands.entity(e).insert(PropPart { kind: *kind, name: name.as_str().to_string(), rest: *tf });
                 }
+                // A turret's wings and guns turn to its aim.
+                if let PropKind::Turret(i) = *kind {
+                    if name.contains("Wing") || name.contains("Gun") {
+                        commands.entity(e).insert(TurretGun(i));
+                    }
+                }
                 break;
             }
         }
+    }
+}
+
+/// A turret's wing or gun (its model's part), and which turret.
+#[derive(Component)]
+pub struct TurretGun(usize);
+
+/// How far a turret's guns turn to its aim: either way (radians), and up or down.
+const GUN_TURN: f32 = 0.5;
+const GUN_TILT: f32 = 0.35;
+
+/// Turn each standing turret's wings and guns a little towards where it's aiming (its sweep,
+/// or her): over whatever its animation has them at, so after the animations run.
+pub fn aim_turret_guns(game: Res<Game>, models: Res<PropModels>, mut parts: Query<(&TurretGun, &mut Transform)>) {
+    // (Only over its animations, which set these parts afresh each frame: without them the
+    // turn would add up frame on frame.)
+    if models.turret_clips.is_none() {
+        return;
+    }
+    for (g, mut tf) in &mut parts {
+        let Some(t) = game.sim.turrets.get(g.0) else { continue };
+        if !t.upright() {
+            continue;
+        }
+        // Its aim in the model's own frame (it faces -Z, turned by its yaw).
+        let local = Quat::from_rotation_y(-t.yaw) * t.aim;
+        let yaw = (-local.x).atan2(-local.z).clamp(-GUN_TURN, GUN_TURN);
+        let pitch = local.y.clamp(-1.0, 1.0).asin().clamp(-GUN_TILT, GUN_TILT);
+        tf.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0) * tf.rotation;
     }
 }
 
@@ -808,9 +843,12 @@ pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, m
         // A turret falls over the way it was knocked.
         if let PropKind::Turret(i) = *kind {
             if let Some(t) = sim.turrets.get(i) {
-                let tilt = if t.fall_dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_axis_angle(Vec3::Y.cross(t.fall_dir).normalize(), t.fallen * std::f32::consts::FRAC_PI_2) };
-                // (Where it is now: one can drop through a portal in the floor under it.)
-                tf.translation = t.at;
+                let angle = t.fallen * std::f32::consts::FRAC_PI_2;
+                let tilt = if t.fall_dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_axis_angle(Vec3::Y.cross(t.fall_dir).normalize(), angle) };
+                // (Where it is now: one can drop through a portal in the floor under it. Lying
+                // down it's raised by its half-thickness, so its back's on the floor, not in it,
+                // as its box in the simulation lies.)
+                tf.translation = t.at + Vec3::Y * aperture::sim::TURRET_HALF * angle.sin();
                 tf.rotation = tilt * Quat::from_rotation_y(t.yaw);
             }
             continue;

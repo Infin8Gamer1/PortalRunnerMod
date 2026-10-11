@@ -191,6 +191,13 @@ impl Turret {
     pub fn eye(&self) -> Vec3 {
         self.at + Vec3::Y * TURRET_EYE + self.facing() * (TURRET_HALF + 0.05)
     }
+
+    /// Where its next shot comes from: one gun, then the other.
+    pub fn muzzle(&self) -> Vec3 {
+        let f = self.facing();
+        let side = if (self.t * 10.0).round() as i32 % 2 == 0 { 1.0 } else { -1.0 };
+        self.eye() + Vec3::new(-f.z, 0.0, f.x) * (0.2 * side) - Vec3::Y * 0.08
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -494,7 +501,9 @@ pub enum SimEvent {
     /// A turret lost her.
     TurretSearching { at: Vec3 },
     /// A turret's shot: from its gun, to where it went (hit: her).
-    TurretShot { from: Vec3, to: Vec3, hit: bool },
+    /// Turret `turret` fired from `from` (one of its guns) to `to`: her (`hit`), or where the
+    /// shot met a wall.
+    TurretShot { turret: usize, from: Vec3, to: Vec3, hit: bool },
     TurretTipped { at: Vec3 },
     /// She's picked a turret up, or put it down.
     TurretPickedUp { at: Vec3 },
@@ -1992,6 +2001,13 @@ impl Sim {
         None
     }
 
+    /// Where a stray shot from `from` along `dir` ends: the wall (or whatever) it meets, or as
+    /// far as it carries.
+    fn shot_end(&self, from: Vec3, dir: Vec3, range: f32) -> Vec3 {
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
+        self.raycast(from, dir, range, mask).map_or(from + dir * range, |h| h.point)
+    }
+
     /// Knock a turret over, falling along `push`.
     pub fn tip_turret(&mut self, i: usize, push: Vec3) {
         if self.held_turret == Some(i) {
@@ -2046,8 +2062,19 @@ impl Sim {
         // floor; it doesn't shoot.
         if let Some(i) = self.held_turret {
             let ahead = Vec3::new(-ctrl.yaw.sin(), 0.0, -ctrl.yaw.cos());
+            // (Short of a wall in front of her: it doesn't go into it.)
+            let walls = Mask { props: false, fizzlers: false, ..Mask::SOLID };
+            let reach = [0.3f32, 0.9, 1.5]
+                .iter()
+                .filter_map(|h| self.raycast(ctrl.feet + Vec3::Y * (TURRET_CARRY_LIFT + h), ahead, TURRET_CARRY + TURRET_HALF, walls).map(|hit| hit.t))
+                .fold(TURRET_CARRY + TURRET_HALF, f32::min);
+            // Closer than that and it holds her off the wall.
+            let room = 0.35 + TURRET_HALF + 0.05;
+            if reach < room {
+                ctrl.feet -= ahead * (room - reach);
+            }
             let t = &mut self.turrets[i];
-            t.at = ctrl.feet + ahead * TURRET_CARRY + Vec3::Y * TURRET_CARRY_LIFT;
+            t.at = ctrl.feet + ahead * (reach.max(room) - TURRET_HALF - 0.05).clamp(0.35, TURRET_CARRY) + Vec3::Y * TURRET_CARRY_LIFT;
             t.yaw = ctrl.yaw;
             t.aim = ahead;
             t.sight = 0.0;
@@ -2121,8 +2148,9 @@ impl Sim {
                         }
                         if t.reload <= 0.0 {
                             t.reload = 0.1;
-                            let to = target.unwrap_or(eye + t.aim * TURRET_RANGE);
-                            self.events.push(SimEvent::TurretShot { from: eye, to, hit: clear });
+                            let (from, dir) = (t.muzzle(), t.aim);
+                            let to = target.unwrap_or_else(|| self.shot_end(from, dir, TURRET_RANGE));
+                            self.events.push(SimEvent::TurretShot { turret: i, from, to, hit: clear });
                         }
                     }
                 }
@@ -2134,8 +2162,10 @@ impl Sim {
                         let a = t.t * 7.0;
                         let dir = (t.fall_dir * a.cos() + Vec3::Y * 0.3 + t.fall_dir.cross(Vec3::Y) * a.sin()).normalize();
                         let from = t.at + Vec3::Y * 0.5 + t.fall_dir * 0.8;
-                        self.events.push(SimEvent::TurretShot { from, to: from + dir * 6.0, hit: false });
+                        let to = self.shot_end(from, dir, 8.0);
+                        self.events.push(SimEvent::TurretShot { turret: i, from, to, hit: false });
                     }
+                    let t = &mut self.turrets[i];
                     if t.t >= TURRET_FLAIL {
                         t.state = TurretState::Retired;
                         t.t = 0.0;

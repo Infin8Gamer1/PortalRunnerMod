@@ -86,6 +86,7 @@ fn main() {
     .add_plugins(portal_render::PortalRenderPlugin)
     .add_plugins(speed_fx::SpeedFxPlugin)
     .add_plugins(graphics::GraphicsPlugin)
+    .add_systems(PostUpdate, props::aim_turret_guns.after(bevy::app::AnimationSystems).before(bevy::transform::TransformSystems::Propagate))
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .init_resource::<source_map::MapMats>()
     .init_resource::<source_map::Lamps>()

@@ -2022,3 +2022,19 @@ fn portals_cant_be_shot_through_a_grill() {
     let (mut sim, c) = start(l);
     assert!(!sim.fire(PortalColor::Blue, crate::sim::Aim::of(&c)) && sim.portals[0].is_none(), "a portal went through the grill");
 }
+
+/// A turret she carries into a wall stays out of it: it's held short of the wall.
+#[test]
+fn a_carried_turret_stays_out_of_walls() {
+    let mut l = flat();
+    l.turret([0.0, 0.0, -1.6], 0.0);
+    l.solid(Mat::White, [-3.0, 0.0, -6.0], [3.0, 3.0, -5.6]);
+    let (mut sim, mut c) = start(l);
+    c.pitch = -0.4;
+    sim.use_key(crate::sim::Aim::of(&c));
+    assert_eq!(sim.held_turret, Some(0));
+    c.pitch = 0.0;
+    run(&mut sim, &mut c, 3.0, |_, _| forward());
+    let b = sim.turrets[0].aabb();
+    assert!(b.min.z > -5.6 + 0.01, "the turret's in the wall: {:?} (her at {})", b, c.feet);
+}

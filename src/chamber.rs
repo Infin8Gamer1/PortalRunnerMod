@@ -52,6 +52,13 @@ pub enum Vis {
 #[derive(Component)]
 pub struct GelVis(Paint);
 
+/// How fast a turret's shots fly (m/s), how long a streak each is (m), how long the flash at
+/// the gun and the spark where a stray shot lands show (s).
+const BULLET_SPEED: f32 = 120.0;
+const BULLET_STREAK: f32 = 1.2;
+const FLASH_TIME: f32 = 0.04;
+const SPARK_TIME: f32 = 0.06;
+
 /// Entities reused frame to frame for things whose number changes (beam pieces, bridge
 /// pieces, gel blobs).
 #[derive(Resource, Default)]
@@ -62,8 +69,11 @@ pub struct Pools {
     blobs: Vec<Entity>,
     /// High energy pellets (each a glowing ball with its light).
     pellets: Vec<Entity>,
-    /// Turrets' shots this frame.
+    /// Turrets' shots in flight (each a streak), and their muzzle flashes and sparks.
     tracers: Vec<Entity>,
+    flashes: Vec<Entity>,
+    /// Each shot in flight: from, to, when it was fired, and whether it hit her.
+    shots: Vec<(Vec3, Vec3, f32, bool)>,
     /// Rocket turrets' laser sights, their rockets in flight (each the model, its exhaust and
     /// a light), and rockets going off (each a fireball and its light).
     sights: Vec<Entity>,
@@ -1019,8 +1029,15 @@ pub fn update(
     let segs: Vec<Aabb> = sim.bridges.iter().flat_map(|b| b.segs.iter().map(|s| s.aabb)).collect();
     pooled(&mut commands, &mut pools.bridges, segs.len(), |c| spawn_pooled(c, &m.unit_cube, &m.bridge, false));
     pooled(&mut commands, &mut pools.blobs, sim.blobs.len(), |c| spawn_pooled(c, &m.blob, &m.blob_paint[0], false));
-    let shots: Vec<(Vec3, Vec3)> = sim.events.iter().filter_map(|e| if let aperture::SimEvent::TurretShot { from, to, .. } = e { Some((*from, *to)) } else { None }).collect();
+    for e in &sim.events {
+        if let aperture::SimEvent::TurretShot { from, to, hit, .. } = *e {
+            pools.shots.push((from, to, t, hit));
+        }
+    }
+    pools.shots.retain(|(a, b, at, _)| t - at < a.distance(*b) / BULLET_SPEED + SPARK_TIME);
+    let shots = pools.shots.clone();
     pooled(&mut commands, &mut pools.tracers, shots.len(), |c| spawn_pooled(c, &m.beam, &m.tracer, false));
+    pooled(&mut commands, &mut pools.flashes, shots.len() * 2, |c| spawn_pooled(c, &m.pellet_mesh, &m.tracer, false));
     // A rocket turret's sight: from its muzzle along its aim to what that meets (through glass).
     let sight_mask = aperture::sim::Mask { glass: false, ..aperture::sim::Mask::SOLID };
     let sights: Vec<(Vec3, Vec3)> = (0..sim.rocket_turrets.len())
@@ -1187,15 +1204,33 @@ pub fn update(
     }
     for (i, e) in pools.tracers.iter().enumerate() {
         match shots.get(i) {
-            // A streak along the shot's last few metres.
-            Some((a, b)) => {
-                let d = (*b - *a).normalize_or(Vec3::Y);
-                let len = a.distance(*b).min(3.0);
-                let mid = *b - d * len * 0.5;
-                set(*e, Some(Transform::from_translation(mid).with_rotation(Quat::from_rotation_arc(Vec3::Y, d)).with_scale(Vec3::new(0.3, len, 0.3))), None)
+            // A short streak flying from the gun to where the shot goes.
+            Some((a, b, at, _)) => {
+                let (d, len) = ((*b - *a).normalize_or(Vec3::Y), a.distance(*b));
+                let flown = (t - at) * BULLET_SPEED;
+                let (head, tail) = (flown.min(len), (flown - BULLET_STREAK).clamp(0.0, len));
+                if head - tail > 0.01 {
+                    let mid = *a + d * (head + tail) * 0.5;
+                    set(*e, Some(Transform::from_translation(mid).with_rotation(Quat::from_rotation_arc(Vec3::Y, d)).with_scale(Vec3::new(0.25, head - tail, 0.25))), None)
+                } else {
+                    set(*e, None, None)
+                }
             }
             None => set(*e, None, None),
         }
+    }
+    // The flash at the gun as it fires, and a spark where a stray shot meets a wall.
+    for (i, e) in pools.flashes.iter().enumerate() {
+        let tf = shots.get(i / 2).and_then(|(a, b, at, hit)| {
+            let since = t - at;
+            let arrive = a.distance(*b) / BULLET_SPEED;
+            if i % 2 == 0 {
+                (since < FLASH_TIME).then(|| Transform::from_translation(*a).with_scale(Vec3::splat(0.07)))
+            } else {
+                (!hit && since >= arrive && since < arrive + SPARK_TIME).then(|| Transform::from_translation(*b).with_scale(Vec3::splat(0.05)))
+            }
+        });
+        set(*e, tf, None);
     }
     for (i, e) in pools.sights.iter().enumerate() {
         match sights.get(i) {

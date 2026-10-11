@@ -739,6 +739,26 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("turretcarry_c_put_down"),
             ]
         }
+        // Chamber 16's training turret knocked over (running into it from behind), seen lying
+        // on the floor from the side.
+        "turrettipped" => {
+            let map = aperture::levels::all().len() + 11;
+            vec![
+                Map(map),
+                Wait(200),
+                Teleport(Vec3::new(17.07, 0.05, -15.0)),
+                Launch(Vec3::ZERO),
+                Look(180.0, 0.0),
+                Wait(5),
+                Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), ..default() }, 70),
+                Wait(240),
+                Teleport(Vec3::new(20.0, 0.05, -9.8)),
+                Launch(Vec3::ZERO),
+                Look(90.0, -18.0),
+                Wait(5),
+                Shot("turrettipped_side"),
+            ]
+        }
         "turret16" => {
             let map = aperture::levels::all().len() + 11;
             let mut v = vec![Map(map), Wait(200), TurretsOff, Teleport(Vec3::new(-2.4, 0.1, -8.0)), Launch(Vec3::ZERO), Look(0.0, -18.0), Wait(30)];
