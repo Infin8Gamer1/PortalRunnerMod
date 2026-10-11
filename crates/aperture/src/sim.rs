@@ -1293,7 +1293,7 @@ impl Sim {
 
     /// Where a portal shot at `point` (on still box `solid`, face `n`) would open: on that
     /// surface, nudged to fit if it hangs off an edge or overlaps the other portal.
-    pub fn place(&self, color: PortalColor, point: Vec3, n: Vec3, _solid: usize, view: Vec3) -> Option<Portal> {
+    pub fn place(&self, color: PortalColor, point: Vec3, n: Vec3, solid: usize, view: Vec3) -> Option<Portal> {
         let n = geom::snap_axis(n);
         if !self.portalable_at(point, n) {
             return None;
@@ -1317,6 +1317,19 @@ impl Sim {
             for j in -ny..=ny {
                 offs.push(Vec2::new(i as f32 * step, j as f32 * step));
             }
+        }
+        // And centred across the box it's on, either way (a white panel just a portal wide,
+        // the grid's steps would miss).
+        if let Some(s) = self.statics.get(solid) {
+            let mid = s.b.center() - point;
+            let (mx, my) = (mid.dot(right), mid.dot(up));
+            for k in -ny..=ny {
+                offs.push(Vec2::new(mx, k as f32 * step));
+            }
+            for i in -nx..=nx {
+                offs.push(Vec2::new(i as f32 * step, my));
+            }
+            offs.push(Vec2::new(mx, my));
         }
         offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
         for o in offs {
