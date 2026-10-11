@@ -23,7 +23,7 @@ const CELL: f32 = 0.25;
 /// How far up a step she takes in her stride (Source's 18 units, as `crate::tuning` sets),
 /// and how far down she'll drop.
 const STEP: f32 = 0.65;
-const DROP: f32 = 7.5;
+const DROP: f32 = 9.0;
 /// The map's boxes are bucketed in columns this wide.
 const BUCKET: f32 = 2.0;
 /// The widest gap she's walked across with a jump (a running jump goes much further).
@@ -271,27 +271,33 @@ impl Play {
                 if near(n.0 + di, n.1 + dk, y - 0.6, y + STEP) {
                     continue;
                 }
-                for len in 2..=(JUMP / CELL) as i32 {
-                    let (i, k) = (n.0 + di * len, n.1 + dk * len);
-                    let c = centre(i, k);
-                    let over = (1..len).all(|j| {
-                        let c = centre(n.0 + di * j, n.1 + dk * j);
-                        self.fits(Vec3::new(c.x, y + 0.5, c.y))
-                    });
-                    if !over {
-                        break;
+                // The nearest landing across the gap at about her height; failing that, one
+                // well below (jumping down, she's longer in the air: a metre further).
+                let jump_to = |below: f32, above: f32, max: f32| {
+                    for len in 2..=(max / CELL) as i32 {
+                        let (i, k) = (n.0 + di * len, n.1 + dk * len);
+                        let c = centre(i, k);
+                        let over = (1..len).all(|j| {
+                            let c = centre(n.0 + di * j, n.1 + dk * j);
+                            self.fits(Vec3::new(c.x, y + 0.5, c.y))
+                        });
+                        if !over {
+                            return None;
+                        }
+                        if let Some(ny) = self.floors(c.x, c.y, y - below, y + above).into_iter().reduce(f32::max) {
+                            return Some((i, k, ny, len));
+                        }
                     }
-                    let land = self.floors(c.x, c.y, y - 1.5, y + 0.5).into_iter().reduce(f32::max);
-                    let Some(ny) = land else { continue };
-                    let m: Node = (i, k, (ny * 100.0).round() as i32);
-                    let ng = g + len as f32 * CELL * 1.5 + 1.0;
-                    if cost.get(&m).is_none_or(|&c| ng < c) {
-                        cost.insert(m, ng);
-                        from.insert(m, n);
-                        jumped.insert(m);
-                        open.push(Open(ng + h(&m), m));
-                    }
-                    break;
+                    None
+                };
+                let Some((i, k, ny, len)) = jump_to(1.5, 0.5, JUMP).or_else(|| jump_to(DROP, -2.0, JUMP + 1.0)) else { continue };
+                let m: Node = (i, k, (ny * 100.0).round() as i32);
+                let ng = g + len as f32 * CELL * 1.5 + 1.0;
+                if cost.get(&m).is_none_or(|&c| ng < c) {
+                    cost.insert(m, ng);
+                    from.insert(m, n);
+                    jumped.insert(m);
+                    open.push(Open(ng + h(&m), m));
                 }
             }
         }
@@ -702,7 +708,8 @@ fn solve_testchmb_a_00() {
 
 impl Play {
     /// Debugging: which cells she can reach from where she is (the path-finder's search with
-    /// no goal), drawn over x0..x1, z0..z1: '#' reached, '.' a floor not reached.
+    /// no goal), drawn over x0..x1, z0..z1: reached ones by their height over hers (metres,
+    /// 0-9 then A-Z), '.' a floor not reached.
     #[allow(dead_code)]
     pub fn draw_reach(&self, x0: f32, x1: f32, z0: f32, z1: f32) {
         // Flood from her cell.
@@ -734,7 +741,8 @@ impl Play {
         let mut k = cell(z0);
         while centre(k) <= z1 {
             let row: String = (cell(x0)..=cell(x1)).map(|i| match seen.get(&(i, k)) {
-                Some(_) => '#',
+                // (Its height above hers, a metre a step: 0-9, then A-Z.)
+                Some(&y) => char::from_digit(((y - at.y).round().max(0.0) as u32).min(35), 36).unwrap_or('#').to_ascii_uppercase(),
                 None => if self.floors(centre(i), centre(k), at.y - 3.0, at.y + 3.0).is_empty() { ' ' } else { '.' },
             }).collect();
             eprintln!("z{:6.2} |{row}|", centre(k));
@@ -1052,6 +1060,11 @@ impl Play {
 /// the launcher room); blue on its back wall, in by orange; blue where the pellet hits, out of
 /// orange opposite the catcher; onto the scaffold by blue; the upgraded gun, the switch that
 /// rises, orange beyond the door it opens, blue where the scaffold stops; over on it and through.
+/// Then Chamber 12 (its second half), as Portal's walkthrough has it: flung from the pit's
+/// floor out of the panels jutting from the wall, higher each time, up to the button's
+/// platform; there the wedge swings out of the wall and tips, and a portal on it flings her
+/// up to the exit's ledge, where the cube drops; down with it onto the button, flung up again
+/// and out.
 #[test]
 fn solve_testchmb_a_07() {
     let Some(mut p) = Play::load("testchmb_a_07") else { return };
@@ -1119,8 +1132,49 @@ fn solve_testchmb_a_07() {
     p.assert_alive("in Chamber 11");
     p.ride("07a_07b_elevator_body");
     eprintln!("up to Chamber 12 at {}", p.c.feet);
-    // Chamber 12 (the panels the pistons push out, flung off them and the tilted ones) isn't
-    // played yet.
+    // Chamber 12, as Portal's walkthrough has it. From the ledge she arrives on: orange on the
+    // pit's floor, blue on the lower panel jutting from the far wall; down into orange, out
+    // of blue onto the ledge over the arrival one.
+    p.go(Vec3::new(29.4, 19.9, -5.0), 0.4);
+    p.nudge(Vec3::new(30.1, 19.5, -5.0));
+    p.shoot(PortalColor::Orange, Vec3::new(34.5, 13.0, -5.0));
+    p.shoot(PortalColor::Blue, Vec3::new(36.6, 30.7, -5.0));
+    p.through(PortalColor::Orange, 1.0);
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("landed at {}", p.c.feet);
+    // Blue on the higher panel; off this ledge into orange, out onto the button's platform.
+    p.shoot(PortalColor::Blue, Vec3::new(30.9, 35.7, -5.0));
+    p.through(PortalColor::Orange, 1.0);
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("landed at {}", p.c.feet);
+    // Up here she sees the wedge: its piston pushes it out of the wall, and it tips.
+    let wedge = p.mover("rotating_door_wedge");
+    p.wait_for(20.0, "the wedge to tip", |p| p.sim.movers[wedge].node == 1 && p.sim.movers[wedge].goal.is_none());
+    // Blue on it; off the platform, down into orange in the pit, flung out of the wedge up
+    // onto the exit's ledge.
+    p.go(Vec3::new(24.0, 32.8, -5.0), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(15.7, 38.7, -4.9));
+    // (Off the platform at a run, to clear the ledge below it.)
+    p.entry_speed = 1.0;
+    p.through(PortalColor::Orange, 1.0);
+    p.entry_speed = 0.6;
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("on the exit's ledge at {}", p.c.feet);
+    p.wait(3.0);
+    // The cube's dropped beside her: down with it onto the button (an 8 m drop, which she
+    // lands hard but whole).
+    p.pick_up(Vec3::new(34.1, 41.1, -8.2));
+    p.cube_on_button(Vec3::new(19.6, 32.75, -4.9));
+    let exit = p.mover("exit_door_left_a07_2");
+    p.wait_for(5.0, "the exit doors to open", |p| p.sim.movers[exit].node == 1 && p.sim.movers[exit].goal.is_none());
+    // Flung up to the exit ledge the same way again, and out.
+    p.go(Vec3::new(24.0, 32.8, -5.0), 0.5);
+    p.entry_speed = 1.0;
+    p.through(PortalColor::Orange, 1.0);
+    p.entry_speed = 0.6;
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    p.assert_alive("back up at the exit");
+    p.ride_exit("testchmb_a_08");
 }
 
 /// Chamber 13 (testchmb_a_08): Portal's first with both colours. The first cube's up on a
@@ -1245,19 +1299,26 @@ fn solve_testchmb_a_09() {
     // the launcher room's wall where the pellet turns back. It comes down into the catcher.
     p.go(Vec3::new(12.0, 4.0, -13.8), 0.6);
     p.shoot(PortalColor::Orange, Vec3::new(21.9, 13.0, -13.0));
-    p.go(Vec3::new(-44.0, 0.0, 8.3), 0.6);
-    p.shoot(PortalColor::Blue, Vec3::new(-39.4, 1.56, 5.69));
-    let lift = p.mover("lift_lvl7a");
-    p.wait_for(30.0, "the pellet to reach the catcher (the lift to rise)", |p| p.sim.movers[lift].goal.is_some() || p.sim.movers[lift].node != 0);
-    p.assert_alive("sending the pellet");
-    // Back over the goo: its platforms sink for a while every 12 s, so each is crossed just as
-    // it's come back up (to the island between them, then on).
+    // Over the goo to the launcher room: its platforms sink for a while every 12 s once she's
+    // in, so each is crossed just as it's come back up (to the island between them, then on).
     let cross = |p: &mut Play, lift: &str, to: Vec3| {
         let m = p.mover(lift);
         p.wait_for(15.0, &format!("{lift} to sink"), |p| p.sim.movers[m].node == 1);
         p.wait_for(15.0, &format!("{lift} to come back up"), |p| p.sim.movers[m].node == 0 && p.sim.movers[m].goal.is_none());
         p.go(to, 0.6);
     };
+    p.go(Vec3::new(-47.5, 0.0, -21.0), 0.6);
+    cross(&mut p, "lift_lvl7a_goo1", Vec3::new(-47.0, 0.0, -10.5));
+    cross(&mut p, "lift_lvl7a_goo3", Vec3::new(-47.5, 0.0, 0.5));
+    // Across the pellet's path just after it's gone by, heading off to the far wall.
+    p.wait_for(20.0, "the pellet to pass", |p| p.sim.pellets.iter().any(|q| q.alive && q.vel.x > 0.0 && q.pos.x > -45.5 && q.pos.x < -44.0));
+    p.go(Vec3::new(-44.0, 0.0, 8.3), 0.6);
+    p.assert_alive("past the pellet");
+    p.shoot(PortalColor::Blue, Vec3::new(-39.4, 1.56, 5.69));
+    let lift = p.mover("lift_lvl7a");
+    p.wait_for(30.0, "the pellet to reach the catcher (the lift to rise)", |p| p.sim.movers[lift].goal.is_some() || p.sim.movers[lift].node != 0);
+    p.assert_alive("sending the pellet");
+    // Back over the goo the same way.
     p.go(Vec3::new(-47.5, 0.0, 0.5), 0.6);
     cross(&mut p, "lift_lvl7a_goo3", Vec3::new(-47.0, 0.0, -10.5));
     cross(&mut p, "lift_lvl7a_goo1", Vec3::new(-47.5, 0.0, -21.0));

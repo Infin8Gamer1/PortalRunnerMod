@@ -926,11 +926,11 @@ impl Sim {
         v.extend(self.turrets.iter().map(|t| t.aabb()));
         // (Going through a portal, the hole goes through what moves behind it too: a mover it's
         // on, or one just under the surface it's on.)
-        let hole = env.filter(|_| self.linked()).and_then(|c| self.portals[c.index()]).map(|p| (p, p.slab(collide::TUNNEL_DEPTH, 0.005)));
+        let hole = env.filter(|_| self.linked()).and_then(|c| self.portals[c.index()]).map(|p| (p, collide::tunnel(&p)));
         for m in &self.movers {
             for b in m.boxes().filter(|b| b.size().min_element() > 0.0) {
                 match hole {
-                    Some((p, h)) if p.signed_distance(b.center()) < 0.0 => v.extend(geom::subtract(&b, &h)),
+                    Some((p, h)) if collide::behind(&p, &b) => v.extend(geom::subtract(&b, &h)),
                     _ => v.push(b),
                 }
             }
@@ -1195,14 +1195,17 @@ impl Sim {
         self.level.slopes.iter().any(on) || self.movers.iter().filter(|m| m.at_rest() && !m.def.faces.is_empty()).any(|m| m.faces().any(|f| on(&f)))
     }
 
-    /// A shot from `o` along `d` that meets a still mover's tilted face before `t` (a swung
-    /// panel, which has no boxes): the face's normal, and where.
+    /// A shot from `o` along `d` that meets a still mover's tilted face where it met something
+    /// at `t` (a swung panel, which has no boxes): the face's normal, and where.
     fn mover_face_hit(&self, o: Vec3, d: Vec3, t: f32) -> Option<(Vec3, Vec3)> {
         let d = d.normalize_or_zero();
         let mut best: Option<(f32, Vec3)> = None;
         for m in self.movers.iter().filter(|m| m.at_rest() && !m.def.faces.is_empty()) {
             for f in m.faces().filter(|f| f.normal.abs().max_element() < 0.999) {
-                if let Some(tf) = f.hit(o, d).filter(|&tf| tf < t + 0.02 && best.is_none_or(|(b, _)| tf < b)) {
+                // (Before what the shot met, or just behind it (a few centimetres off its face)
+                // with only solid between: it may lie flush against the world's own steps.)
+                let reached = |tf: f32| tf < t + 0.02 || ((tf - t) * -d.dot(f.normal) < 0.12 && self.solid_at(o + d * (t + tf) * 0.5));
+                if let Some(tf) = f.hit(o, d).filter(|&tf| reached(tf) && best.is_none_or(|(b, _)| tf < b)) {
                     best = Some((tf, f.normal));
                 }
             }

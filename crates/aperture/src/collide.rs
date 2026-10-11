@@ -27,12 +27,12 @@ const SLEEVE: f32 = 0.15;
 
 /// The level's still boxes with the hole for portal `p` cut out, and the sleeve round it.
 pub fn carve(statics: &[Aabb], p: &Portal) -> BoxWorld {
-    let hole = p.slab(TUNNEL_DEPTH, 0.005);
+    let hole = tunnel(p);
     let mut boxes = Vec::with_capacity(statics.len() + 4);
     for b in statics {
-        // (A tilted face's hole is the box round its tunnel: only what's behind the face is
-        // cut, not the room in front of it.)
-        if p.axial() || p.signed_distance(b.center()) < 0.0 {
+        // (A tilted face's hole is the box round its tunnel: only what reaches behind the face
+        // is cut, not the room in front of it.)
+        if p.axial() || behind(p, b) {
             boxes.extend(geom::subtract(b, &hole));
         } else {
             boxes.push(*b);
@@ -54,6 +54,26 @@ pub fn carve(statics: &[Aabb], p: &Portal) -> BoxWorld {
         boxes.push(local_box(p, lo, hi));
     }
     BoxWorld::indexed(boxes, Vec::new(), 4.0)
+}
+
+/// The box cut out for going through a portal. On a tilted face it's the box round the
+/// tunnel, grown by more than a body's half-width: the face's own steps run along it, and a
+/// body (square to the world) leaving at a slant would catch on those just past it.
+pub fn tunnel(p: &Portal) -> Aabb {
+    let h = p.slab(TUNNEL_DEPTH, 0.005);
+    if p.axial() {
+        h
+    } else {
+        Aabb::new(h.min - Vec3::splat(TILT_MARGIN), h.max + Vec3::splat(TILT_MARGIN))
+    }
+}
+
+const TILT_MARGIN: f32 = 0.6;
+
+/// Whether any of a box reaches behind a portal's surface, or to it (a tilted face's steps
+/// sit on it).
+pub fn behind(p: &Portal, b: &Aabb) -> bool {
+    (0..8).any(|k| p.signed_distance(Vec3::new(if k & 1 == 0 { b.min.x } else { b.max.x }, if k & 2 == 0 { b.min.y } else { b.max.y }, if k & 4 == 0 { b.min.z } else { b.max.z })) < 0.01)
 }
 
 /// The world box of a box given in a portal's local frame (on a tilted face, the box round

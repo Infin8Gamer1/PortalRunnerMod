@@ -603,6 +603,29 @@ fn script(name: &str) -> Vec<Act> {
             v.extend([Wait(60), Look(90.0, 0.0), Wait(5), Shot("fling14_c_shelf")]);
             v
         }
+        // Chamber 12's wedge (testchmb_a_07, #21): up on the button's platform it swings out of
+        // the wall and tips; blue on it, orange on the pit's floor; down into orange and flung
+        // out of the wedge up to the exit's ledge.
+        "wedge12" => {
+            let map = aperture::levels::all().len() + 7;
+            let mut v = vec![Map(map), Wait(200), TurretsOff, Teleport(Vec3::new(24.0, 32.9, -5.0)), Launch(Vec3::ZERO), Look(90.0, 15.0), Wait(30), Shot("wedge12_a_closed"), Wait(500), Shot("wedge12_b_tipped")];
+            v.extend([
+                Portal(PortalColor::Blue, Vec3::new(15.705, 38.697, -4.9), Vec3::new(0.70710677, 0.70710677, 0.0), Vec3::new(-0.70710677, 0.70710677, 0.0)),
+                Portal(PortalColor::Orange, Vec3::new(34.297, 13.005, -5.0), Vec3::Y, Vec3::X),
+                Wait(10),
+                Shot("wedge12_c_portal"),
+                // (Dropped straight into orange from the platform's height, as a fall off it
+                // would: the run itself depends on the frame rate.)
+                Teleport(Vec3::new(34.3, 31.0, -5.0)),
+                Launch(Vec3::new(0.0, -4.0, 0.0)),
+                Look(-90.0, -60.0),
+            ]);
+            for k in 0..24 {
+                v.extend([Wait(4), Shot(Box::leak(format!("wedge12_d{k:02}").into_boxed_str()))]);
+            }
+            v.extend([Wait(90), Look(-90.0, 0.0), Wait(5), Shot("wedge12_e_ledge")]);
+            v
+        }
         // Chamber 01's cycling portals (testchmb_a_00's upper rooms, #21): the cycle started,
         // then the last room's portal on its wall, at Portal's size, from in front of it.
         "chamber01" => {
