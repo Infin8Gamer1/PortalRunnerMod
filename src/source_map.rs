@@ -135,6 +135,8 @@ pub struct MapProp {
 pub struct MapPropPlayer {
     ent: usize,
     gltf: Handle<bevy::gltf::Gltf>,
+    /// Its model's name (for the sounds its animations make).
+    model: String,
     played: u32,
     /// Seconds into an open-then-close fire cycle (a pellet launcher's mouth).
     cycle: Option<f32>,
@@ -688,8 +690,8 @@ pub fn tag_prop_players(mut commands: Commands, added: Query<Entity, Added<Anima
     for e in &added {
         let mut cur = e;
         for _ in 0..8 {
-            if let Ok(MapProp { animated: Some((ent, gltf)), .. }) = props.get(cur) {
-                commands.entity(e).insert(MapPropPlayer { ent: *ent, gltf: gltf.clone(), played: 0, cycle: None, showing: 0, node: None });
+            if let Ok(MapProp { animated: Some((ent, gltf)), model, .. }) = props.get(cur) {
+                commands.entity(e).insert(MapPropPlayer { ent: *ent, gltf: gltf.clone(), model: model.clone(), played: 0, cycle: None, showing: 0, node: None });
                 break;
             }
             let Ok(p) = parents.get(cur) else { break };
@@ -734,8 +736,9 @@ pub fn animate_props(
     gltfs: Res<Assets<bevy::gltf::Gltf>>,
     clips: Res<Assets<AnimationClip>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
-    mut players: Query<(Entity, &mut MapPropPlayer, &mut AnimationPlayer)>,
+    mut players: Query<(Entity, &mut MapPropPlayer, &mut AnimationPlayer, &GlobalTransform)>,
     mut clock: Local<Option<f32>>,
+    mut sounds: ResMut<crate::portal_audio::PropSounds>,
 ) {
     let dt = match *clock {
         Some(t) => (game.sim.time - t).max(0.0),
@@ -743,7 +746,7 @@ pub fn animate_props(
     };
     *clock = Some(game.sim.time);
     let Some(io) = &game.sim.io else { return };
-    for (e, mut pp, mut player) in &mut players {
+    for (e, mut pp, mut player, tf) in &mut players {
         let Some(gltf) = gltfs.get(&pp.gltf) else { continue };
         if let Some((name, n)) = io.animations.get(&pp.ent) {
             if *n != pp.played {
@@ -763,6 +766,8 @@ pub fn animate_props(
                         _ => (None, false),
                     };
                     if let Some(clip) = clip {
+                        let len = clips.get(clip).map_or(1.0, |c| c.duration());
+                        sounds.animation(&pp.model, name, game.sim.time, len, tf.translation());
                         let (graph, node) = AnimationGraph::from_clip(clip.clone());
                         commands.entity(e).insert(AnimationGraphHandle(graphs.add(graph)));
                         player.stop_all();

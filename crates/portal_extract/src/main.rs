@@ -199,6 +199,12 @@ const SOUNDS: &[(&str, &[&str])] = &[
     ("chamber_solved", &["sound/buttons/button_synth_positive_01.wav"]),
     ("chamber_fail", &["sound/buttons/button_synth_negative_01.wav"]),
     ("elevator_chime", &["sound/ambient/alarms/portal_elevator_chime.wav"]),
+    // Portal's round elevator doors (their model's own sounds: HL2's).
+    ("elevator_door_move", &["sound/doors/doormove1.wav"]),
+    ("elevator_door_stop", &["sound/plats/elevator_stop2.wav"]),
+    // And its cube droppers' covers.
+    ("dropper_cover_open", &["sound/doors/doormove2.wav"]),
+    ("dropper_cover_close", &["sound/doors/doorstop1.wav"]),
     ("dropper_open", &["sound/world/dropper_iris_open_01.wav"]),
     ("dropper_close", &["sound/world/dropper_iris_close_01.wav"]),
     ("cube_fizzle", &["sound/npc/turret_floor/turret_fizzler_1.wav"]),

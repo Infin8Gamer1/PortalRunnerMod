@@ -31,8 +31,56 @@ pub struct PortalAudio {
 /// The same sound doesn't start again within this long (s).
 const RETRIGGER: f32 = 0.06;
 
+/// Sounds a map prop's animation makes, as its model has them (Source's AE_CL_PLAYSOUND events:
+/// a sound at a point through the clip, and where one's stopped), due at the simulation's time.
+#[derive(Resource, Default)]
+pub struct PropSounds(Vec<PropSound>);
+
+struct PropSound {
+    due: f32,
+    sound: &'static str,
+    at: Vec3,
+    volume: f32,
+    /// When it's cut off, if it is.
+    stop: Option<f32>,
+}
+
+/// A sound playing that's cut off at a time (the simulation's).
+#[derive(Component)]
+pub struct StopAt(f32);
+
+/// Each model's animations' sounds: (clip, sound, volume, when, stopped when; times are
+/// fractions of the clip).
+const ANIMATION_SOUNDS: &[(&str, &[(&str, &str, f32, f32, Option<f32>)])] = &[
+    // Portal's round elevator doors: the doors moving, and the thunk as they meet or part.
+    ("props/round_elevator_doors", &[
+        ("open", "elevator_door_move", 0.8, 0.105, Some(0.947)),
+        ("open", "elevator_door_stop", 0.8, 0.789, None),
+        ("open", "elevator_door_stop", 0.8, 0.842, None),
+        ("close", "elevator_door_move", 0.8, 0.105, Some(0.947)),
+        ("close", "elevator_door_stop", 0.8, 0.368, None),
+    ]),
+    // A cube dropper's cover.
+    ("props/box_dropper_cover", &[("open", "dropper_cover_open", 0.7, 0.105, None), ("close", "dropper_cover_close", 0.7, 0.105, None)]),
+];
+
+impl PropSounds {
+    /// Model `model` starts clip `clip` (`len` s long) at `now`, at `at`.
+    pub fn animation(&mut self, model: &str, clip: &str, now: f32, len: f32, at: Vec3) {
+        for (m, events) in ANIMATION_SOUNDS {
+            if !model.ends_with(m) {
+                continue;
+            }
+            for &(_, sound, volume, when, stop) in events.iter().filter(|e| e.0 == clip) {
+                self.0.push(PropSound { due: now + when * len, sound, at, volume, stop: stop.map(|s| now + s * len) });
+            }
+        }
+    }
+}
+
 pub fn setup(mut commands: Commands) {
     commands.insert_resource(PortalAudio::default());
+    commands.insert_resource(PropSounds::default());
 }
 
 fn pick(ex: &Extracted, prefix: &str, n: u64) -> Option<Handle<AudioSource>> {
@@ -53,6 +101,8 @@ pub fn play(
     settings: Res<crate::settings::Settings>,
     mut sinks: Query<&mut AudioSink>,
     camera: Query<&GlobalTransform, With<PlayerCamera>>,
+    mut prop_sounds: ResMut<PropSounds>,
+    stopping: Query<(Entity, &StopAt)>,
 ) {
     if ex.sounds.is_empty() {
         return;
@@ -167,6 +217,25 @@ pub fn play(
         }
     }
 
+    // Props' animations' sounds, as they come due; and cut off where they're stopped. (What's
+    // far off in time is from before a map loaded and its clock started again.)
+    let now = sim.time;
+    for (e, s) in &stopping {
+        if now >= s.0 || s.0 - now > 30.0 {
+            commands.entity(e).despawn();
+        }
+    }
+    let (due, later): (Vec<PropSound>, Vec<PropSound>) = std::mem::take(&mut prop_sounds.0).into_iter().partition(|s| s.due <= now);
+    prop_sounds.0 = later.into_iter().filter(|s| s.due < now + 30.0).collect();
+    for s in due {
+        let Some(h) = ex.sound(s.sound) else { continue };
+        let v = at_volume(s.at, s.volume) * ex.gain(&h);
+        let mut e = commands.spawn((AudioPlayer::new(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(v))));
+        if let Some(t) = s.stop {
+            e.insert(StopAt(t));
+        }
+    }
+
     for (h, volume, speed) in plays {
         let now = st.time;
         if st.recent.get(&h.id()).is_some_and(|t| now - t < RETRIGGER) {
@@ -234,5 +303,23 @@ pub fn play(
         if let Ok(mut s) = sinks.get_mut(e) {
             s.set_volume(Volume::Linear(0.25 * music_gain));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elevator_doors_sound_as_they_move() {
+        let mut s = PropSounds::default();
+        s.animation("map/props/round_elevator_doors", "close", 10.0, 2.0, Vec3::ZERO);
+        let got: Vec<(&str, f32, Option<f32>)> = s.0.iter().map(|p| (p.sound, p.due, p.stop)).collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].0 == "elevator_door_move" && (got[0].1 - 10.21).abs() < 1e-3 && got[0].2.is_some_and(|t| (t - 11.894).abs() < 1e-3), "{got:?}");
+        assert!(got[1].0 == "elevator_door_stop" && (got[1].1 - 10.736).abs() < 1e-3, "{got:?}");
+        // Other models' clips make none.
+        s.animation("map/props/round_elevator_body", "close", 10.0, 2.0, Vec3::ZERO);
+        assert_eq!(s.0.len(), 2);
     }
 }
