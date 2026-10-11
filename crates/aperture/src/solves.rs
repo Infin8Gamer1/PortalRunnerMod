@@ -28,6 +28,8 @@ const DROP: f32 = 9.0;
 const BUCKET: f32 = 2.0;
 /// The widest gap she's walked across with a jump (a running jump goes much further).
 const JUMP: f32 = 2.5;
+/// The tallest ledge she vaults or climbs onto at a run.
+const CLIMB: f32 = 1.75;
 
 /// A chamber being played.
 pub struct Play {
@@ -271,6 +273,24 @@ impl Play {
                     !self.floors(c.x, c.y, lo, hi).is_empty()
                 };
                 if near(n.0 + di, n.1 + dk, y - 0.6, y + STEP) {
+                    continue;
+                }
+                // Up onto a ledge too tall to step up (she vaults or climbs it at a run, jumping
+                // at its foot): the floor just over the edge.
+                let climb = (1..=2).find_map(|len| {
+                    let (i, k) = (n.0 + di * len, n.1 + dk * len);
+                    let c = centre(i, k);
+                    self.floors(c.x, c.y, y + STEP, y + CLIMB).into_iter().reduce(f32::max).map(|ny| (i, k, ny))
+                });
+                if let Some((i, k, ny)) = climb {
+                    let m: Node = (i, k, (ny * 100.0).round() as i32);
+                    let ng = g + 2.0;
+                    if cost.get(&m).is_none_or(|&c| ng < c) {
+                        cost.insert(m, ng);
+                        from.insert(m, n);
+                        jumped.insert(m);
+                        open.push(Open(ng + h(&m), m));
+                    }
                     continue;
                 }
                 // The nearest landing across the gap at about her height; failing that, one
@@ -1692,4 +1712,32 @@ fn solve_testchmb_a_11() {
     }
     p.assert_alive("past turret 11");
     p.ride_exit("testchmb_a_13");
+}
+
+/// Chamber 17 (testchmb_a_13), the companion cube's chamber: so far, up the ledges with the
+/// cube (she vaults them; from below, it's held up over each and let go onto it, and she climbs
+/// after it). The rest (the pellet hallways, the three catchers and lifts, the buttons and the
+/// incinerator) isn't played yet.
+#[test]
+fn solve_testchmb_a_13() {
+    let Some(mut p) = Play::load("testchmb_a_13") else { return };
+    p.wait(3.0);
+    p.pick_up(Vec3::new(-4.92, 0.45, -52.06));
+    let set_up = |p: &mut Play, stand: Vec3| {
+        p.go(stand, 0.25);
+        p.c.yaw = std::f32::consts::FRAC_PI_2;
+        p.c.pitch = 0.35;
+        p.wait(0.8);
+        p.sim.use_key(Aim::of(&p.c));
+        p.c.pitch = 0.0;
+        p.wait(1.0);
+    };
+    set_up(&mut p, Vec3::new(-11.8, 0.0, -44.4));
+    p.go(Vec3::new(-13.4, 1.63, -44.4), 0.3);
+    p.pick_up(p.sim.props[0].pos);
+    set_up(&mut p, Vec3::new(-13.2, 1.63, -44.4));
+    assert!(p.sim.props[0].pos.y > 3.25, "the cube isn't up top: {}", p.sim.props[0].pos);
+    p.go(Vec3::new(-15.5, 3.25, -44.0), 0.5);
+    p.pick_up(p.sim.props[0].pos);
+    p.assert_alive("up the ledges with the cube");
 }
