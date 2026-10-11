@@ -502,13 +502,14 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
                 continue;
             };
             // A tilted side that takes portals: its outline too, for a portal to go on its true
-            // plane (its boxes only step along it).
+            // plane (its boxes only step along it). A brush entity's, any way it faces: it may
+            // swing round (a panel on a rotating door).
             if kind == "white" || kind == "black" {
                 let corners = bsp.brush_corners(b);
                 let sides: Vec<&bsp::BrushSide> = (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel).collect();
                 for (k, side) in sides.iter().enumerate() {
                     let plane = &bsp.planes[side.plane];
-                    if plane.axial || plane.normal.abs().max_element() > 0.999 || !material_of(side.texinfo, &mut materials).is_some_and(|m| materials[m].portalable) {
+                    if (mi == 0 && (plane.axial || plane.normal.abs().max_element() > 0.999)) || !material_of(side.texinfo, &mut materials).is_some_and(|m| materials[m].portalable) {
                         continue;
                     }
                     let mut pts: Vec<Vec3> = corners.iter().filter(|(_, on)| on.contains(&k)).map(|(p, _)| ours(place(mi, *p + origin))).collect();

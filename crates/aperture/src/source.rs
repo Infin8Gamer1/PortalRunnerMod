@@ -106,14 +106,16 @@ pub fn parse_solids(text: &str) -> Vec<MapBox> {
         .collect()
 }
 
-/// The still world's tilted faces that take portals (`slope 0 nx ny nz x y z ...`).
-pub fn parse_slopes(text: &str) -> Vec<crate::level::Slope> {
+/// Faces that take portals (`slope model nx ny nz x y z ...`): the still world's tilted ones
+/// (model 0) and brush entities' (any way they face), with their model.
+pub fn parse_slopes(text: &str) -> Vec<(usize, crate::level::Slope)> {
     text.lines()
         .filter_map(|l| {
             let mut it = l.split_whitespace();
-            (it.next()? == "slope" && it.next()? == "0").then_some(())?;
+            (it.next()? == "slope").then_some(())?;
+            let model = it.next()?.parse().ok()?;
             let v: Vec<f32> = it.filter_map(|s| s.parse().ok()).collect();
-            (v.len() >= 12 && v.len().is_multiple_of(3)).then(|| crate::level::Slope { normal: Vec3::new(v[0], v[1], v[2]), pts: v[3..].chunks(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect() })
+            (v.len() >= 12 && v.len().is_multiple_of(3)).then(|| (model, crate::level::Slope { normal: Vec3::new(v[0], v[1], v[2]), pts: v[3..].chunks(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect() }))
         })
         .collect()
 }
@@ -196,7 +198,14 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut l = Level::new(title);
     l.source = Some(name.to_string());
     let boxes = parse_solids(solids);
-    l.slopes = parse_slopes(solids);
+    let mut model_faces: HashMap<usize, Vec<crate::level::Slope>> = HashMap::new();
+    for (m, f) in parse_slopes(solids) {
+        if m == 0 {
+            l.slopes.push(f);
+        } else if f.area() > 1.5 {
+            model_faces.entry(m).or_default().push(f);
+        }
+    }
     let ents = parse_entities(ents);
     let model_of = |e: &Entity| key(e, "model").and_then(|m| m.strip_prefix('*')).and_then(|m| m.parse::<usize>().ok());
     let bounds: HashMap<usize, Aabb> = boxes.iter().filter(|b| b.kind == "bounds").map(|b| (b.model, b.b)).collect();
@@ -423,6 +432,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         let present = !start_disabled;
                         if class == "func_brush" && key(e, "Solidity") == Some("1") {
                             solids.clear();
+                            model_faces.remove(&m);
                         }
                         (vec![Vec3::ZERO], 0, io::MoverKind::Brush, present)
                     }
@@ -440,7 +450,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         }
                     }
                 }
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset }));
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default() }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }

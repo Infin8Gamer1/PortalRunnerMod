@@ -232,6 +232,9 @@ pub struct MoverDef {
     pub follows: bool,
     /// A door that shuts by itself this long after it's fully open (Source's `wait`).
     pub reset: Option<f32>,
+    /// Its sides that take portals, big enough to hold one, as the map has them (portals go
+    /// on these however it's turned: a panel on a swinging door).
+    pub faces: Vec<Slope>,
 }
 
 /// How a swinging door turns: about `axis` through `pivot`, by `angle` (radians, signed) when
@@ -352,6 +355,17 @@ pub struct Slope {
 }
 
 impl Slope {
+    /// Its area (m²).
+    pub fn area(&self) -> f32 {
+        let c = self.pts[0];
+        self.pts.windows(2).skip(1).map(|w| (w[0] - c).cross(w[1] - c).dot(self.normal)).sum::<f32>() * 0.5
+    }
+
+    /// The same face moved: each point and the normal through `f`, `turn`.
+    pub fn moved(&self, f: impl Fn(Vec3) -> Vec3, turn: glam::Quat) -> Slope {
+        Slope { normal: turn * self.normal, pts: self.pts.iter().map(|p| f(*p)).collect() }
+    }
+
     /// Where a ray from `o` along `d` meets the face's front, if it does.
     pub fn hit(&self, o: Vec3, d: Vec3) -> Option<f32> {
         let dn = d.dot(self.normal);
@@ -609,7 +623,7 @@ impl Level {
     /// its inputs are on.
     pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
         let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
-        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None }))
+        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None, faces: Vec::new() }))
     }
 
     pub fn turret(&mut self, at: [f32; 3], yaw_deg: f32) -> &mut Self {

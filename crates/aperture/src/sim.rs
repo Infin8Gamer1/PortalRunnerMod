@@ -299,6 +299,20 @@ impl Mover {
         }
     }
 
+    /// Whether it's still (not on its way anywhere), and there.
+    pub fn at_rest(&self) -> bool {
+        self.goal.is_none() && self.present
+    }
+
+    /// Its faces that take portals, where they are now (turned as it's turned).
+    pub fn faces(&self) -> impl Iterator<Item = crate::level::Slope> + '_ {
+        let (turn, pivot, shift) = match self.def.swing {
+            Some(sw) => (sw.rotation(self.at.x), sw.pivot, self.carried),
+            None => (glam::Quat::IDENTITY, Vec3::ZERO, self.offset()),
+        };
+        self.def.faces.iter().filter(move |_| self.present).map(move |f| f.moved(|p| shift + pivot + turn * (p - pivot), turn))
+    }
+
     /// Its boxes where it is now.
     pub fn boxes(&self) -> impl Iterator<Item = Aabb> + '_ {
         self.solids().map(|(b, _)| b)
@@ -569,7 +583,7 @@ pub struct Sim {
     pub portals: [Option<Portal>; 2],
     /// The mover each portal was shot onto, if any, and where it was then: the portal closes
     /// once it moves (Portal's func_door stairs, lowered).
-    pub portal_mover: [Option<(usize, Vec3)>; 2],
+    pub portal_mover: [Option<(usize, Vec3, Vec3)>; 2],
     carved: [Option<BoxWorld>; 2],
     pub props: Vec<Prop>,
     next_prop: u32,
@@ -860,10 +874,10 @@ impl Sim {
     /// Close any portal whose mover has moved off from under it.
     fn fizzle_portals_on_movers(&mut self) {
         for c in PortalColor::BOTH {
-            let Some((m, at)) = self.portal_mover[c.index()] else { continue };
+            let Some((m, at, offset)) = self.portal_mover[c.index()] else { continue };
             let Some(p) = self.portals[c.index()] else { continue };
             let mv = &self.movers[m];
-            if mv.goal.is_some() || !mv.present || mv.offset().distance(at) > 0.01 {
+            if !mv.at_rest() || mv.offset().distance(offset) > 0.01 || mv.at.distance(at) > 0.01 {
                 self.set_portal(c, None);
                 self.player_env = None;
                 for prop in &mut self.props {
@@ -1123,11 +1137,12 @@ impl Sim {
         // The way she was facing along the last leg (for a floor portal's up).
         let last_dir = legs.last().map(|(a, b)| (*b - *a).normalize_or_zero()).unwrap_or(aim.dir);
         let placed = match h.what {
+            _ if let Some((n, at)) = self.mover_face_hit(from, last_dir, h.t) => self.place_on_slope(color, at, n, last_dir),
             HitWhat::Static(i) => match self.slope_hit(from, last_dir, h.t) {
-                Some((k, at)) => self.place_on_slope(color, at, k, last_dir),
+                Some((k, at)) => self.place_on_slope(color, at, self.level.slopes[k].normal, last_dir),
                 None => self.place(color, h.point, h.normal, i, last_dir),
             },
-            HitWhat::Mover(m) if self.movers[m].goal.is_none() => self.place(color, h.point, h.normal, usize::MAX, last_dir),
+            HitWhat::Mover(m) if self.movers[m].at_rest() => self.place(color, h.point, h.normal, usize::MAX, last_dir),
             _ => None,
         };
         match placed {
@@ -1135,7 +1150,12 @@ impl Sim {
                 self.set_portal(color, Some(p));
                 // On a mover: it stays while the mover does.
                 let inside = p.center - p.normal * 0.02;
-                self.portal_mover[color.index()] = self.movers.iter().enumerate().find(|(_, m)| m.goal.is_none() && m.boxes().any(|b| geom::contains(&b, inside))).map(|(i, m)| (i, m.offset()));
+                self.portal_mover[color.index()] = self
+                    .movers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, m)| m.at_rest() && (m.boxes().any(|b| geom::contains(&b, inside)) || m.faces().any(|f| f.normal.dot(p.normal) > 0.999 && f.distance(p.center).abs() < 0.05 && f.contains(p.center, 0.0))))
+                    .map(|(i, m)| (i, m.at, m.offset()));
                 self.events.push(SimEvent::Shot { color, from, to: h.point, opened: true });
                 self.events.push(SimEvent::PortalOpened { color, at: p.center, normal: p.normal });
                 // Anything standing in the new portal's way from before is not its concern.
@@ -1169,15 +1189,30 @@ impl Sim {
     }
 
     /// Whether a point on (or near) tilted face plane `n` lies on a tilted face that takes
-    /// portals (a panel can be made of several, side by side).
+    /// portals (a panel can be made of several, side by side): the world's, or a still mover's.
     fn on_slope(&self, p: Vec3, n: Vec3) -> bool {
-        self.level.slopes.iter().any(|s| s.normal.dot(n) > 0.999 && s.distance(p).abs() < 0.05 && s.contains(p, -0.01))
+        let on = |s: &crate::level::Slope| s.normal.dot(n) > 0.999 && s.distance(p).abs() < 0.05 && s.contains(p, -0.01);
+        self.level.slopes.iter().any(on) || self.movers.iter().filter(|m| m.at_rest() && !m.def.faces.is_empty()).any(|m| m.faces().any(|f| on(&f)))
     }
 
-    /// Where a portal shot at `point` on tilted face `k` would open: on its plane, its top
-    /// up the slope, nudged to fit.
-    fn place_on_slope(&self, color: PortalColor, point: Vec3, k: usize, view: Vec3) -> Option<Portal> {
-        let n = self.level.slopes[k].normal;
+    /// A shot from `o` along `d` that meets a still mover's tilted face before `t` (a swung
+    /// panel, which has no boxes): the face's normal, and where.
+    fn mover_face_hit(&self, o: Vec3, d: Vec3, t: f32) -> Option<(Vec3, Vec3)> {
+        let d = d.normalize_or_zero();
+        let mut best: Option<(f32, Vec3)> = None;
+        for m in self.movers.iter().filter(|m| m.at_rest() && !m.def.faces.is_empty()) {
+            for f in m.faces().filter(|f| f.normal.abs().max_element() < 0.999) {
+                if let Some(tf) = f.hit(o, d).filter(|&tf| tf < t + 0.02 && best.is_none_or(|(b, _)| tf < b)) {
+                    best = Some((tf, f.normal));
+                }
+            }
+        }
+        best.map(|(tf, n)| (n, o + d * tf))
+    }
+
+    /// Where a portal shot at `point` on a tilted face (facing `n`) would open: on its plane,
+    /// its top up the slope, nudged to fit.
+    fn place_on_slope(&self, color: PortalColor, point: Vec3, n: Vec3, view: Vec3) -> Option<Portal> {
         let flat = Vec3::Y - n * n.y;
         let up = if flat.length_squared() > 1e-4 {
             flat.normalize()

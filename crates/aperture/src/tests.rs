@@ -1557,6 +1557,7 @@ fn movers_push_but_dont_crush() {
         swing: None,
         parent: None,
         follows: false,
+        faces: Vec::new(),
         reset: None,
     }));
     let (mut sim, mut c) = start(l);
