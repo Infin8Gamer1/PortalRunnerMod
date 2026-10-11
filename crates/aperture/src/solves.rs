@@ -40,6 +40,8 @@ pub struct Play {
     boxes: Vec<Aabb>,
     buckets: HashMap<(i32, i32), Vec<usize>>,
     deaths: usize,
+    /// How hard she pushes forward going through a portal (1: running).
+    pub entry_speed: f32,
 }
 
 /// A path-finder's node: a cell and the floor height in it (in centimetres).
@@ -81,7 +83,7 @@ impl Play {
                 }
             }
         }
-        Some(Play { name: name.to_string(), sim, c, events: Vec::new(), time: 0.0, boxes, buckets, deaths: 0 })
+        Some(Play { name: name.to_string(), sim, c, events: Vec::new(), time: 0.0, boxes, buckets, deaths: 0, entry_speed: 0.6 })
     }
 
     /// One frame with this input.
@@ -420,7 +422,7 @@ impl Play {
                 let done = if q.normal.y > 0.5 {
                     self.c.state == State::Ground && flat_q > 1.3
                 } else {
-                    (feet - q.center).dot(q.normal) > out && flat_q < out + 3.0
+                    (feet - q.center).dot(q.normal) > out
                 };
                 if done {
                     break;
@@ -433,7 +435,7 @@ impl Play {
             if Vec2::new(d.x, d.z).length() > 1e-3 {
                 self.c.yaw = (-d.x).atan2(-d.z);
             }
-            self.step(&Input { move_axis: Vec2::new(0.0, 0.6), ..Default::default() });
+            self.step(&Input { move_axis: Vec2::new(0.0, self.entry_speed), ..Default::default() });
             crossed |= self.sim.events.iter().any(|e| matches!(e, SimEvent::Teleported { entered: c, .. } if *c == color));
         }
         self.wait(0.3);
@@ -946,4 +948,46 @@ fn solve_testchmb_a_05() {
     p.cube_on_button(Vec3::new(-7.39, 0.2, -1.52));
     p.ride_exit("testchmb_a_06");
     p.assert_alive("in Chamber 09");
+}
+
+/// Chamber 10 (testchmb_a_06): Portal's first flings. Area A: through the fixed orange behind
+/// the corridor's end wall, at a run, onto the platform beyond. Area B: from the ledge over the
+/// pit, blue on its floor below, and a jump in: flung out of the orange high on the wall
+/// behind, over the pit.
+#[test]
+fn solve_testchmb_a_06() {
+    let Some(mut p) = Play::load("testchmb_a_06") else { return };
+    // Area A: past the trigger that opens the orange behind the corridor's end wall; blue on
+    // the corridor's wall, and through to it.
+    let orange_a = Vec3::new(-3.25, 5.08, 38.51);
+    p.go(Vec3::new(-3.25, 0.0, 39.6), 0.4);
+    p.wait_portal(PortalColor::Orange, orange_a, 10.0);
+    p.go(Vec3::new(-3.25, 0.0, 46.0), 0.4);
+    p.shoot(PortalColor::Blue, Vec3::new(-4.88, 1.42, 43.0));
+    let wall = p.sim.portals[0].unwrap().center;
+    // (Running in: out of orange she has to carry over onto the platform beyond the wall.)
+    p.entry_speed = 1.0;
+    p.enter(PortalColor::Blue, wall, Some(orange_a));
+    p.entry_speed = 0.6;
+    eprintln!("past the wall at {}", p.c.feet);
+    // Area B: up the stairs to the ledge over the pit (its trigger opens orange high on the
+    // wall behind); blue on the pit's floor below, and in: out of orange, flung over the pit.
+    let orange_b = Vec3::new(-3.25, 11.38, 26.21);
+    p.go(Vec3::new(-3.25, 3.25, 26.0), 0.5);
+    p.wait_portal(PortalColor::Orange, orange_b, 10.0);
+    eprintln!("on the ledge at {}", p.c.feet);
+    p.go(Vec3::new(-3.25, 3.25, 19.55), 0.2);
+    // (On the pit's lower floor, down below.)
+    let pit = Vec3::new(-3.2, -3.25, 17.1);
+    p.shoot(PortalColor::Blue, pit);
+    eprintln!("blue {:?}", p.sim.portals[0].map(|q| (q.center, q.normal)));
+    p.entry_speed = 1.0;
+    p.through(PortalColor::Blue, 1.0);
+    p.entry_speed = 0.6;
+    p.wait_for(10.0, "her to land", |p| p.c.state == State::Ground);
+    p.wait(0.5);
+    eprintln!("flung to {}", p.c.feet);
+    p.assert_alive("flung over the pit");
+    // Area C (the receding panels, flung out of the pit's floor orange twice to the exit) isn't
+    // played yet.
 }
