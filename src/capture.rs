@@ -64,6 +64,8 @@ enum Act {
     WaitPelletX(f32, u32),
     /// Put the first cube here, still.
     PlaceCube(Vec3),
+    /// Stand off the `n`th cube (1.6 m along +X, or -X if that's in a wall), looking at it.
+    ViewCube(usize),
 }
 
 fn fwd() -> MoveInput {
@@ -500,6 +502,16 @@ fn script(name: &str) -> Vec<Act> {
                     // Its roof, and the lamp under it.
                     v.extend([Look(-90.0, 55.0), Wait(3), Shot("elevator_c_up"), Look(90.0, -5.0)]);
                 }
+            }
+            v
+        }
+        // Each cube in a Portal map (PORTAL_FIRST_MAP; Chambers 04-05 by default), close up: they
+        // should rest on the floor, not in it (#29).
+        "cubes" => {
+            let map = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len() + 2);
+            let mut v = vec![Map(map), Wait(240)];
+            for k in 0..4 {
+                v.extend([ViewCube(k), Wait(10), Shot(Box::leak(format!("cube_{k}").into_boxed_str()))]);
             }
             v
         }
@@ -990,6 +1002,18 @@ pub fn run(
             cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
         Act::Menu(screen) => menu.open_at(*screen),
+        Act::ViewCube(n) => {
+            if let Some(c) = game.sim.props.iter().filter(|p| p.alive).nth(*n).map(|p| p.pos) {
+                let side = if game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, c + Vec3::new(1.6, 0.5, 0.0))) { -1.0 } else { 1.0 };
+                // On the floor the cube's on (no landing to dip the view).
+                game.ctrl.feet = c + Vec3::new(1.6 * side, -0.44, 0.0);
+                game.ctrl.vel = Vec3::ZERO;
+                game.ctrl.state = MoveState::Ground;
+                game.ctrl.yaw = if side > 0.0 { 90f32.to_radians() } else { -90f32.to_radians() };
+                game.ctrl.pitch = -30f32.to_radians();
+                println!("capture: cube {n} at {c}");
+            }
+        }
         Act::PlaceCube(at) => {
             if let Some(p) = game.sim.props.iter_mut().find(|p| p.alive) {
                 p.pos = *at;

@@ -197,10 +197,13 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             }
         }
     }
-    // A template's cube (where it was put, and its kind).
-    let template_cube = |template: &str| -> Option<(Vec3, CubeKind)> {
+    // A template's cube: where it was put, where the template is (what it's placed from), and
+    // its kind.
+    let template_cube = |template: &str| -> Option<(Vec3, Vec3, CubeKind)> {
         let t = named.get(&template.to_ascii_lowercase())?;
-        t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).filter_map(|(_, v)| named.get(&v.to_ascii_lowercase())).find(|c| is_metal_box(c)).and_then(|c| Some((origin(c)?, cube_kind(c))))
+        let cube = t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).filter_map(|(_, v)| named.get(&v.to_ascii_lowercase())).find(|c| is_metal_box(c))?;
+        let at = origin(cube)?;
+        Some((at, origin(t).unwrap_or(at), cube_kind(cube)))
     };
 
     // The world.
@@ -445,13 +448,27 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             }
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
             "env_texturetoggle" => kind = io::Kind::TextureToggle { target: key(e, "target").unwrap_or("").to_ascii_lowercase() },
+            // The maker puts the template where it is (turned as it's turned): the cube keeps
+            // its place relative to the template, so it sits on the floor as the map's had it.
             "env_entity_maker" => {
-                if let (Some(at), Some((_, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
+                if let (Some(maker), Some((cube, template, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
+                    let turn = glam::Quat::from_rotation_y(angles(e, "angles").1.to_radians());
+                    let at = maker + turn * (cube - template);
+                    // (Where that grazes a wall, a dropper's chute, Source's physics slides off it
+                    // and boxes catch on it: in from the wall, towards the maker, till it's clear.)
+                    let clear = |p: Vec3| !l.solids.iter().any(|s| s.b.overlaps(&Aabb::from_center_size(p, Vec3::splat(0.9))));
+                    let mut at = (0..=20).map(|k| at.lerp(maker, k as f32 / 20.0)).find(|p| clear(*p)).unwrap_or(at);
+                    // Over a dropper, its funnel centres the cube (Source's physics slides it down
+                    // to the hole; a box doesn't slide), so it drops through.
+                    let dropper = ents.iter().filter(|d| key(d, "model").is_some_and(|m| m.to_ascii_lowercase().ends_with("box_dropper.mdl"))).filter_map(origin).find(|d| d.y < at.y && Vec3::new(d.x - at.x, 0.0, d.z - at.z).length() < 1.6);
+                    if let Some(d) = dropper {
+                        at = Vec3::new(d.x, at.y, d.z);
+                    }
                     kind = io::Kind::Maker { at, kind: k };
                 }
             }
             "point_template" => {
-                if let Some((at, k)) = template_cube(&name) {
+                if let Some((at, _, k)) = template_cube(&name) {
                     kind = io::Kind::Maker { at, kind: k };
                 }
             }

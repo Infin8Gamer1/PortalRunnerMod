@@ -1433,3 +1433,33 @@ fn portals_rotating_doors_swing() {
     assert!(on_panel >= 2, "only {on_panel} brushes ride the hatch");
 }
 
+
+
+/// Cubes rest on Portal's floors, not in them (#29): in every map, the cubes there from the
+/// start or made in the first seconds (droppers, makers) aren't inside anything solid.
+#[test]
+fn portals_cubes_rest_on_floors() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let mut bad = Vec::new();
+    let mut seen = 0;
+    for name in &names {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let (mut sim, mut c) = start(level);
+        c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+        run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+        for p in sim.props.iter().filter(|p| p.alive) {
+            seen += 1;
+            let b = p.aabb();
+            let inner = faith_move::Aabb::new(b.min + Vec3::splat(0.05), b.max - Vec3::splat(0.05));
+            if let Some(s) = sim.statics.iter().find(|s| s.b.overlaps(&inner)) {
+                bad.push(format!("{name}: cube at {} is inside {:?}-{:?}", p.pos, s.b.min, s.b.max));
+            }
+        }
+    }
+    assert!(seen > 5, "only {seen} cubes");
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
