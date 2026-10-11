@@ -13,7 +13,7 @@ use glam::Vec3;
 use faith_move::Aabb;
 
 use crate::io;
-use crate::level::{CubeKind, Gun, Inputs, Item, Level, Mat, MoverDef, SourceLight, Solid};
+use crate::level::{CubeKind, Gun, Inputs, Item, Level, Mat, MoverDef, SourceLight, Solid, Swing};
 use crate::portal::{Portal, PortalColor};
 
 /// A Source entity: its keys in order (a key can repeat: outputs).
@@ -292,9 +292,23 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             "func_door" | "func_movelinear" | "func_door_rotating" | "func_brush" | "func_wall_toggle" | "func_physbox" | "func_rotating" | "func_tracktrain" => {
                 let Some(m) = model else { continue };
                 let mut solids = model_boxes.remove(&m).unwrap_or_default();
-                let speed = num(e, "speed", 100.0).max(1.0) * 0.0254;
+                let mut speed = num(e, "speed", 100.0).max(1.0) * 0.0254;
                 let mut shift = Vec3::ZERO;
+                let mut swing = None;
+                // A door shuts itself `wait` seconds after it's open (-1: it stays).
+                let reset = matches!(class, "func_door" | "func_door_rotating").then(|| num(e, "wait", 4.0)).filter(|w| *w >= 0.0);
                 let (path, start, mk, present) = match class {
+                    "func_door_rotating" => {
+                        // Turns `distance` degrees about its origin (Source's Z, or X or Y by its
+                        // flags; the other way with Reverse), at `speed` degrees a second. Its
+                        // path is how far round it's turned.
+                        let f = flags(e);
+                        let axis = if f & 64 != 0 { Vec3::X } else if f & 128 != 0 { Vec3::Y } else { Vec3::Z };
+                        let angle = num(e, "distance", 90.0).to_radians() * if f & 2 != 0 { -1.0 } else { 1.0 };
+                        swing = Some(Swing { pivot: origin(e).unwrap_or(Vec3::ZERO), axis: to_ours(axis).normalize(), angle });
+                        speed = num(e, "speed", 100.0).max(1.0).to_radians();
+                        (vec![Vec3::ZERO, Vec3::X * angle.abs()], usize::from(f & 1 != 0), io::MoverKind::Door, true)
+                    }
                     "func_door" | "func_movelinear" => {
                         let (p, y, _) = angles(e, "movedir");
                         let dir = direction(p, y);
@@ -355,7 +369,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         }
                     }
                 }
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, present, shift, inputs: None, shuttle: false }));
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }
@@ -398,9 +412,10 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 if let Some(at) = origin(e) {
                     let (p, y, r) = angles(e, "angles");
                     let s = sig();
+                    let index = l.items.iter().filter(|i| matches!(i, Item::PelletLauncher { .. })).count();
                     l.items.push(Item::PelletLauncher { at, dir: angle_vectors(p, y, r).0, inputs: Inputs::on(s), life: num(e, "BallLifetime", 12.0) });
                     initial.push((s, !start_disabled));
-                    kind = io::Kind::Switch { sig: s };
+                    kind = io::Kind::Launcher { sig: s, index };
                 }
             }
             "logic_relay" => kind = io::Kind::Relay { enabled: !start_disabled, once: flags(e) & 1 != 0 },
@@ -444,6 +459,54 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         }
         let outputs: Vec<io::Output> = e.iter().filter(|(k, _)| k.starts_with("On") || k.starts_with("Out")).filter_map(|(k, v)| io::Output::parse(k, v)).collect();
         io_ents.push(io::Ent { name, class: class.to_string(), kind, outputs, alive: true });
+    }
+    // Brushes parented to a moving one ride with it: the same path (or swing), driven by it.
+    let mover_named: HashMap<String, usize> = io_ents.iter().filter_map(|e| match e.kind {
+        io::Kind::Mover { index, .. } if !e.name.is_empty() => Some((e.name.to_ascii_lowercase(), index)),
+        _ => None,
+    }).collect();
+    let mut children = Vec::new();
+    for (e, ent) in ents.iter().zip(&io_ents) {
+        if let (io::Kind::Mover { index, .. }, Some(parent)) = (&ent.kind, key(e, "parentname").and_then(|p| mover_named.get(&p.to_ascii_lowercase())))
+            && parent != index
+        {
+            children.push((*index, *parent));
+        }
+    }
+    // (Through parents' parents, up to the first that moves by itself: a launcher's panel on
+    // its swinging hatch carries more brushes.)
+    let defs: Vec<MoverDef> = l.items.iter().filter_map(|i| if let Item::Mover(m) = i { Some(m.clone()) } else { None }).collect();
+    let moves = |k: usize| defs[k].path.len() >= 2 || defs[k].swing.is_some();
+    let root = |mut k: usize| {
+        for _ in 0..8 {
+            match children.iter().find(|(c, _)| *c == k) {
+                Some(&(_, p)) => k = p,
+                None => break,
+            }
+            if moves(k) {
+                break;
+            }
+        }
+        k
+    };
+    let mut k = 0;
+    for item in &mut l.items {
+        let Item::Mover(m) = item else { continue };
+        let still = m.path.len() < 2 && m.swing.is_none();
+        if let Some(parent) = children.iter().any(|(c, _)| *c == k).then(|| root(k)).filter(|&p| p != k) {
+            if still {
+                let p = &defs[parent];
+                m.parent = Some(parent);
+                m.follows = true;
+                m.path = p.path.clone();
+                m.swing = p.swing;
+                m.start = p.start;
+                m.shift = p.shift;
+            } else if let Some(&(_, direct)) = children.iter().find(|(c, _)| *c == k) {
+                m.parent = Some(direct);
+            }
+        }
+        k += 1;
     }
     // Path nodes know their train.
     for ent in &mut io_ents {

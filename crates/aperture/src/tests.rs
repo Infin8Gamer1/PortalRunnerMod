@@ -1340,3 +1340,96 @@ fn portals_maps_walls_stop_her() {
 }
 
 
+
+/// In each of Portal's maps, a cube on a floor button opens the doors its button's `OnOpen`
+/// sends `Open` to (Portal's exits mostly open that way: #31).
+#[test]
+fn portals_buttons_open_their_doors() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let mut bad = Vec::new();
+    let mut checked = 0;
+    for name in &names {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let (sim0, _) = start(level.clone());
+        let io = sim0.io.as_ref().unwrap();
+        for (k, e) in io.ents.iter().enumerate() {
+            let crate::io::Kind::ButtonDoor { button, .. } = e.kind else { continue };
+            let doors: Vec<(String, usize)> = e
+                .outputs
+                .iter()
+                .filter(|o| o.event.eq_ignore_ascii_case("OnOpen") && o.input.eq_ignore_ascii_case("Open"))
+                .flat_map(|o| io.ents.iter().filter(|d| d.name.eq_ignore_ascii_case(&o.target)).filter_map(|d| match d.kind {
+                    crate::io::Kind::Mover { index, .. } => Some((d.name.clone(), index)),
+                    _ => None,
+                }))
+                .collect();
+            if doors.is_empty() {
+                continue;
+            }
+            let (mut sim, mut c) = start(level.clone());
+            c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+            run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+            let at = sim.buttons[button].at;
+            sim.spawn_prop(CubeKind::Storage, at + Vec3::Y * 0.6, None);
+            run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+            checked += 1;
+            if !sim.buttons[button].pressed {
+                bad.push(format!("{name}: {} ({k}): the cube didn't press it", e.name));
+                continue;
+            }
+            for (d, m) in doors {
+                let mv = &sim.movers[m];
+                let last = mv.def.path.len() - 1;
+                if mv.node != last && mv.goal != Some(last) {
+                    bad.push(format!("{name}: {} didn't open {d} (node {}, goal {:?}, path {})", e.name, mv.node, mv.goal, mv.def.path.len()));
+                }
+            }
+        }
+    }
+    assert!(checked > 5, "only {checked} buttons");
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// Swinging doors swing (#31): Chamber 18's pellet launcher (testchmb_a_14) turns its door
+/// open as it fires and shut again, and a door built to turn 90 degrees gets there.
+#[test]
+fn portals_rotating_doors_swing() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_14.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let level = crate::source::level("testchmb_a_14", "18", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    let io = sim.io.as_ref().unwrap();
+    let door = io.ents.iter().find_map(|e| match e.kind {
+        crate::io::Kind::Mover { index, .. } if e.name == "lab4_rotate_launcher_door1" => Some(index),
+        _ => None,
+    }).expect("the launcher's door");
+    let sw = sim.movers[door].def.swing.expect("it swings");
+    assert!((sw.angle.abs() - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "{sw:?}");
+    // Her in the trigger that starts the launchers.
+    let start_box = io.ents.iter().find_map(|e| match &e.kind {
+        crate::io::Kind::Trigger { b, .. } if e.name == "start_spinning_launchers" => Some(*b),
+        _ => None,
+    }).expect("the launchers' trigger");
+    c.feet = Vec3::new(start_box.center().x, start_box.min.y + 0.05, start_box.center().z);
+    let mut widest = 0.0f32;
+    run(&mut sim, &mut c, 8.0, |sim, _| {
+        widest = widest.max(sim.movers[door].at.x);
+        Input::default()
+    });
+    assert!((widest - sw.angle.abs()).abs() < 0.02, "it opened {widest} of {}", sw.angle.abs());
+    // The launcher's panel, and the brush on that, turn with it.
+    let io = sim.io.as_ref().unwrap();
+    let panel = io.ents.iter().find_map(|e| match e.kind {
+        crate::io::Kind::Mover { index, .. } if e.name == "lab4_rotate_launcher_brush1" => Some(index),
+        _ => None,
+    }).expect("the panel");
+    let on_panel = sim.movers.iter().filter(|m| m.def.parent == Some(door)).count();
+    assert_eq!(sim.movers[panel].def.parent, Some(door));
+    assert!(on_panel >= 2, "only {on_panel} brushes ride the hatch");
+}
+

@@ -210,6 +210,32 @@ pub struct MoverDef {
     /// stops where it is).
     pub inputs: Option<Inputs>,
     pub shuttle: bool,
+    /// A door that swings rather than slides (func_door_rotating): its path's first point to its
+    /// second is how far round it's turned, in radians.
+    pub swing: Option<Swing>,
+    /// The mover it's parented to (Portal's maps). A brush that doesn't move by itself goes
+    /// where that goes and turns as that turns (`follows`: a launcher's panel on its swinging
+    /// hatch); one that does is carried along by it (a gun's turning pedestal on its lift).
+    pub parent: Option<usize>,
+    pub follows: bool,
+    /// A door that shuts by itself this long after it's fully open (Source's `wait`).
+    pub reset: Option<f32>,
+}
+
+/// How a swinging door turns: about `axis` through `pivot`, by `angle` (radians, signed) when
+/// fully open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Swing {
+    pub pivot: Vec3,
+    pub axis: Vec3,
+    pub angle: f32,
+}
+
+impl Swing {
+    /// Its turn when it's `travelled` (radians) along its path.
+    pub fn rotation(&self, travelled: f32) -> glam::Quat {
+        glam::Quat::from_axis_angle(self.axis, travelled * self.angle.signum())
+    }
 }
 
 /// No brush model (a mover in a hand-built chamber, drawn from its boxes).
@@ -513,7 +539,7 @@ impl Level {
     /// its inputs are on.
     pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
         let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
-        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true }))
+        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None }))
     }
 
     pub fn turret(&mut self, at: [f32; 3], yaw_deg: f32) -> &mut Self {

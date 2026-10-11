@@ -468,6 +468,27 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("signs_e_panel_check"),
             ]
         }
+        // A swinging door (#31): Chamber 18's (testchmb_a_14) pellet launcher turns its hatch
+        // as it fires, seen from the start platform.
+        "swing" => {
+            let map = aperture::levels::all().len() + 13;
+            let mut v = vec![Map(map), Wait(200), Teleport(Vec3::new(-28.45, 29.3, -37.39)), Wait(2)];
+            // (In the air over the goo, beside the hatch: put back before each shot.)
+            for k in 0..10 {
+                v.extend([Teleport(Vec3::new(-10.5, 30.6, -40.5)), Launch(Vec3::ZERO), Look(42.0, 8.0), Wait(1), Shot(Box::leak(format!("swing_{k}").into_boxed_str())), Wait(10)]);
+            }
+            v
+        }
+        // Chamber 02's (testchmb_a_01) portal gun on its turning pedestal: it fires, turns a
+        // quarter round, fires again and turns back.
+        "pedestal" => {
+            let map = aperture::levels::all().len() + 1;
+            let mut v = vec![Map(map), Wait(100), Teleport(Vec3::new(-4.06, -3.25, 0.4)), Look(0.0, -12.0), Wait(10)];
+            for k in 0..8 {
+                v.extend([Shot(Box::leak(format!("pedestal_{k}").into_boxed_str())), Wait(40)]);
+            }
+            v
+        }
         // High energy pellets and the platform they power (#23, #22): Chamber 06, its pellet
         // sent through portals into the catcher.
         "pellets" => vec![

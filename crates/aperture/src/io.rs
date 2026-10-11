@@ -77,8 +77,11 @@ pub enum Kind {
     /// A floor button's trigger: the sim's button `button` pressing it.
     ButtonTrigger { button: usize, enabled: bool, players: bool, cubes: bool, on: bool },
     Mover { index: usize, kind: MoverKind },
-    /// Something switched by a signal: a grill, a pellet launcher (on: working).
+    /// Something switched by a signal: a grill (on: working).
     Switch { sig: Sig },
+    /// A pellet launcher, switched by a signal like a grill; the sim's launcher `index`. It
+    /// says when it's fired (OnPostSpawnBall).
+    Launcher { sig: Sig, index: usize },
     /// A preset portal (`start`: open as the map starts).
     Portal { color: PortalColor, portal: Portal, start: bool },
     /// A choreographed scene (GLaDOS speaking): its lines (start, sound), length and the
@@ -221,6 +224,12 @@ impl Io {
         // What the sim did: movers at their path points, buttons pressed.
         let events: Vec<SimEvent> = sim.events.clone();
         for ev in events {
+            if let SimEvent::PelletLaunched { at } = ev {
+                let fired = sim.launchers.iter().position(|l| (l.at + l.dir * 0.3).distance(at) < 0.01);
+                if let Some(e) = fired.and_then(|k| self.ents.iter().position(|e| matches!(e.kind, Kind::Launcher { index, .. } if index == k))) {
+                    self.fire(e, "OnPostSpawnBall", None);
+                }
+            }
             if let SimEvent::MoverAt { mover, node, arrived } = ev {
                 for e in 0..self.ents.len() {
                     match self.ents[e].kind {
@@ -228,6 +237,9 @@ impl Io {
                         Kind::Mover { index, kind: MoverKind::Door } if index == mover && arrived => {
                             let last = sim.movers[index].def.path.len() - 1;
                             self.fire(e, if node == last { "OnFullyOpen" } else { "OnFullyClosed" }, None);
+                            if let Some(wait) = sim.movers[index].def.reset.filter(|_| node == last) {
+                                self.queue.push(Pending { at: self.time + wait, target: "!self".into(), input: "Close".into(), param: String::new(), caller: e });
+                            }
                         }
                         _ => {}
                     }
@@ -516,6 +528,11 @@ impl Io {
                     (MoverKind::Train, "startbackward" | "reverse") => m.goal = Some(0),
                     (MoverKind::Train, "stop") => m.goal = None,
                     // A fraction of its top speed, and off it goes (0: it stops).
+                    // A door's own speed (units, or for a swinging door degrees, a second).
+                    (MoverKind::Door, "setspeed") => {
+                        let v = num(param).abs();
+                        m.speed = if m.def.swing.is_some() { v.to_radians() } else { v * 0.0254 };
+                    }
                     (MoverKind::Train, "setspeed" | "setspeeddir") => {
                         let f = num(param);
                         m.speed = m.def.speed * f.abs();
@@ -528,13 +545,15 @@ impl Io {
                     (_, "enable" | "turnon" | "enablecollision") => m.present = true,
                     (_, "disable" | "turnoff" | "disablecollision") => m.present = false,
                     (MoverKind::Brush, "toggle") => m.present = !m.present,
-                    // A rotating door can't turn here: it gets out of the way.
-                    (MoverKind::Brush, "open") => m.present = false,
-                    (MoverKind::Brush, "close") => m.present = true,
                     _ => {}
                 }
             }
-            Kind::Switch { sig } => {
+            Kind::Launcher { index, .. } if i == "launchball" => {
+                if let Some(l) = sim.launchers.get_mut(index) {
+                    l.idle = l.idle.max(crate::sim::PELLET_RELOAD);
+                }
+            }
+            Kind::Switch { sig } | Kind::Launcher { sig, .. } => {
                 let on = match i.as_str() {
                     "enable" => Some(true),
                     "disable" => Some(false),

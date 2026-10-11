@@ -109,7 +109,7 @@ pub const PELLET_RADIUS: f32 = 0.25;
 /// MinLifeAfterPortal).
 const PELLET_LIFE_AFTER_PORTAL: f32 = 6.0;
 /// A launcher waits this long after its last pellet before the next.
-const PELLET_RELOAD: f32 = 1.5;
+pub const PELLET_RELOAD: f32 = 1.5;
 
 /// A turret sees this far...
 const TURRET_RANGE: f32 = 18.0;
@@ -231,16 +231,31 @@ pub struct Mover {
     pub speed: f32,
     /// A shuttle's pause at the end it's reached (seconds left).
     pub wait: f32,
+    /// How far what it's parented to has carried it (one with a motion of its own).
+    pub carried: Vec3,
 }
 
 /// How long a shuttling platform waits at each end.
 const SHUTTLE_WAIT: f32 = 1.5;
 
 impl Mover {
+    /// How far it's moved from where the map has it (a swinging door: only as carried).
+    pub fn offset(&self) -> Vec3 {
+        match self.def.swing {
+            Some(_) => self.carried,
+            None => self.at - self.def.path.first().copied().unwrap_or(Vec3::ZERO) + self.carried,
+        }
+    }
+
     /// Its boxes where it is now.
     pub fn boxes(&self) -> impl Iterator<Item = Aabb> + '_ {
-        let d = self.at - self.def.path.first().copied().unwrap_or(Vec3::ZERO);
-        self.def.boxes.iter().filter(move |_| self.present).map(move |b| b.b.translated(d))
+        // A swinging door is solid shut, and out of the way once it's begun to open (its boxes
+        // can't turn).
+        let (d, solid) = match self.def.swing {
+            Some(_) => (self.carried, self.at.length() < 0.02),
+            None => (self.offset(), true),
+        };
+        self.def.boxes.iter().filter(move |_| self.present && solid).map(move |b| b.b.translated(d))
     }
 }
 
@@ -686,7 +701,7 @@ impl Sim {
                 }
                 Item::Mover(def) => {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, def });
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, def });
                 }
             }
         }
@@ -1759,7 +1774,7 @@ impl Sim {
             }
             let d = at - before;
             // What's standing on it moves with it.
-            if d != Vec3::ZERO {
+            if d != Vec3::ZERO && self.movers[i].def.swing.is_none() {
                 let tops: Vec<Aabb> = self.movers[i].boxes().collect();
                 let on_top = |b: &Aabb| tops.iter().any(|t| (b.min.y - t.max.y).abs() < STANDING && b.max.x > t.min.x && b.min.x < t.max.x && b.max.z > t.min.z && b.min.z < t.max.z);
                 if on_top(&ctrl.body().aabb(ctrl.feet)) {
@@ -1782,6 +1797,18 @@ impl Sim {
             }
             for n in passed {
                 self.events.push(SimEvent::MoverAt { mover: i, node: n, arrived: n == goal });
+            }
+        }
+        // What's parented to a mover goes with it.
+        for i in 0..self.movers.len() {
+            if let Some(p) = self.movers[i].def.parent.filter(|&p| p < self.movers.len()) {
+                if self.movers[i].def.follows {
+                    let (at, node, carried) = (self.movers[p].at, self.movers[p].node, self.movers[p].carried);
+                    let m = &mut self.movers[i];
+                    (m.at, m.node, m.carried) = (at, node, carried);
+                } else {
+                    self.movers[i].carried = self.movers[p].offset();
+                }
             }
         }
     }

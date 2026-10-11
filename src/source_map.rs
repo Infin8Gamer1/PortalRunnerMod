@@ -107,6 +107,8 @@ pub fn show_frames(game: Res<Game>, mut q: Query<(&mut TextureFrames, &MeshMater
 #[derive(Component)]
 pub struct MapProp {
     base: Vec3,
+    /// How the map turns it (riding a swinging door, it turns further).
+    turn: Quat,
     mover: Option<usize>,
     /// Its entity in the map's logic, and its model (for its animations), if it animates.
     animated: Option<(usize, Handle<bevy::gltf::Gltf>)>,
@@ -386,12 +388,13 @@ pub fn sync(
             Some((m, k)) => (m.to_string(), k),
             None => (f[1].to_string(), 0),
         };
+        let turn = source_rotation(floats(f[3]));
         let mut spawned = commands.spawn((
             ChamberGeom,
-            MapProp { base: at, mover, animated, model, skin },
+            MapProp { base: at, turn, mover, animated, model, skin },
             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
             Visibility::default(),
-            Transform::from_translation(at).with_rotation(source_rotation(floats(f[3]))),
+            Transform::from_translation(at).with_rotation(turn),
         ));
         // The shaft lights stay where they are, so the car goes dark as it leaves them.
         // A light on the car rides with it (`move_models` moves this prop).
@@ -439,16 +442,31 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
     let movers = &game.sim.movers;
     for (p, mut tf) in &mut props {
         let Some(mv) = p.mover.and_then(|m| movers.get(m)) else { continue };
-        let at = p.base + mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
-        if tf.translation != at {
+        let (at, turn) = match mv.def.swing {
+            Some(sw) => {
+                let r = sw.rotation(mv.at.x);
+                (mv.carried + sw.pivot + r * (p.base - sw.pivot), r * p.turn)
+            }
+            None => (p.base + mv.offset(), p.turn),
+        };
+        if tf.translation != at || tf.rotation != turn {
             tf.translation = at;
+            tf.rotation = turn;
         }
     }
     for (m, mut tf, mut vis) in &mut q {
         let Some(mv) = movers.iter().find(|v| v.def.model == m.0) else { continue };
-        let at = mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
-        if tf.translation != at {
-            tf.translation = at;
+        let want = match mv.def.swing {
+            // A swinging door turns about its hinge.
+            Some(sw) => {
+                let r = sw.rotation(mv.at.x);
+                Transform { translation: mv.carried + sw.pivot - r * sw.pivot, rotation: r, ..default() }
+            }
+            None => Transform::from_translation(mv.offset()),
+        };
+        if tf.translation != want.translation || tf.rotation != want.rotation {
+            tf.translation = want.translation;
+            tf.rotation = want.rotation;
         }
         let want = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
