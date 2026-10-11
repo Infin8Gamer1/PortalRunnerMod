@@ -151,6 +151,7 @@ fn emissive_materials(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mats: Option<Res<crate::chamber::ChamberMats>>,
     lamps: Option<Res<crate::source_map::Lamps>>,
+    scorches: Option<Res<crate::chamber::ScorchMats>>,
     mut done: Local<HashSet<AssetId<StandardMaterial>>>,
 ) {
     let lamp = mats.map(|m| m.lamp.id());
@@ -162,6 +163,10 @@ fn emissive_materials(
         .collect();
     for id in todo {
         done.insert(id);
+        // Bounce marks set their own glow every frame, already scaled.
+        if scorches.as_ref().is_some_and(|s| s.0.contains(&id)) {
+            continue;
+        }
         if let Some(mut m) = materials.get_mut(id) {
             let scale = EMISSIVE_SCALE * if is_lamp(id) { LAMP_BOOST } else { 1.0 };
             m.emissive = LinearRgba::from_vec3(m.emissive.to_vec3() * scale);

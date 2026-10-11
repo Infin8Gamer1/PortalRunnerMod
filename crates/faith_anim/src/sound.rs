@@ -93,6 +93,11 @@ pub fn step_cue_on(n: i32, surface: Surface) -> Option<String> {
     HAND.iter().find(|(k, _)| *k == n).map(|(_, name)| format!("A_Material_Handstep.{group}._{n}_Female_HandStep{name}"))
 }
 
+/// The slide scrape, however the animation names it.
+fn is_slide_scrape(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with("body.bodyslide")
+}
+
 fn step_cue(n: i32) -> Option<String> {
     step_cue_on(n, Surface::Concrete)
 }
@@ -253,6 +258,26 @@ impl Director {
         Some(SoundCmd::Play { id, cue: key, variant, volume: (v * gain).max(0.0), speed: p.clamp(0.5, 2.0), looping: c.looping })
     }
 
+    /// The slide's scrape. It loops for a slide (and stops when that move ends) or for a skid
+    /// (and stops when the skid does). Back on the ground, neither of those, it doesn't start:
+    /// the landing animation can still notify it a frame after the slide has finished.
+    fn play_scrape(&mut self, gain: f32, c: &Controller, out: &mut Vec<SoundCmd>) {
+        let Some(cmd) = self.play("A_Character_Female_01.Body.BodySlide", gain) else { return };
+        let scraping = c.skidding || matches!(c.state, MoveState::Slide { .. } | MoveState::RumpSlide { .. });
+        if let SoundCmd::Play { id, looping: true, .. } = &cmd {
+            if !scraping {
+                return;
+            }
+            let id = *id;
+            if matches!(c.state, MoveState::Slide { .. } | MoveState::RumpSlide { .. }) {
+                self.move_loops.push((id, std::mem::discriminant(&c.state)));
+            } else {
+                self.skid_loops.push(id);
+            }
+        }
+        out.push(cmd);
+    }
+
     /// Play a cue for the current move; a looping cue is stopped when the move ends instead of
     /// playing forever.
     fn play_move(&mut self, cue: &str, gain: f32, state: &MoveState, out: &mut Vec<SoundCmd>) {
@@ -326,6 +351,7 @@ impl Director {
                             self.play_move(&cue, gain, &c.state, out);
                         }
                     }
+                    Notify::Sound(path) if is_slide_scrape(path) => self.play_scrape(0.8, c, out),
                     Notify::Sound(path) => self.play_move(path, 0.8, &c.state, out),
                 }
             }
@@ -364,18 +390,10 @@ impl Director {
                     }
                     self.step(9, surface(false), 1.0, &c.state, out);
                 }
-                // TdMove_RumpSlide: the slide's scrape, as a slide.
-                MoveEvent::Slide | MoveEvent::RumpSlide => {
-                    self.play_move("A_Character_Female_01.Body.BodySlide", 0.9, &c.state, out);
-                    self.step(11, surface(false), 1.0, &c.state, out);
-                }
-                MoveEvent::Skid => {
-                    if let Some(cmd) = self.play("A_Character_Female_01.Body.BodySlide", 0.9) {
-                        if let SoundCmd::Play { id, looping: true, .. } = cmd {
-                            self.skid_loops.push(id);
-                        }
-                        out.push(cmd);
-                    }
+                // TdMove_RumpSlide: the slide's scrape, as a slide. The same cue from a skid.
+                // A notify of it once she's already back on the ground is not a new slide.
+                MoveEvent::Slide | MoveEvent::RumpSlide | MoveEvent::Skid => {
+                    self.play_scrape(0.9, c, out);
                     self.step(11, surface(false), 1.0, &c.state, out);
                 }
                 MoveEvent::Vault | MoveEvent::Mantle if !anim_driven => {
@@ -513,5 +531,56 @@ mod tests {
         c.skidding = false;
         assert!(frame(&c).contains(&SoundCmd::Stop(id)), "the skid is over");
         assert!(!frame(&c).contains(&SoundCmd::Stop(id)), "stopped once");
+    }
+
+    /// A fast landing into a slide: the scrape plays for the slide, and a notify of it once
+    /// she's already back on the ground does not leave the loop running.
+    #[test]
+    fn slide_scrape_stops_when_the_slide_ends() {
+        let level = greybox::greybox();
+        let cp = &level.checkpoints[0];
+        let mut c = Controller::new(Tuning::default(), cp.spawn, cp.yaw);
+        let mut cues = cues();
+        cues.get_mut("a_character_female_01.body.bodyslide").unwrap().looping = true;
+        let mut d = Director::new(cues);
+        let notify = Notify::Sound("A_Character_Female_01.Body.BodySlide".into());
+        let mut frame = |c: &Controller, notes: &[Notify]| {
+            let mut out = vec![];
+            d.update(1.0 / 60.0, c, notes, true, 0.0, &|_| Surface::Concrete, &mut out);
+            out
+        };
+        let plays = |out: &[SoundCmd]| -> Vec<u64> {
+            out.iter()
+                .filter_map(|s| match s {
+                    SoundCmd::Play { id, cue, looping: true, .. } if cue.contains("bodyslide") => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        };
+        c.state = MoveState::Slide { t: 0.2 };
+        c.events = vec![MoveEvent::Slide];
+        let started = plays(&frame(&c, &[]));
+        assert_eq!(started.len(), 1, "the slide starts the scrape");
+        c.events.clear();
+        c.state = MoveState::Ground;
+        c.skidding = false;
+        let ended = frame(&c, &[notify.clone()]);
+        assert!(ended.contains(&SoundCmd::Stop(started[0])), "the slide's scrape stops");
+        assert!(plays(&ended).is_empty(), "the landing notify doesn't start another: {ended:?}");
+        assert!(plays(&frame(&c, &[])).is_empty(), "and it stays stopped");
+
+        // Still fast, so she skids on the ground: that scrape stops with the skid, including
+        // one the skid animation itself notifies.
+        c.skidding = true;
+        c.events = vec![MoveEvent::Skid];
+        let skid = plays(&frame(&c, &[notify]));
+        assert!(!skid.is_empty(), "the skid scrapes");
+        c.events.clear();
+        c.skidding = false;
+        let done = frame(&c, &[Notify::Sound("A_Character_Female_01.Body.BodySlide".into())]);
+        for id in skid {
+            assert!(done.contains(&SoundCmd::Stop(id)), "skid scrape {id} still going: {done:?}");
+        }
+        assert!(plays(&done).is_empty(), "no scrape left on the ground: {done:?}");
     }
 }

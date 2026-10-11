@@ -92,6 +92,11 @@ pub struct MapPropPlayer {
     ent: usize,
     gltf: Handle<bevy::gltf::Gltf>,
     played: u32,
+    /// Seconds into an open-then-close fire cycle (a pellet launcher's mouth).
+    cycle: Option<f32>,
+    /// Which clip that cycle is showing: 1 open, 2 close.
+    showing: u8,
+    node: Option<AnimationNodeIndex>,
 }
 
 /// Source's angles (pitch, yaw, roll; degrees) as a turn in our space.
@@ -396,7 +401,7 @@ pub fn tag_prop_players(mut commands: Commands, added: Query<Entity, Added<Anima
         let mut cur = e;
         for _ in 0..8 {
             if let Ok(MapProp { animated: Some((ent, gltf)), .. }) = props.get(cur) {
-                commands.entity(e).insert(MapPropPlayer { ent: *ent, gltf: gltf.clone(), played: 0 });
+                commands.entity(e).insert(MapPropPlayer { ent: *ent, gltf: gltf.clone(), played: 0, cycle: None, showing: 0, node: None });
                 break;
             }
             let Ok(p) = parents.get(cur) else { break };
@@ -405,26 +410,89 @@ pub fn tag_prop_players(mut commands: Commands, added: Query<Entity, Added<Anima
     }
 }
 
-/// Play what the map's logic last told each prop to (once, holding its last frame).
+/// A pellet launcher's model: shut at rest, with an open clip and a close clip, and no
+/// `opened` (trap housings ask for that).
+fn is_pellet_launcher(gltf: &bevy::gltf::Gltf) -> bool {
+    let n = &gltf.named_animations;
+    n.contains_key("idle_closed") && n.contains_key("open") && n.contains_key("close") && !n.contains_key("opened")
+}
+
+fn clip_duration(clips: &Assets<AnimationClip>, gltf: &bevy::gltf::Gltf, name: &str) -> Option<f32> {
+    gltf.named_animations.get(name).and_then(|h| clips.get(h)).map(|c| c.duration().max(1e-3))
+}
+
+/// Put `name` on the player, paused, so the simulation can seek it.
+fn seek_clip(
+    commands: &mut Commands,
+    graphs: &mut Assets<AnimationGraph>,
+    player: &mut AnimationPlayer,
+    entity: Entity,
+    gltf: &bevy::gltf::Gltf,
+    name: &str,
+) -> Option<AnimationNodeIndex> {
+    let clip = gltf.named_animations.get(name)?.clone();
+    let (graph, node) = AnimationGraph::from_clip(clip);
+    commands.entity(entity).insert(AnimationGraphHandle(graphs.add(graph)));
+    player.stop_all();
+    player.start(node).pause();
+    Some(node)
+}
+
+/// Play what the map's logic last told each prop to (once, holding its last frame). A pellet
+/// launcher told to `close` (that's all the map sends when it fires) plays open, then close.
 pub fn animate_props(
     mut commands: Commands,
     game: Res<Game>,
     gltfs: Res<Assets<bevy::gltf::Gltf>>,
+    clips: Res<Assets<AnimationClip>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut players: Query<(Entity, &mut MapPropPlayer, &mut AnimationPlayer)>,
+    mut clock: Local<Option<f32>>,
 ) {
+    let dt = match *clock {
+        Some(t) => (game.sim.time - t).max(0.0),
+        None => 0.0,
+    };
+    *clock = Some(game.sim.time);
     let Some(io) = &game.sim.io else { return };
     for (e, mut pp, mut player) in &mut players {
-        let Some((name, n)) = io.animations.get(&pp.ent) else { continue };
-        if *n == pp.played {
-            continue;
-        }
         let Some(gltf) = gltfs.get(&pp.gltf) else { continue };
-        pp.played = *n;
-        let Some(clip) = gltf.named_animations.get(name.as_str()) else { continue };
-        let (graph, node) = AnimationGraph::from_clip(clip.clone());
-        commands.entity(e).insert(AnimationGraphHandle(graphs.add(graph)));
-        player.stop_all();
-        player.start(node);
+        if let Some((name, n)) = io.animations.get(&pp.ent) {
+            if *n != pp.played {
+                pp.played = *n;
+                if name == "close" && is_pellet_launcher(gltf) {
+                    pp.cycle = Some(0.0);
+                    pp.showing = 0;
+                } else {
+                    pp.cycle = None;
+                    if let Some(clip) = gltf.named_animations.get(name.as_str()) {
+                        let (graph, node) = AnimationGraph::from_clip(clip.clone());
+                        commands.entity(e).insert(AnimationGraphHandle(graphs.add(graph)));
+                        player.stop_all();
+                        player.start(node);
+                        pp.node = Some(node);
+                    }
+                }
+            }
+        }
+        let Some(since) = pp.cycle else { continue };
+        let since = since + dt;
+        let open = clip_duration(&clips, gltf, "open").unwrap_or(0.97);
+        let close = clip_duration(&clips, gltf, "close").unwrap_or(0.97);
+        let (opening, t) = crate::props::launcher_mouth(since, open, close);
+        let want = if opening { 1 } else { 2 };
+        if pp.showing != want {
+            let name = if opening { "open" } else { "close" };
+            if let Some(node) = seek_clip(&mut commands, &mut graphs, &mut player, e, gltf, name) {
+                pp.node = Some(node);
+                pp.showing = want;
+            }
+        }
+        if let Some(node) = pp.node {
+            if let Some(active) = player.animation_mut(node) {
+                active.set_seek_time(t);
+            }
+        }
+        pp.cycle = (since < open + close).then_some(since);
     }
 }

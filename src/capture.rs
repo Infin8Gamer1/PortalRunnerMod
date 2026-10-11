@@ -60,6 +60,8 @@ enum Act {
     Menu(crate::menu::Screen),
     /// Hold this input for some frames, with a screenshot every frame (name_00, name_01...).
     Film(&'static str, MoveInput, u32),
+    /// Wait until a live pellet has reached this x, or this many frames pass.
+    WaitPelletX(f32, u32),
 }
 
 fn fwd() -> MoveInput {
@@ -697,6 +699,87 @@ fn script(name: &str) -> Vec<Act> {
             Hold(MoveInput::default(), 60),
             Shot("f06_landed"),
         ],
+        // Polish checks: the floor button's light, a cube dropped off-square, a cube thrown
+        // by the faith plate, and Chamber 06's pellet (the ball, the launcher's mouth, a
+        // bounce mark). Yaw 0 looks along -Z and positive yaw turns left, towards -X.
+        "polish" => vec![
+            Map(0),
+            Wait(180),
+            // The floor button, same framing as the rtx close-up, then held down.
+            Teleport(Vec3::new(-16.0, 0.0, 5.4)),
+            Look(180.0, -35.0),
+            Wait(40),
+            Shot("button_light"),
+            // Closer, on the near rim, where the lamp sits. Far enough that the rim stays in frame.
+            Teleport(Vec3::new(-16.0, 0.0, 6.35)),
+            Look(180.0, -40.0),
+            Wait(20),
+            Shot("button_close"),
+            Teleport(Vec3::new(-16.0, 0.0, 8.75)),
+            Look(0.0, -45.0),
+            Wait(20),
+            Shot("button_pressed"),
+            // The dropper's cube sits at z 17. Face it (+Z), pick it up, turn off a square
+            // angle and drop it.
+            Teleport(Vec3::new(-16.0, 0.0, 15.2)),
+            Look(180.0, -30.0),
+            Wait(30),
+            Use,
+            Wait(20),
+            Look(230.0, -15.0),
+            Wait(25),
+            Use,
+            Wait(50),
+            Look(230.0, -58.0),
+            Wait(15),
+            Shot("cube_yaw"),
+            // Hold it over the plate (the plate is to the west) and let it fall on.
+            Look(230.0, -40.0),
+            Wait(10),
+            Use,
+            Wait(20),
+            Teleport(Vec3::new(-12.0, 0.0, -4.0)),
+            Look(90.0, -5.0),
+            Wait(25),
+            Use,
+            Wait(8),
+            // Aside, where the plate, the arc and the platform are all in view.
+            Teleport(Vec3::new(-8.0, 0.0, -8.0)),
+            Look(124.0, -12.0),
+            Wait(20),
+            Shot("plate_cube_launch"),
+            Look(67.0, 32.0),
+            Wait(35),
+            Shot("plate_cube_air"),
+            // The arc is still in the air here. Wait it out, then look down onto the platform.
+            Wait(50),
+            Teleport(Vec3::new(-9.0, 7.5, -12.0)),
+            Look(52.0, -17.0),
+            Wait(5),
+            Shot("plate_cube_land"),
+            // Chamber 06. The mouth opens as it fires; the ball crosses at y 6; it scorches
+            // the right wall (x 10). A film covers the bounce, whose frame depends on how
+            // long the map's shader pause let the sim run.
+            Map(6),
+            // In front of the mouth (it fires toward +X) so the open and the close fill the frame.
+            Teleport(Vec3::new(-6.4, 0.0, -4.0)),
+            Look(90.0, 50.0),
+            Wait(8),
+            Film("launcher", MoveInput::default(), 45),
+            Shot("launcher_mouth"),
+            Teleport(Vec3::new(0.0, 0.0, 4.0)),
+            Look(0.0, 28.0),
+            Wait(8),
+            Shot("pellet_ball"),
+            // The right wall, where the pellet hits. Wait until it's close, then film the mark
+            // and one frame after the glow has died.
+            Teleport(Vec3::new(6.2, 0.0, -1.6)),
+            Look(-56.0, 42.0),
+            WaitPelletX(8.6, 240),
+            Film("scorch", MoveInput::default(), 18),
+            Wait(40),
+            Shot("pellet_scorch"),
+        ],
         // Everything in a row: a tour of each map's start.
         _ => {
             let mut v = Vec::new();
@@ -713,7 +796,9 @@ fn film(commands: &mut Commands, dir: &str, name: &str, k: u32, game: &Game) {
     let path = format!("{dir}/{name}_{k:02}.png");
     commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     let held = game.sim.held.map(|i| (game.sim.props[i].pos, game.sim.props[i].env));
-    println!("capture: {name}_{k:02}  feet {} vel {} held {held:?}", game.ctrl.feet, game.ctrl.vel);
+    let pellets: Vec<Vec3> = game.sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
+    let mouths: Vec<f32> = game.sim.launchers.iter().map(|l| l.since_shot).collect();
+    println!("capture: {name}_{k:02}  feet {} vel {} held {held:?} pellets {pellets:?} since_shot {mouths:?}", game.ctrl.feet, game.ctrl.vel);
 }
 
 pub fn run(
@@ -748,6 +833,11 @@ pub fn run(
                 game.scripted = Some(*i);
                 film(&mut commands, &cap.dir, name, n - cap.wait - 1, &game);
             }
+            Some(Act::WaitPelletX(x, _)) => {
+                if game.sim.pellets.iter().any(|p| p.alive && p.pos.x >= *x) {
+                    cap.wait = 0;
+                }
+            }
             _ => {}
         }
         if cap.wait == 0 {
@@ -779,6 +869,10 @@ pub fn run(
             cap.wait = *n;
             return;
         }
+        Act::WaitPelletX(_, n) => {
+            cap.wait = *n;
+            return;
+        }
         Act::Look(yaw, pitch) => {
             game.ctrl.yaw = yaw.to_radians();
             game.ctrl.pitch = pitch.to_radians();
@@ -788,8 +882,10 @@ pub fn run(
         Act::Shot(name) => {
             let path = format!("{}/{name}.png", cap.dir);
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+            let yaws: Vec<f32> = game.sim.props.iter().filter(|p| p.alive).map(|p| p.rot.to_euler(EulerRot::YXZ).0).collect();
+            let pellets: Vec<Vec3> = game.sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
             println!(
-                "capture: {name}  fps {fps:.0} ({:.1} ms real)  feet {} state {} portals {:?} held {:?} props {:?}",
+                "capture: {name}  fps {fps:.0} ({:.1} ms real)  feet {} state {} portals {:?} held {:?} props {:?} yaws {yaws:?} pellets {pellets:?}",
                 cap.real_ms,
                 game.ctrl.feet,
                 game.ctrl.state.name(),
@@ -800,7 +896,11 @@ pub fn run(
         }
         Act::Map(i) => {
             game.pending = Some(*i);
-            cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(1500));
+            // The first load waits for shaders. Later loads, once frames are already quick,
+            // only need a moment: a long pause here lets the sim run, and a launcher's mouth
+            // has finished opening before the script looks at it.
+            let pause = if cap.real_ms > 0.0 && cap.real_ms < 40.0 { 300 } else { 1500 };
+            cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Launch(v) => game.ctrl.launch(*v),

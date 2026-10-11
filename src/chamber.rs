@@ -1,6 +1,7 @@
 //! Drawing a test chamber: its boxes by material, and every puzzle piece, kept in step with
 //! the simulation each frame.
 
+use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_2;
 
 use bevy::asset::RenderAssetUsages;
@@ -61,8 +62,6 @@ pub struct Pools {
     blobs: Vec<Entity>,
     /// High energy pellets (each a glowing ball with its light).
     pellets: Vec<Entity>,
-    /// The pellets are Portal's energy ball, not the stand-in sphere.
-    pellet_model: bool,
     /// Turrets' shots this frame.
     tracers: Vec<Entity>,
     /// Each prop slot's cube, and its copy through the portal it's in (so the half of it
@@ -106,8 +105,12 @@ pub struct ChamberMats {
     /// The same, for gel in flight: drawn forward, with the ordinary lights (too small and
     /// fast for traced light to settle on).
     pub blob_paint: [Handle<StandardMaterial>; 3],
-    /// A high energy pellet: glowing (under ray tracing it lights the chamber).
+    /// A high energy pellet: the shell, glowing orange, and the hotter core.
     pub pellet: Handle<StandardMaterial>,
+    pub pellet_core: Handle<StandardMaterial>,
+    pub pellet_mesh: Handle<Mesh>,
+    /// A short-lived scorch where a pellet bounced.
+    pub scorch_mesh: Handle<Mesh>,
     /// A turret's shot.
     pub tracer: Handle<StandardMaterial>,
     pub goo: Handle<StandardMaterial>,
@@ -439,7 +442,25 @@ pub fn setup(
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
         paint: paint.clone().map(|p| materials.add(p)),
         tracer: materials.add(glow(LinearRgba::rgb(4.0, 2.6, 0.8), 0.7)),
-        pellet: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.9, 0.6), emissive: LinearRgba::rgb(9.0, 6.5, 2.2), ..default() }),
+        pellet: {
+            let plasma = images.add(plasma());
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.32, 0.04),
+                base_color_texture: Some(plasma.clone()),
+                // Kept modest: ray tracing multiplies every emissive by EMISSIVE_SCALE, and a
+                // larger factor tonemaps the ball to a flat white.
+                emissive: LinearRgba::rgb(0.85, 0.18, 0.02),
+                emissive_texture: Some(plasma),
+                perceptual_roughness: 0.35,
+                ..default()
+            })
+        },
+        pellet_core: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.85, 0.55),
+            emissive: LinearRgba::rgb(2.4, 0.85, 0.12),
+            perceptual_roughness: 0.2,
+            ..default()
+        }),
         blob_paint: paint.map(|p| materials.add(StandardMaterial { opaque_render_method: bevy::material::OpaqueRendererMethod::Forward, ..p })),
         // Opaque and glossy, so it's in the ray-traced scene and the chamber shows in it.
         goo: materials.add(match extracted.texture("goo") {
@@ -462,9 +483,31 @@ pub fn setup(
         beam: meshes.add(Cylinder::new(0.025, 1.0)),
         glow: meshes.add(Cylinder::new(0.08, 1.0)),
         blob: meshes.add(Sphere::new(1.0).mesh().ico(1).unwrap()),
+        pellet_mesh: meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap()),
+        scorch_mesh: meshes.add(Cylinder::new(0.22, 0.016).mesh().resolution(20)),
     };
     commands.insert_resource(mats);
     commands.insert_resource(Pools::default());
+    commands.insert_resource(ScorchMats::default());
+}
+
+/// Swirling orange for the energy pellet's shell. It spins with the ball. The bands are broad
+/// and run through the red channel too: a texture that only varies green still tonemaps to a
+/// flat disc once the shell is bright enough to read as a pellet.
+fn plasma() -> Image {
+    const N: u32 = 128;
+    let mut data = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let u = x as f32 / N as f32 * std::f32::consts::TAU;
+            let v = y as f32 / N as f32 * std::f32::consts::TAU;
+            let f = (u * 2.0).sin() * (v * 2.0).cos() * 0.55 + (u * 3.0 + v).sin() * 0.35 + (u * 5.0 - v * 2.0).cos() * 0.2;
+            let hot = (f * 0.5 + 0.5).clamp(0.0, 1.0).powf(1.35);
+            // Bright bands are orange (green close to red). Dim bands stay dark, which is the swirl.
+            data.extend([(32.0 + 223.0 * hot) as u8, (10.0 + 200.0 * hot) as u8, (2.0 + 28.0 * hot) as u8, 255]);
+        }
+    }
+    image(N, data, true)
 }
 
 fn mat_for(m: &ChamberMats, mat: Mat) -> Handle<StandardMaterial> {
@@ -818,8 +861,6 @@ pub fn update(
     gel: Query<(&GelVis, &Mesh3d)>,
     models: Res<crate::props::PropModels>,
     mut cube_models: Query<(&mut Transform, &mut Visibility), Without<Vis>>,
-    extracted: Res<Extracted>,
-    assets: Res<AssetServer>,
 ) {
     let sim = &game.sim;
     let t = time.elapsed_secs();
@@ -945,31 +986,19 @@ pub fn update(
     let shots: Vec<(Vec3, Vec3)> = sim.events.iter().filter_map(|e| if let aperture::SimEvent::TurretShot { from, to, .. } = e { Some((*from, *to)) } else { None }).collect();
     pooled(&mut commands, &mut pools.tracers, shots.len(), |c| spawn_pooled(c, &m.beam, &m.tracer, false));
     let pellets: Vec<Vec3> = sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
-    // combineball.glb is about 0.40 m across (measured: x/y ±0.402, z −0.284..0.159). Scale it
-    // to the sim's radius. The parent carries the light and the visibility; a sphere under it
-    // would still show, so the model replaces the sphere.
-    const COMBINE_BALL_RADIUS: f32 = 0.402;
-    const COMBINE_BALL_CENTER_Z: f32 = (-0.284 + 0.159) * 0.5;
-    let pellet_path = extracted.model("map/effects/combineball");
-    pools.pellet_model = pellet_path.is_some();
+    // A ball the sim's size: an orange shell, a hotter core, and a light. The parent carries
+    // the light and the visibility; the mesh is a unit sphere scaled to the radius.
     pooled(&mut commands, &mut pools.pellets, pellets.len(), |c| {
         let e = c.spawn((
             ChamberGeom,
             Vis::Pool,
             Transform::default(),
             Visibility::Hidden,
-            PointLight { intensity: 60_000.0, range: 8.0, radius: 0.0, color: Color::srgb(1.0, 0.8, 0.45), shadow_maps_enabled: false, ..default() },
+            PointLight { intensity: 40_000.0, range: 7.0, radius: 0.15, color: Color::srgb(1.0, 0.42, 0.05), shadow_maps_enabled: false, ..default() },
         )).id();
-        if let Some(path) = pellet_path.clone() {
-            let model = c.spawn((
-                WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
-                Transform::from_translation(Vec3::new(0.0, 0.0, -COMBINE_BALL_CENTER_Z)),
-                Visibility::default(),
-            )).id();
-            c.entity(e).add_child(model);
-        } else {
-            c.entity(e).insert((Mesh3d(m.blob.clone()), MeshMaterial3d(m.pellet.clone()), NotShadowCaster));
-        }
+        let shell = c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet.clone()), Transform::default(), NotShadowCaster)).id();
+        let core = c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.42)), NotShadowCaster)).id();
+        c.entity(e).add_children(&[shell, core]);
         e
     });
 
@@ -1082,10 +1111,10 @@ pub fn update(
             None => set(*e, None, None),
         }
     }
-    let pellet_scale = if pools.pellet_model { aperture::sim::PELLET_RADIUS / COMBINE_BALL_RADIUS } else { aperture::sim::PELLET_RADIUS };
+    let spin = Quat::from_rotation_y(t * 2.2) * Quat::from_rotation_x(t * 1.3);
     for (i, e) in pools.pellets.iter().enumerate() {
         match pellets.get(i) {
-            Some(p) => set(*e, Some(Transform::from_translation(*p).with_scale(Vec3::splat(pellet_scale))), None),
+            Some(p) => set(*e, Some(Transform::from_translation(*p).with_rotation(spin).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS))), None),
             None => set(*e, None, None),
         }
     }
@@ -1103,5 +1132,91 @@ pub fn update(
             }
             None => set(*e, None, None),
         }
+    }
+}
+
+/// Materials of the bounce marks, so ray tracing doesn't rescale them (their glow is updated
+/// every frame, already in the units the lights use).
+#[derive(Resource, Default)]
+pub struct ScorchMats(pub HashSet<AssetId<StandardMaterial>>);
+
+#[derive(Component)]
+pub(crate) struct Scorch {
+    age: f32,
+    life: f32,
+    mat: Handle<StandardMaterial>,
+}
+
+/// A dark, briefly hot mark where a pellet bounced. It fades, shrinks, and goes.
+pub fn scorches(
+    mut commands: Commands,
+    game: Res<crate::Game>,
+    time: Res<Time>,
+    mats: Res<ChamberMats>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scorches: ResMut<ScorchMats>,
+    mut marks: Query<(Entity, &mut Scorch, &mut Transform)>,
+    mut seen: Local<Option<u64>>,
+) {
+    if *seen != Some(game.loads) {
+        if seen.is_some() {
+            for id in scorches.0.drain() {
+                materials.remove(id);
+            }
+        }
+        *seen = Some(game.loads);
+    }
+    let dt = time.delta_secs();
+    let scale = if crate::raytrace::active() { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
+    let mut alive: Vec<(Entity, f32, Handle<StandardMaterial>)> = Vec::new();
+    for (e, mut s, mut tf) in &mut marks {
+        s.age += dt;
+        let u = (s.age / s.life).min(1.0);
+        let hot = (1.0 - (s.age / 0.55).min(1.0)).powi(2);
+        if let Some(mut m) = materials.get_mut(&s.mat) {
+            // A char that is hot for a moment, then just a dark mark. The glow is written
+            // already scaled, because ray tracing leaves these materials alone.
+            m.emissive = LinearRgba::rgb(1.6 * hot * scale, 0.22 * hot * scale, 0.03 * hot * scale);
+            m.base_color = Color::srgb(0.015 + 0.05 * hot, 0.012, 0.01);
+            if scale > 1.0 {
+                m.emissive_exposure_weight = 1.0;
+            }
+        }
+        let shrink = if u > 0.72 { 1.0 - (u - 0.72) / 0.28 } else { 1.0 };
+        tf.scale = Vec3::new(shrink.max(0.02), 1.0, shrink.max(0.02));
+        if s.age >= s.life {
+            scorches.0.remove(&s.mat.id());
+            materials.remove(&s.mat);
+            commands.entity(e).despawn();
+        } else {
+            alive.push((e, s.age, s.mat.clone()));
+        }
+    }
+    alive.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for ev in &game.sim.events {
+        let aperture::SimEvent::PelletBounced { at, normal } = *ev else { continue };
+        if normal.length_squared() < 0.5 {
+            continue;
+        }
+        while alive.len() >= 24 {
+            let (e, _, mat) = alive.remove(0);
+            scorches.0.remove(&mat.id());
+            materials.remove(&mat);
+            commands.entity(e).despawn();
+        }
+        let mat = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.06, 0.02, 0.01),
+            emissive: LinearRgba::rgb(1.6 * scale, 0.22 * scale, 0.03 * scale),
+            emissive_exposure_weight: if scale > 1.0 { 1.0 } else { 0.0 },
+            perceptual_roughness: 0.95,
+            ..default()
+        });
+        scorches.0.insert(mat.id());
+        let normal = normal.normalize();
+        let tf = Transform::from_translation(at + normal * 0.02).with_rotation(Quat::from_rotation_arc(Vec3::Y, normal));
+        let e = commands
+            .spawn((ChamberGeom, Mesh3d(mats.scorch_mesh.clone()), MeshMaterial3d(mat.clone()), tf, NotShadowCaster, Scorch { age: 0.0, life: 2.0, mat: mat.clone() }))
+            .id();
+        alive.push((e, 0.0, mat));
     }
 }

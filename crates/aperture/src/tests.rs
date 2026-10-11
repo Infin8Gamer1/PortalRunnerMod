@@ -1,6 +1,6 @@
 //! Faith and the puzzle pieces together, driven by scripted input.
 
-use glam::{Vec2, Vec3};
+use glam::{EulerRot, Quat, Vec2, Vec3};
 
 use faith_move::{Controller, Input, State};
 
@@ -1014,7 +1014,13 @@ fn a_pellet_bounces_off_walls_and_kills() {
     l.spawn([8.0, 0.0, 8.0], 0.0);
     let (mut sim, mut c) = start(l);
     let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
-    assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletBounced { .. })), "didn't bounce");
+    let normal = ev.iter().find_map(|e| match e {
+        SimEvent::PelletBounced { normal, .. } => Some(*normal),
+        _ => None,
+    });
+    let normal = normal.expect("didn't bounce");
+    // The wall faces her (+Z): the mark sits on that face.
+    assert!(normal.z > 0.9, "normal {normal}");
     assert!(!ev.contains(&SimEvent::PlayerDied));
     // Fired straight at her: it kills.
     let mut l = flat();
@@ -1023,6 +1029,42 @@ fn a_pellet_bounces_off_walls_and_kills() {
     let (mut sim, mut c) = start(l);
     let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
     assert!(ev.contains(&SimEvent::PlayerDied), "didn't kill her");
+}
+
+/// Dropped off a square angle, a storage cube and a companion cube stay there. A reflector
+/// keeps its yaw too (that yaw aims its laser) and is not turned to a right angle either.
+#[test]
+fn a_resting_cube_keeps_the_yaw_it_was_dropped_at() {
+    let mut l = flat();
+    l.cube(CubeKind::Storage, [0.0, 0.5, -2.0]);
+    l.cube(CubeKind::Companion, [2.0, 0.5, -2.0]);
+    l.cube(CubeKind::Reflector, [-2.0, 0.5, -2.0]);
+    let (mut sim, mut c) = start(l);
+    let yaw = 0.7;
+    for p in &mut sim.props {
+        p.rot = Quat::from_rotation_y(yaw);
+    }
+    run(&mut sim, &mut c, 1.5, |_, _| Input::default());
+    for p in &sim.props {
+        let (got, _, _) = p.rot.to_euler(EulerRot::YXZ);
+        assert!((got - yaw).abs() < 0.05, "{:?} yaw {got}, wanted {yaw}", p.kind);
+    }
+}
+
+/// A cube whose bottom is on an aerial faith plate is thrown and stops on the plate's target.
+#[test]
+fn a_cube_on_a_faith_plate_is_launched() {
+    let mut l = flat();
+    let target = Vec3::new(0.0, 0.0, -14.0);
+    l.faith_plate([0.0, 0.0, -4.0], target.to_array(), 3.0);
+    l.cube(CubeKind::Storage, [0.0, crate::sim::CUBE_HALF + crate::sim::PLATE_TOP, -4.0]);
+    let (mut sim, mut c) = start(l);
+    c.feet = Vec3::new(5.0, 0.0, 0.0);
+    let ev = run(&mut sim, &mut c, 2.2, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::PlateLaunch { .. })), "the plate didn't fire");
+    assert!(c.feet.y < 0.2, "she was thrown too: {}", c.feet);
+    let p = sim.props[0].pos;
+    assert!(p.distance(target + Vec3::Y * crate::sim::CUBE_HALF) < 1.5, "landed at {p}");
 }
 
 /// Portal's Chamber 06 (where it's been extracted): its ceiling launcher fires a pellet, and a

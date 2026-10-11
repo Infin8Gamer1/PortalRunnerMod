@@ -5,7 +5,7 @@
 //! simulation's state each frame. The faith plate's launch is Portal 2's own animation, played
 //! at the simulation's clock. Anything without a model keeps its stand-in.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::animation::graph::AnimationNodeIndex;
 use bevy::prelude::*;
@@ -61,6 +61,8 @@ pub struct PropModels {
     scenes: HashMap<&'static str, Handle<WorldAsset>>,
     /// The faith plate's launches (angled, straight up), as an animation graph.
     plate_launch: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; PLATE_CLIPS])>,
+    /// A pellet launcher's mouth: open, then close.
+    launcher_fire: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; 2])>,
 }
 
 impl PropModels {
@@ -86,6 +88,8 @@ pub enum PropKind {
     Catcher(usize, bool),
     /// A sentry turret (standing, or falling over).
     Turret(usize),
+    /// A high energy pellet launcher (its mouth plays when it fires).
+    PelletLauncher(usize),
     DoorUpper(usize),
     DoorLower(usize),
     /// Portal's round door (both leaves, `door_left` and `door_right`, which slide apart).
@@ -119,7 +123,17 @@ pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<Asse
         let (graph, nodes) = AnimationGraph::from_clips(clips);
         (graphs.add(graph), std::array::from_fn(|i| nodes[i]))
     });
-    commands.insert_resource(PropModels { scenes, plate_launch });
+    // pellet_launcher.glb writes idle_closed, open, close, idle_open. The mouth plays open
+    // then close; the rest pose is already shut.
+    let launcher_fire = extracted.model("pellet_launcher").map(|path| {
+        let clips = [
+            assets.load(GltfAssetLabel::Animation(1).from_asset(path.clone())),
+            assets.load(GltfAssetLabel::Animation(2).from_asset(path)),
+        ];
+        let (graph, nodes) = AnimationGraph::from_clips(clips);
+        (graphs.add(graph), [nodes[0], nodes[1]])
+    });
+    commands.insert_resource(PropModels { scenes, plate_launch, launcher_fire });
 }
 
 fn spawn_model(commands: &mut Commands, scene: Handle<WorldAsset>, tf: Transform, kind: PropKind) -> Entity {
@@ -241,20 +255,20 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
     // along the model's front) is where the pellet leaves; a catcher's opening faces its way.
     // A source map already places these as props, and those are the ones its logic animates.
     if sim.level.source.is_none() {
-    if let (Some(launcher), Some(catcher)) = (models.get("pellet_launcher"), models.get("pellet_catcher")) {
-        r.pellets = true;
-        let s = 0.6;
-        for l in &sim.launchers {
-            let (right, up) = frame_for(l.dir);
-            let tf = Transform::from_translation(l.at - l.dir * 1.09 * s).with_rotation(basis(right, up, -l.dir)).with_scale(Vec3::splat(s));
-            spawn_model(commands, launcher.clone(), tf, PropKind::Static);
+        if let (Some(launcher), Some(catcher)) = (models.get("pellet_launcher"), models.get("pellet_catcher")) {
+            r.pellets = true;
+            let s = 0.6;
+            for (i, l) in sim.launchers.iter().enumerate() {
+                let (right, up) = frame_for(l.dir);
+                let tf = Transform::from_translation(l.at - l.dir * 1.09 * s).with_rotation(basis(right, up, -l.dir)).with_scale(Vec3::splat(s));
+                spawn_model(commands, launcher.clone(), tf, PropKind::PelletLauncher(i));
+            }
+            for c in &sim.pellet_catchers {
+                let (right, up) = frame_for(c.facing);
+                let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, c.facing)).with_scale(Vec3::splat(s));
+                spawn_model(commands, catcher.clone(), tf, PropKind::Static);
+            }
         }
-        for c in &sim.pellet_catchers {
-            let (right, up) = frame_for(c.facing);
-            let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, c.facing)).with_scale(Vec3::splat(s));
-            spawn_model(commands, catcher.clone(), tf, PropKind::Static);
-        }
-    }
     }
     if let Some(scene) = models.get("turret") {
         r.turrets = true;
@@ -402,7 +416,9 @@ pub fn tag_parts(
             let Ok(p) = parents.get(cur) else { break };
             cur = p.parent();
             if let Ok(kind) = roots.get(cur) {
-                if depth > 0 {
+                // The launcher's arms are posed by its animation. Tagging them would hold the
+                // rest pose over it.
+                if depth > 0 && !matches!(kind, PropKind::PelletLauncher(_)) {
                     commands.entity(e).insert(PropPart { kind: *kind, name: name.as_str().to_string(), rest: *tf });
                 }
                 break;
@@ -460,6 +476,180 @@ pub fn animate_plates(game: Res<Game>, models: Res<PropModels>, clips: Res<Asset
             active.set_seek_time(plate.fired.clamp(0.0, clip.duration()));
         }
     }
+}
+
+/// Where a launcher's mouth is, `since` seconds after it fired: `open` first, then `close`,
+/// held shut once both have played. `(opening, time within that clip)`.
+pub fn launcher_mouth(since: f32, open: f32, close: f32) -> (bool, f32) {
+    if since < open { (true, since.max(0.0)) } else { (false, (since - open).clamp(0.0, close.max(1e-3))) }
+}
+
+/// A pellet launcher's animation player, and which launcher it's for.
+#[derive(Component)]
+pub struct LauncherPlayer(usize);
+
+/// Give each pellet launcher's animation player its open and close clips.
+pub fn tag_launcher_players(
+    mut commands: Commands,
+    added: Query<Entity, Added<AnimationPlayer>>,
+    parents: Query<&ChildOf>,
+    roots: Query<&PropKind>,
+    models: Res<PropModels>,
+) {
+    let Some((graph, _)) = &models.launcher_fire else { return };
+    for e in &added {
+        let mut cur = e;
+        for _ in 0..8 {
+            let Ok(p) = parents.get(cur) else { break };
+            cur = p.parent();
+            if let Ok(PropKind::PelletLauncher(i)) = roots.get(cur) {
+                commands.entity(e).insert((AnimationGraphHandle(graph.clone()), LauncherPlayer(*i)));
+                break;
+            }
+        }
+    }
+}
+
+/// Pose each launcher's mouth from how long ago it fired. The simulation's clock drives it.
+pub fn animate_launchers(
+    game: Res<Game>,
+    models: Res<PropModels>,
+    clips: Res<Assets<AnimationClip>>,
+    graphs: Res<Assets<AnimationGraph>>,
+    mut players: Query<(&LauncherPlayer, &mut AnimationPlayer)>,
+) {
+    let Some((graph, nodes)) = &models.launcher_fire else { return };
+    let Some(graph) = graphs.get(graph) else { return };
+    let len = |i: usize| {
+        graph.get(nodes[i]).and_then(|n| match &n.node_type {
+            AnimationNodeType::Clip(h) => clips.get(h).map(|c| c.duration().max(1e-3)),
+            _ => None,
+        })
+    };
+    let (Some(open), Some(close)) = (len(0), len(1)) else { return };
+    for (lp, mut player) in &mut players {
+        let Some(l) = game.sim.launchers.get(lp.0) else { continue };
+        let (opening, t) = launcher_mouth(l.since_shot, open, close);
+        let node = nodes[if opening { 0 } else { 1 }];
+        if !player.is_playing_animation(node) {
+            player.stop_all();
+            player.start(node).pause();
+        }
+        if let Some(active) = player.animation_mut(node) {
+            active.set_seek_time(t);
+        }
+    }
+}
+
+/// The RTX floor button's lamp is an orange circle in its emissive texture, and the file's
+/// emissive strength (25) is then multiplied again for ray tracing, which clips it to a pale
+/// warm white. Recolor that circle red and bring the strength down to something the tonemap
+/// can still show as red. Cyan ticks on the same texture stay. The button face's own red
+/// overlay is a different material and is left alone.
+pub fn tint_floor_buttons(
+    meshes: Query<(Entity, &MeshMaterial3d<StandardMaterial>)>,
+    parents: Query<&ChildOf>,
+    roots: Query<&PropKind>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut done: Local<HashSet<AssetId<StandardMaterial>>>,
+) {
+    for (e, mat) in &meshes {
+        let id = mat.id();
+        if done.contains(&id) {
+            continue;
+        }
+        let mut cur = e;
+        let mut floor = false;
+        for _ in 0..12 {
+            if let Ok(PropKind::Button(_, None)) = roots.get(cur) {
+                floor = true;
+                break;
+            }
+            let Ok(p) = parents.get(cur) else { break };
+            cur = p.parent();
+        }
+        if !floor {
+            continue;
+        }
+        let Some(m) = materials.get(id) else { continue };
+        let Some(tex) = m.emissive_texture.clone() else {
+            done.insert(id);
+            continue;
+        };
+        // The loader writes the factor when the model arrives. Black is that material a frame early.
+        let factor = m.emissive.to_vec3();
+        if factor.length_squared() < 1e-4 {
+            continue;
+        }
+        let Some(img) = images.get(&tex) else { continue };
+        let red = match floor_lamp_texture(img) {
+            // Not uploaded yet.
+            LampImage::Wait => continue,
+            // Loaded, and it isn't the lamp (the face overlay is red across the whole image).
+            LampImage::Leave => {
+                done.insert(id);
+                continue;
+            }
+            LampImage::Red(img) => img,
+        };
+        let handle = images.add(red);
+        if let Some(mut m) = materials.get_mut(id) {
+            m.emissive_texture = Some(handle);
+            // Above 40 the ray-trace scale has already been applied (25 × 1000). Either way the
+            // lamp should land near 1100, which stays red instead of clipping to white.
+            let mag = if factor.x > 40.0 { 1100.0 } else { 1.1 };
+            m.emissive = LinearRgba::rgb(mag, mag, mag);
+        }
+        done.insert(id);
+    }
+}
+
+/// What to do with one floor-button emissive image.
+enum LampImage {
+    /// Pixels aren't available yet.
+    Wait,
+    /// Loaded, and this isn't the lamp.
+    Leave,
+    /// The lamp, with its warm circle turned red.
+    Red(Image),
+}
+
+/// The floor lamp's emissive image is mostly black, with one warm circle and some cyan ticks.
+fn floor_lamp_texture(src: &Image) -> LampImage {
+    let Some(data) = src.data.as_ref() else { return LampImage::Wait };
+    let w = src.texture_descriptor.size.width as usize;
+    let h = src.texture_descriptor.size.height as usize;
+    let Some(pixels) = w.checked_mul(h) else { return LampImage::Leave };
+    // One RGBA8 layer (mips, if present, follow and are the same layout).
+    if pixels == 0 || data.len() < pixels * 4 || data.len() % 4 != 0 {
+        return LampImage::Leave;
+    }
+    // The circle is orange. The little screen on the rim is cyan, and at the file's strength
+    // it clipped to the same pale warm white. Both are this lamp.
+    let lit = |px: &[u8]| {
+        let (r, g, b) = (px[0] as u16, px[1] as u16, px[2] as u16);
+        let warm = r > 40 && r + 20 > g && g + 15 >= b && r > b + 25;
+        let cool = b > 70 && b + 10 >= g && g > r + 10 && b > r + 15;
+        warm || cool
+    };
+    let lit_count = data.chunks_exact(4).filter(|px| lit(px)).count();
+    // The lamp is a black image with one circle and a few ticks. The button face's overlay
+    // is warm across the whole image.
+    if lit_count < 1000 || lit_count * 8 > data.len() / 4 {
+        return LampImage::Leave;
+    }
+    let mut out = src.clone();
+    let Some(bytes) = out.data.as_mut() else { return LampImage::Wait };
+    for px in bytes.chunks_exact_mut(4) {
+        if lit(px) {
+            let v = px[0].max(px[1]).max(px[2]) as u16;
+            px[0] = v as u8;
+            px[1] = (v / 12) as u8;
+            px[2] = (v / 60) as u8;
+        }
+    }
+    LampImage::Red(out)
 }
 
 /// Move the models' parts, and show the right look, from the simulation.

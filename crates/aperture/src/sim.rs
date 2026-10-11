@@ -195,6 +195,8 @@ pub struct PelletLauncher {
     /// Its pellet in the air, and how long since it last had one.
     pub pellet: Option<u32>,
     pub idle: f32,
+    /// Seconds since it fired. The mouth plays open, then close, over about two seconds.
+    pub since_shot: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -393,7 +395,8 @@ pub enum SimEvent {
     TurretTipped { at: Vec3 },
     TurretRetired { at: Vec3 },
     PelletLaunched { at: Vec3 },
-    PelletBounced { at: Vec3 },
+    /// Hit `at`, on the face with this outward normal.
+    PelletBounced { at: Vec3, normal: Vec3 },
     /// A pellet's gone: worn out, into a grill, or caught (`caught`).
     PelletGone { at: Vec3, caught: bool },
     /// A mover reached a point on its path (and `arrived`: the one it was heading for).
@@ -675,7 +678,7 @@ impl Sim {
                 }),
                 Item::PelletLauncher { at, dir, inputs, life } => {
                     statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
-                    sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: PELLET_RELOAD });
+                    sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: PELLET_RELOAD, since_shot: 99.0 });
                 }
                 Item::PelletCatcher { sig, at, facing } => {
                     statics.push(Static { b: Aabb::from_center_size(at - facing * 0.45, Vec3::splat(0.9)), mat: Mat::Prop, owner: Owner::Emitter });
@@ -1588,6 +1591,7 @@ impl Sim {
         for i in 0..self.launchers.len() {
             let l = &mut self.launchers[i];
             l.on = l.inputs.eval(&self.signals);
+            l.since_shot += dt;
             if l.pellet.is_some_and(|id| !self.pellets.iter().any(|p| p.id == id && p.alive)) {
                 l.pellet = None;
                 l.idle = 0.0;
@@ -1598,6 +1602,7 @@ impl Sim {
                 self.next_pellet += 1;
                 let at = l.at + l.dir * 0.3;
                 l.pellet = Some(id);
+                l.since_shot = 0.0;
                 self.pellets.retain(|p| p.alive);
                 self.pellets.push(Pellet { id, pos: at, vel: l.dir * PELLET_SPEED, age: 0.0, life: l.life, alive: true });
                 self.events.push(SimEvent::PelletLaunched { at });
@@ -1636,7 +1641,7 @@ impl Sim {
                             _ => {
                                 p.vel -= 2.0 * p.vel.dot(hit.normal) * hit.normal;
                                 p.pos = hit.point + hit.normal * 0.01;
-                                self.events.push(SimEvent::PelletBounced { at: hit.point });
+                                self.events.push(SimEvent::PelletBounced { at: hit.point, normal: hit.normal });
                             }
                         }
                     }
@@ -1974,7 +1979,8 @@ impl Sim {
             p.grounded = below.is_some();
             if p.grounded && !held {
                 let slick = world.gel(p.pos - Vec3::Y * CUBE_HALF, Vec3::Y) == faith_move::Gel::Speed;
-                let decel = if slick { 1.0 } else { 14.0 };
+                // `cube_plate_velocity` aims short by the slide this decel produces.
+                let decel = if slick { 1.0 } else { CUBE_GROUND_DECEL };
                 let h = Vec3::new(p.vel.x, 0.0, p.vel.z);
                 let s = h.length();
                 if s > 0.0 {
@@ -1982,11 +1988,11 @@ impl Sim {
                     p.vel.x *= ns / s;
                     p.vel.z *= ns / s;
                 }
-                // Settle to the nearest quarter turn as it comes to rest.
-                if s < 0.5 {
+                // A reflector stays upright on the yaw it has: that yaw is the way its laser
+                // leaves. A storage or companion cube keeps the yaw it was dropped at.
+                if s < 0.5 && p.kind == CubeKind::Reflector {
                     let (yaw, _, _) = p.rot.to_euler(glam::EulerRot::YXZ);
-                    let snap = (yaw / std::f32::consts::FRAC_PI_2).round() * std::f32::consts::FRAC_PI_2;
-                    let rest = Quat::from_rotation_y(if p.kind == CubeKind::Reflector { yaw } else { snap });
+                    let rest = Quat::from_rotation_y(yaw);
                     p.rot = p.rot.slerp(rest, (dt * 6.0).min(1.0));
                 }
             }
@@ -2032,6 +2038,40 @@ impl Sim {
                 self.events.push(SimEvent::CubeFizzled { at: p.pos });
             }
             self.props[i] = p;
+        }
+        self.launch_cubes_on_plates();
+    }
+
+    /// A cube sitting on an aerial faith plate takes the same arc the plate gives Faith.
+    fn launch_cubes_on_plates(&mut self) {
+        for i in 0..self.plates.len() {
+            let pl = self.plates[i].clone();
+            if !pl.on || pl.fired < 0.6 {
+                continue;
+            }
+            let mut launched = false;
+            for j in 0..self.props.len() {
+                if self.held == Some(j) {
+                    continue;
+                }
+                let p = &mut self.props[j];
+                if !p.alive || p.fizzle.is_some() {
+                    continue;
+                }
+                let bottom = p.pos.y - CUBE_HALF;
+                let dx = p.pos.x - pl.at.x;
+                let dz = p.pos.z - pl.at.z;
+                if dx.abs() < PLATE_HALF && dz.abs() < PLATE_HALF && (bottom - pl.at.y - PLATE_TOP).abs() < 0.25 && p.vel.y <= 0.5 {
+                    let from = Vec3::new(p.pos.x, bottom, p.pos.z);
+                    p.vel = cube_plate_velocity(from, pl.target, pl.apex);
+                    p.grounded = false;
+                    launched = true;
+                }
+            }
+            if launched {
+                self.plates[i].fired = 0.0;
+                self.events.push(SimEvent::PlateLaunch { at: pl.at });
+            }
         }
     }
 
@@ -2214,6 +2254,10 @@ fn bridge_seg(a: Vec3, b: Vec3, dir: Vec3, up: Vec3) -> BridgeSeg {
     BridgeSeg { a, b, up, aabb: Aabb::new(lo, hi) }
 }
 
+/// How fast a cube's horizontal speed falls once it is on an ordinary floor (m/s²).
+/// Speed gel uses a much smaller number; see `update_props`.
+const CUBE_GROUND_DECEL: f32 = 14.0;
+
 /// The launch velocity that carries something from `from` to land on `to`, peaking `apex`
 /// metres above the higher of the two, under `g`.
 pub fn ballistic(from: Vec3, to: Vec3, apex: f32, g: f32) -> Vec3 {
@@ -2224,6 +2268,26 @@ pub fn ballistic(from: Vec3, to: Vec3, apex: f32, g: f32) -> Vec3 {
     let t = t_up + t_down;
     let h = Vec3::new(to.x - from.x, 0.0, to.z - from.z) / t;
     Vec3::new(h.x, vy, h.z)
+}
+
+/// Faith's plate throws her feet onto `to` and she keeps running. A cube keeps the same
+/// apex, but after it touches down the floor slides it onward, so the throw is aimed
+/// short by that slide and the cube stops on `to`.
+fn cube_plate_velocity(from: Vec3, to: Vec3, apex: f32) -> Vec3 {
+    let v = ballistic(from, to, apex, GRAVITY);
+    let h = Vec3::new(v.x, 0.0, v.z);
+    let speed = h.length();
+    if speed < 1e-3 {
+        return v;
+    }
+    let top = from.y.max(to.y) + apex.max(0.1);
+    let t = (2.0 * GRAVITY * (top - from.y)).sqrt() / GRAVITY + (2.0 * (top - to.y) / GRAVITY).sqrt();
+    let dist = speed * t;
+    // Touchdown distance L, then a slide of L² / (2 a t²), together equal `dist`.
+    let a_t2 = CUBE_GROUND_DECEL * t * t;
+    let land = (-a_t2 + (a_t2 * a_t2 + 2.0 * a_t2 * dist).sqrt()).max(0.0);
+    let scale = (land / dist).clamp(0.0, 1.0);
+    Vec3::new(h.x * scale, v.y, h.z * scale)
 }
 
 /// A handful of boxes, scanned in full (no grid).
