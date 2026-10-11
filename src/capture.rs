@@ -554,6 +554,31 @@ fn script(name: &str) -> Vec<Act> {
             side(&mut v, "catcher_d_closed");
             v
         }
+        // The escape's rocket turret (escape_01, #24), switched on, seen from beyond the glass
+        // in front of it: its sight on her, the rocket, the glass going.
+        "rockets" => {
+            let map = aperture::levels::all().len() + 16;
+            let mut v = vec![Map(map), Wait(150), Teleport(Vec3::new(-14.74, -6.0, -0.6)), Look(180.0, 0.0), Wait(30), Shot("rocket_a_off"), RocketsOn, Wait(20), Shot("rocket_b_sight")];
+            for k in 0..48 {
+                v.extend([Wait(5), Shot(Box::leak(format!("rocket_c{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
+        // Chamber 01's cycling portals (testchmb_a_00's upper rooms, #21): the cycle started,
+        // then the last room's portal on its wall, at Portal's size, from in front of it.
+        "chamber01" => {
+            let map = aperture::levels::all().len();
+            let mut v = vec![Map(map), Wait(100), Teleport(Vec3::new(13.0, 14.7, 27.6)), Wait(20), Teleport(Vec3::new(5.7, 14.7, 30.0)), Look(180.0, 5.0)];
+            for k in 0..6 {
+                v.extend([Wait(50), Shot(Box::leak(format!("chamber01_{k}").into_boxed_str()))]);
+            }
+            v
+        }
+        // The escape's first way on (escape_00, #21): walked into, it takes her to escape_01.
+        "escape_exit" => {
+            let map = aperture::levels::all().len() + 15;
+            vec![Map(map), Wait(150), Shot("escape_exit_a_before"), Teleport(Vec3::new(-55.27, 14.7, -14.63)), Look(90.0, 0.0), Wait(20), Shot("escape_exit_b_after"), Wait(40), Shot("escape_exit_c_after")]
+        }
         // Holes in Portal's maps (#27): from a few of each map's lights, four ways round. Run
         // with PORTAL_DEBUG_VOID=1 and anything not drawn shows magenta. PORTAL_FIRST_MAP and
         // PORTAL_LAST_MAP pick the maps.
