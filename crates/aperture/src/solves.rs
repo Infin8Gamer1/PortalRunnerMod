@@ -707,6 +707,33 @@ fn solve_testchmb_a_00() {
 }
 
 impl Play {
+    /// Debugging: walk to `at` and shoot all round, listing where portals would open (none
+    /// is left open).
+    #[allow(dead_code)]
+    pub fn probe_portals(&mut self, at: Vec3) {
+        self.go(at, 0.5);
+        let eye = self.c.view().eye;
+        let mut seen: Vec<(Vec3, Vec3)> = Vec::new();
+        for yaw_deg in (0..360).step_by(8) {
+            for pitch_deg in (-80..=85).step_by(5) {
+                let (y, pi) = ((yaw_deg as f32).to_radians(), (pitch_deg as f32).to_radians());
+                let dir = crate::portal::view_dir(y, pi);
+                let (saved, on) = (self.sim.portals, self.sim.portal_mover);
+                let ok = self.sim.fire(PortalColor::Blue, Aim { eye, dir, yaw: y });
+                let got = self.sim.portals[0];
+                (self.sim.portals, self.sim.portal_mover) = (saved, on);
+                if let Some(g) = got.filter(|_| ok) {
+                    if !seen.iter().any(|(c, n)| c.distance(g.center) < 1.5 && n.dot(g.normal) > 0.9) {
+                        seen.push((g.center, g.normal));
+                    }
+                }
+            }
+        }
+        for (c, n) in seen {
+            eprintln!("portal from {}: {c:.2?} facing {n:.2?}", self.c.feet);
+        }
+    }
+
     /// Debugging: which cells she can reach from where she is (the path-finder's search with
     /// no goal), drawn over x0..x1, z0..z1: reached ones by their height over hers (metres,
     /// 0-9 then A-Z), '.' a floor not reached.
@@ -1401,4 +1428,32 @@ fn tilted_faces_take_portals() {
         // Its top up the slope.
         assert!(blue.up.y > 0.7, "its up is {}", blue.up);
     }
+}
+
+/// Chamber 15 (testchmb_a_10), as Portal's walkthrough has it. Section 1's fling over the glass
+/// is a lethal fall under Mirror's Edge's rules (#57), so she starts past it. Section 2: orange
+/// where the trapped pellet bounces in its alcove, blue on the ceiling over the receptacle (both
+/// shot through the grill); the lift it lowers takes her up to section 3. Sections 3-5 aren't
+/// played yet.
+#[test]
+fn solve_testchmb_a_10() {
+    let Some(mut p) = Play::load("testchmb_a_10") else { return };
+    p.wait(3.0);
+    p.c.feet = Vec3::new(70.0, -9.75, 16.0);
+    p.c.vel = Vec3::ZERO;
+    p.wait(0.5);
+    p.go(Vec3::new(48.3, -9.75, -1.0), 0.4);
+    p.shoot(PortalColor::Orange, Vec3::new(49.9, -4.6, -12.8));
+    p.go(Vec3::new(57.5, -9.75, -1.0), 0.4);
+    p.shoot(PortalColor::Blue, Vec3::new(58.37, -3.25, -8.06));
+    let lift = p.mover("lift_a_rm8");
+    p.wait_for(20.0, "the pellet in the receptacle (the lift to come down)", |p| p.sim.movers[lift].goal.is_some() || p.sim.movers[lift].node != 0);
+    p.wait_for(10.0, "the lift to come down", |p| p.sim.movers[lift].goal.is_none());
+    let deck = p.sim.movers[lift].boxes().fold(f32::MIN, |m, b| m.max(b.max.y));
+    p.go(Vec3::new(58.5, deck, 8.9), 0.4);
+    p.wait_for(10.0, "the lift to take her up", |p| p.sim.movers[lift].goal.is_some());
+    p.wait_for(15.0, "the lift to stop", |p| p.sim.movers[lift].goal.is_none());
+    eprintln!("up the lift at {}", p.c.feet);
+    p.assert_alive("up to section 3");
+    // PROBE-START
 }

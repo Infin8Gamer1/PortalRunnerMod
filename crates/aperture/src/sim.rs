@@ -991,6 +991,7 @@ impl Sim {
                 for (b, mat) in m.solids() {
                     if b.overlaps(&reach)
                         && (mask.glass || !mat.glass())
+                        && (mask.grates || !mat.see_through())
                         && let Some((t, n)) = ray_aabb(o, d, &b)
                     {
                         consider(t, n, HitWhat::Mover(i));
@@ -1256,6 +1257,12 @@ impl Sim {
         self.statics.iter().any(|s| geom::contains(&s.b, p))
     }
 
+    /// Whether anything a portal can't open through is at `p`: as [`solid_at`](Self::solid_at),
+    /// but not grating or player clip (shots go through those, and portals open behind them).
+    fn blocks_portal_at(&self, p: Vec3) -> bool {
+        self.statics.iter().any(|s| !s.mat.see_through() && geom::contains(&s.b, p))
+    }
+
     /// Where a portal shot at `point` (on still box `solid`, face `n`) would open: on that
     /// surface, nudged to fit if it hangs off an edge or overlaps the other portal.
     pub fn place(&self, color: PortalColor, point: Vec3, n: Vec3, _solid: usize, view: Vec3) -> Option<Portal> {
@@ -1319,7 +1326,7 @@ impl Sim {
         if !p.axial() {
             // A tilted face: its steps stand a little proud of it, so the room in front is
             // looked at point by point, further out.
-            let clear = |q: Vec3| !self.solid_at(q) && !self.doors.iter().any(|d| d.solid() && geom::contains(&d.b, q)) && !self.movers.iter().any(|m| m.boxes().any(|b| geom::contains(&b, q)));
+            let clear = |q: Vec3| !self.blocks_portal_at(q) && !self.doors.iter().any(|d| d.solid() && geom::contains(&d.b, q)) && !self.movers.iter().any(|m| m.boxes().any(|b| geom::contains(&b, q)));
             if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && clear(q + n * 0.15) && clear(q + n * 0.3)) {
                 return false;
             }
@@ -1329,13 +1336,13 @@ impl Sim {
             };
             return other.is_none_or(apart);
         }
-        if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && !self.solid_at(q + n * 0.03)) {
+        if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && !self.blocks_portal_at(q + n * 0.03)) {
             return false;
         }
         // Clear in front (no wall sticking out over it, no closed door). A light bridge
         // running into the wall is fine: that's how you send one through a portal.
         let front = collide::local_box(p, Vec3::new(-p.half.x + 0.05, -p.half.y + 0.05, 0.02), Vec3::new(p.half.x - 0.05, p.half.y - 0.05, 0.3));
-        if self.statics.iter().any(|s| s.b.overlaps(&front)) {
+        if self.statics.iter().any(|s| !s.mat.see_through() && s.b.overlaps(&front)) {
             return false;
         }
         if self.doors.iter().any(|d| d.solid() && d.b.overlaps(&front)) || self.movers.iter().any(|m| m.boxes().any(|b| b.overlaps(&front))) {
@@ -1674,7 +1681,9 @@ impl Sim {
             self.events.push(SimEvent::Drop { id: self.props[h].id });
             return;
         }
-        let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask::SHOT, 1);
+        // (Her reach stops at grating and clip, as her hand would: a switch's own brush can be
+        // clip.)
+        let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask { grates: true, ..Mask::SHOT }, 1);
         match hit.map(|h| h.what) {
             Some(HitWhat::Prop(i)) if self.props[i].fizzle.is_none() => {
                 self.held = Some(i);
@@ -2056,7 +2065,8 @@ impl Sim {
             }
         }
         let me = ctrl.body().aabb(ctrl.feet);
-        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: true, portals: true, grates: false, glass: true, skip_prop: None };
+        // (Through emancipation grills, as in Portal: Chamber 15 sends its pellets through them.)
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
         let mut killed = false;
         for k in 0..self.pellets.len() {
             if !self.pellets[k].alive {
@@ -2084,7 +2094,6 @@ impl Sim {
                                 p.pos = link.point(hit.point) + p.vel.normalize_or_zero() * 2e-3;
                                 p.age = p.age.min(p.life - p.after_portal);
                             }
-                            HitWhat::Fizzler(_) => gone = true,
                             _ => {
                                 p.vel -= 2.0 * p.vel.dot(hit.normal) * hit.normal;
                                 p.pos = hit.point + hit.normal * 0.01;
