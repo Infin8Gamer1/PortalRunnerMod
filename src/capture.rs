@@ -623,6 +623,23 @@ fn script(name: &str) -> Vec<Act> {
             v.extend([Wait(60), Look(180.0, 10.0), Wait(5), Shot("fling10_d_ledge")]);
             v
         }
+        // Chamber 16's turret 3 (testchmb_a_11, #21): orange on the floor near her, blue opened
+        // on the floor under the turret: it drops through and topples out beside orange.
+        "turret16" => {
+            let map = aperture::levels::all().len() + 11;
+            let mut v = vec![Map(map), Wait(200), TurretsOff, Teleport(Vec3::new(-2.4, 0.1, -8.0)), Launch(Vec3::ZERO), Look(0.0, -18.0), Wait(30)];
+            v.extend([
+                Portal(PortalColor::Orange, Vec3::new(-2.4, 0.0, -13.0), Vec3::Y, Vec3::NEG_Z),
+                Wait(5),
+                Shot("turret16_a_before"),
+                Portal(PortalColor::Blue, Vec3::new(9.75, 0.0, -11.98), Vec3::Y, Vec3::X),
+                Wait(3),
+                Shot("turret16_b_dropped"),
+                Wait(40),
+                Shot("turret16_c_lying"),
+            ]);
+            v
+        }
         // Chamber 12's wedge (testchmb_a_07, #21): up on the button's platform it swings out of
         // the wall and tips; blue on it, orange on the pit's floor; down into orange and flung
         // out of the wedge up to the exit's ledge.

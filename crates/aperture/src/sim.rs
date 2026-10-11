@@ -1815,6 +1815,19 @@ impl Sim {
     }
 
     /// Knock a turret over, falling along `push`.
+    /// Whether a standing turret `i` would see someone whose chest is at `chest`.
+    pub fn turret_sees(&self, i: usize, chest: Vec3) -> bool {
+        let t = &self.turrets[i];
+        if !matches!(t.state, TurretState::Searching | TurretState::Firing) {
+            return false;
+        }
+        let eye = t.eye();
+        let to = chest - eye;
+        let dist = to.length();
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
+        dist < TURRET_RANGE && to.normalize_or_zero().dot(t.facing()) > TURRET_CONE && self.raycast(eye, to / dist, dist, mask).is_none_or(|h| h.t > dist - 0.4)
+    }
+
     pub fn tip_turret(&mut self, i: usize, push: Vec3) {
         let t = &mut self.turrets[i];
         if !t.upright() {
@@ -1833,6 +1846,26 @@ impl Sim {
     /// them or her kicks, they flail and give up.
     fn update_turrets(&mut self, dt: f32, ctrl: &mut Controller) {
         self.hurt = (self.hurt - HURT_RECOVERY * dt).max(0.0);
+        // A turret over a floor portal (both open) drops through it and out of the other, and
+        // lands on its side: that's it done for (Portal's Chamber 16).
+        if self.linked() {
+            for i in 0..self.turrets.len() {
+                let t = self.turrets[i];
+                let Some(c) = PortalColor::BOTH.into_iter().find(|c| self.portals[c.index()].is_some_and(|q| q.normal.y > 0.7 && q.signed_distance(t.at).abs() < 0.3 && q.in_oval(t.at))) else { continue };
+                let out = self.portals[c.other().index()].unwrap();
+                // (Out of a floor portal, it topples off beside it, not back onto it.)
+                let beside = if out.normal.y > 0.7 { out.up * (out.half.y + TURRET_HEIGHT * 0.5) } else { Vec3::ZERO };
+                let at = out.center + out.normal * (TURRET_HALF + 0.1) + beside - Vec3::Y * if out.normal.y < -0.7 { TURRET_HEIGHT } else { 0.0 };
+                // (Down onto the floor below wherever it comes out.)
+                let floor = self.raycast(at + Vec3::Y * 0.1, Vec3::NEG_Y, 30.0, Mask::SOLID).map_or(at.y, |h| h.point.y);
+                let push = if out.normal.y.abs() > 0.7 { out.up } else { out.normal };
+                let t = &mut self.turrets[i];
+                t.at = Vec3::new(at.x, floor, at.z);
+                if t.upright() {
+                    self.tip_turret(i, push);
+                }
+            }
+        }
         let me = ctrl.body().aabb(ctrl.feet);
         let chest = ctrl.feet + Vec3::Y * 1.2;
         let run = Vec3::new(ctrl.vel.x, 0.0, ctrl.vel.z);
@@ -2074,7 +2107,7 @@ impl Sim {
             }
             let mut p = self.pellets[k];
             p.age += dt;
-            let mut gone = p.age >= p.life;
+            let gone = p.age >= p.life;
             let mut left = p.vel.length() * dt;
             let mut bounces = 0;
             while !gone && left > 1e-5 && bounces < 4 {

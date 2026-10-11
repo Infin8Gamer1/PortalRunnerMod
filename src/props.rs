@@ -733,6 +733,8 @@ pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, m
         if let PropKind::Turret(i) = *kind {
             if let Some(t) = sim.turrets.get(i) {
                 let tilt = if t.fall_dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_axis_angle(Vec3::Y.cross(t.fall_dir).normalize(), t.fallen * std::f32::consts::FRAC_PI_2) };
+                // (Where it is now: one can drop through a portal in the floor under it.)
+                tf.translation = t.at;
                 tf.rotation = tilt * Quat::from_rotation_y(t.yaw);
             }
             continue;

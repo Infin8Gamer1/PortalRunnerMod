@@ -144,6 +144,8 @@ impl Play {
         out.extend(self.sim.doors.iter().filter(|d| d.solid()).map(|d| d.b).filter(|d| d.overlaps(b)));
         // Cubes in the way (not the one she's carrying).
         out.extend(self.sim.props.iter().enumerate().filter(|(i, c)| c.alive && Some(*i) != self.sim.held).map(|(_, c)| c.aabb()).filter(|c| c.overlaps(b)));
+        // And turrets, standing or knocked over.
+        out.extend(self.sim.turrets.iter().map(|t| t.aabb()).filter(|t| t.overlaps(b)));
         out.into_iter()
     }
 
@@ -322,7 +324,7 @@ impl Play {
             if self.follow(&path, to, reach) {
                 return;
             }
-            assert!(attempt < 3, "{}: couldn't walk to {to} (stuck at {})", self.name, self.c.feet);
+            assert!(attempt < 3, "{}: couldn't walk to {to} (stuck at {}, {:?}, deaths {}, hurt {})", self.name, self.c.feet, self.c.state, self.deaths, self.sim.hurt);
         }
     }
 
@@ -494,9 +496,17 @@ impl Play {
     pub fn cube_on_button(&mut self, near: Vec3) -> usize {
         let b = self.sim.buttons.iter().enumerate().min_by(|a, b| a.1.at.distance(near).total_cmp(&b.1.at.distance(near))).map(|(i, _)| i).expect("no button");
         let at = self.sim.buttons[b].at;
+        self.drop_held_at(at);
+        self.wait(1.5);
+        assert!(self.sim.buttons[b].pressed, "{}: the cube didn't stay on the button at {at}", self.name);
+        b
+    }
+
+    /// Carry what she's holding over `at` (on the floor) and let go.
+    pub fn drop_held_at(&mut self, at: Vec3) {
         let held = self.sim.held.expect("not holding anything");
         // Looking level, the cube rides about 2 m out in front: stand that far back from the
-        // button, facing it, and line the cube up over it.
+        // spot, facing it, and line the cube up over it.
         // (Her side of it, or round it: somewhere with floor, not over a portal.)
         let back = {
             let d0 = Vec2::new(self.c.feet.x - at.x, self.c.feet.z - at.z).normalize_or(Vec2::Y);
@@ -519,11 +529,8 @@ impl Play {
             let spot = self.c.feet - Vec3::new(off.x, 0.0, off.y);
             self.nudge(spot);
         }
-        assert_eq!(self.sim.held, Some(held), "{}: lost the cube lining it up over the button", self.name);
+        assert_eq!(self.sim.held, Some(held), "{}: lost the cube lining it up over {at}", self.name);
         self.sim.use_key(Aim::of(&self.c));
-        self.wait(1.5);
-        assert!(self.sim.buttons[b].pressed, "{}: the cube didn't stay on the button at {at}", self.name);
-        b
     }
 
     /// The mover of the map's entity `name` (a door, a lift, a train).
@@ -707,6 +714,116 @@ fn solve_testchmb_a_00() {
 }
 
 impl Play {
+    /// Shoot `color` at `target` from a spot within `radius` of `near` (on its floor) that has
+    /// `target` in sight and that no standing turret can see.
+    pub fn safe_shot(&mut self, color: PortalColor, target: Vec3, near: Vec3, radius: f32) {
+        let unseen = |p: &Play, feet: Vec3| !(0..p.sim.turrets.len()).any(|t| p.sim.turret_sees(t, feet + Vec3::Y * 1.2));
+        let in_sight = |p: &Play, eye: Vec3| p.sim.trace(eye, (target - eye).normalize(), 200.0, crate::sim::Mask::SHOT, 0).1.is_some_and(|h| h.point.distance(target) < 0.8);
+        // Spots with it in sight: unseen ones, and seen ones with cover a step away.
+        let mut safe: Vec<(f32, Vec3)> = Vec::new();
+        let mut peeks: Vec<(f32, Vec3, Vec3)> = Vec::new();
+        let n = (radius / 0.5) as i32;
+        let eye_off = self.c.view().eye - self.c.feet;
+        let floor_at = |p: &Play, x: f32, z: f32| p.floors(x, z, near.y - 0.3, near.y + 0.3).into_iter().reduce(f32::max).map(|y| Vec3::new(x, y, z));
+        for i in -n..=n {
+            for k in -n..=n {
+                let Some(feet) = floor_at(self, near.x + i as f32 * 0.5, near.z + k as f32 * 0.5) else { continue };
+                if !in_sight(self, feet + eye_off) {
+                    continue;
+                }
+                let d = feet.distance(self.c.feet);
+                if unseen(self, feet) {
+                    safe.push((d, feet));
+                } else {
+                    let cover = [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)].into_iter().find_map(|(dx, dz)| floor_at(self, feet.x + dx, feet.z + dz).filter(|c| unseen(self, *c)));
+                    if let Some(c) = cover {
+                        peeks.push((d, feet, c));
+                    }
+                }
+            }
+        }
+        safe.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // (Least seen on the way there first: how much of the walk is in a turret's sight.)
+        let exposure = |p: &Play, to: Vec3| p.path(to, 0.3).map(|w| w.iter().filter(|(q, _)| !unseen(p, *q)).count() as f32 * CELL);
+        let mut safe: Vec<(f32, Vec3)> = safe.into_iter().take(24).filter_map(|(d, s)| exposure(self, s).map(|e| (e.max(1.5) * 100.0 + d, s))).collect();
+        safe.sort_by(|a, b| a.0.total_cmp(&b.0));
+        safe.truncate(8);
+        for (_, spot) in safe {
+            self.go(spot, 0.3);
+            self.nudge(spot);
+            if unseen(self, self.c.feet) && in_sight(self, self.c.view().eye) {
+                self.shoot(color, target);
+                return;
+            }
+        }
+        // A quick look out from cover (a turret takes a moment to spot her).
+        peeks.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut peeks: Vec<(f32, Vec3, Vec3)> = peeks.into_iter().take(24).filter_map(|(d, s, c)| exposure(self, c).map(|e| (e.max(1.5) * 100.0 + d, s, c))).collect();
+        peeks.sort_by(|a, b| a.0.total_cmp(&b.0));
+        peeks.truncate(8);
+        for (_, spot, cover) in peeks {
+            self.go(cover, 0.3);
+            self.peek_shot(color, target, spot - cover);
+            if self.sim.portals[color.index()].is_some_and(|q| q.center.distance(target) < 1.6) {
+                return;
+            }
+        }
+        panic!("{}: nowhere near {near} to shoot {target} from", self.name);
+    }
+
+    /// A quick look out from cover: sidestep `side` until `at` is in sight, fire `color` at it
+    /// at once, and step back (a turret takes a moment to spot her).
+    pub fn peek_shot(&mut self, color: PortalColor, at: Vec3, side: Vec3) {
+        let home = self.c.feet;
+        let side = Vec3::new(side.x, 0.0, side.z).normalize();
+        let mut fired = false;
+        for _ in 0..120 {
+            let eye = self.c.view().eye;
+            let dir = (at - eye).normalize();
+            let seen = self.sim.trace(eye, dir, 200.0, crate::sim::Mask::SHOT, 0).1.is_some_and(|h| h.point.distance(at) < 0.8);
+            if seen {
+                self.look_at(at);
+                fired = self.sim.fire(color, Aim { eye, dir, yaw: self.c.yaw });
+                break;
+            }
+            // (Strafing, still facing the target.)
+            let fwd = crate::portal::view_dir(self.c.yaw, 0.0);
+            let right = Vec3::new(-fwd.z, 0.0, fwd.x);
+            self.look_at(at);
+            self.step(&Input { move_axis: Vec2::new(side.dot(right).signum(), 0.0), ..Default::default() });
+        }
+        assert!(fired, "{}: no {color:?} portal at {at} peeking out from {home}", self.name);
+        self.step(&Input::default());
+        self.go(home, 0.3);
+    }
+
+    /// Knock turret `i` over: up to it from `side` (a direction from the turret: behind it, out
+    /// of its sight, as a rule), and a kick; or, failing that, a run into it.
+    pub fn topple(&mut self, i: usize, side: Vec3) {
+        let t = self.sim.turrets[i];
+        let side = Vec3::new(side.x, 0.0, side.z).normalize();
+        let stand = t.at + side * 1.0;
+        let floor = self.floors(stand.x, stand.z, t.at.y - 1.0, t.at.y + 1.0).into_iter().reduce(f32::max).unwrap_or(t.at.y);
+        self.go(Vec3::new(stand.x, floor, stand.z), 0.7);
+        for _ in 0..3 {
+            if !self.sim.turrets[i].upright() {
+                break;
+            }
+            self.look_at(t.at + Vec3::Y * 0.8);
+            self.step(&Input { melee_pressed: true, ..Default::default() });
+            self.wait(0.6);
+        }
+        let end = self.time + 3.0;
+        while self.sim.turrets[i].upright() && self.time < end {
+            let d = t.at - self.c.feet;
+            self.c.yaw = (-d.x).atan2(-d.z);
+            self.step(&Input { move_axis: Vec2::new(0.0, 1.0), ..Default::default() });
+        }
+        assert!(!self.sim.turrets[i].upright(), "{}: turret {i} at {} still standing (she's at {})", self.name, t.at, self.c.feet);
+        self.wait(0.5);
+        self.assert_alive(&format!("knocking turret {i} over"));
+    }
+
     /// Debugging: walk to `at` and shoot all round, listing where portals would open (none
     /// is left open).
     #[allow(dead_code)]
@@ -1456,4 +1573,123 @@ fn solve_testchmb_a_10() {
     p.assert_alive("up to section 3");
     // (Section 3 and on aren't played yet: its flings over the glass, as Portal's walkthrough
     // has them, don't carry Faith far enough (#57).)
+}
+
+/// Chamber 16 (testchmb_a_11), the turrets' chamber, much as Portal's walkthrough has it: each
+/// turret knocked over from behind or beside it, out of its sight (by a portal behind it where
+/// there's no way round), or with a cube dropped on it through a portal in the ceiling over it,
+/// or dropped itself through a portal in the floor under it; a cube on the button, and out.
+#[test]
+fn solve_testchmb_a_11() {
+    let Some(mut p) = Play::load("testchmb_a_11") else { return };
+    p.wait(3.0);
+    // Down the entry hall: the doors open once GLaDOS has had her say (18 s). Turret 0, from
+    // behind.
+    p.go(Vec3::new(24.6, 0.0, -13.0), 0.5);
+    let door = p.mover("exit_door_left_a_a11");
+    p.wait_for(30.0, "the entry doors", |p| p.sim.movers[door].node == 1 && p.sim.movers[door].goal.is_none());
+    let t0 = p.sim.turrets[0];
+    p.topple(0, -t0.facing());
+    // Turret 6 looks down the corridor north: from its mouth, a quick look and blue on the
+    // wall behind it, then orange out of its sight, and through behind it.
+    p.go(Vec3::new(13.8, 0.0, 2.0), 0.3);
+    p.peek_shot(PortalColor::Blue, Vec3::new(10.62, 1.5, 14.1), Vec3::NEG_X);
+    let behind = p.sim.portals[0].unwrap().center;
+    p.go(Vec3::new(14.5, 0.0, 1.5), 0.4);
+    p.shoot(PortalColor::Orange, Vec3::new(14.14, 1.42, -0.81));
+    let wall = p.sim.portals[1].unwrap().center;
+    p.enter_now(PortalColor::Orange, wall, Some(behind));
+    let t6 = p.sim.turrets[6];
+    p.topple(6, -t6.facing());
+    // Turret 9 at the top of the stairs, from beside it (so it falls out of the way down).
+    p.topple(9, Vec3::X);
+    // Turret 1 looks east along the west room's south side: in along its north wall (in its
+    // sight only a moment), and behind it.
+    p.go(Vec3::new(-10.1, 0.0, 9.0), 0.5);
+    p.go(Vec3::new(-20.6, 0.0, 7.5), 0.5);
+    p.topple(1, Vec3::NEG_X);
+    // Turret 5 looks west along the strip to the cubes' pile: blue on the ceiling over it (a
+    // quick look round the corner), orange on the floor here, and a cube from this room dropped
+    // in onto it.
+    p.go(Vec3::new(-11.0, 0.0, 4.0), 0.4);
+    p.peek_shot(PortalColor::Blue, Vec3::new(0.94, 6.45, 0.84), Vec3::NEG_Z);
+    p.shoot(PortalColor::Orange, Vec3::new(-13.0, 0.0, 5.5));
+    let hole = p.sim.portals[1].unwrap().center;
+    p.pick_up(Vec3::new(-17.96, 1.35, 9.17));
+    p.drop_held_at(hole);
+    p.wait_for(5.0, "the cube to knock turret 5 over", |p| !p.sim.turrets[5].upright());
+    p.assert_alive("dropping a cube on turret 5");
+    // Turrets 8 and 7 watch the way south to the button: the same for each, orange now on the
+    // strip, with the other cube from this room, then one from the pile.
+    p.safe_shot(PortalColor::Blue, Vec3::new(-8.53, 6.45, -6.10), Vec3::new(-6.0, 0.0, 0.5), 5.0);
+    p.go(Vec3::new(-9.0, 0.0, 2.0), 0.4);
+    p.shoot(PortalColor::Orange, Vec3::new(-11.5, 0.0, 1.2));
+    let hole = p.sim.portals[1].unwrap().center;
+    p.pick_up(Vec3::new(-17.98, 0.45, 10.0));
+    p.drop_held_at(hole);
+    p.wait_for(5.0, "the cube to knock turret 8 over", |p| !p.sim.turrets[8].upright());
+    p.assert_alive("dropping a cube on turret 8");
+    p.safe_shot(PortalColor::Blue, Vec3::new(-8.53, 6.45, -10.16), Vec3::new(-5.0, 0.0, -3.0), 5.0);
+    p.pick_up(Vec3::new(2.44, 1.35, -3.62));
+    p.drop_held_at(hole);
+    p.wait_for(5.0, "the cube to knock turret 7 over", |p| !p.sim.turrets[7].upright());
+    p.assert_alive("dropping a cube on turret 7");
+    // Turrets 4, 3 and 2 watch the button, and 3 and 2 each other: blue on the floor under
+    // each of 4 and 3 (from where none of them sees her), and it drops through, out of orange
+    // on the strip.
+    let under = |p: &mut Play, i: usize, near: Vec3, r: f32| {
+        let t = p.sim.turrets[i].at;
+        // (Anywhere on the floor round its foot: the portal opens under it all the same.)
+        let shot = [(0.0f32, 0.0f32), (0.0, -0.4), (0.4, 0.0), (-0.4, 0.0), (0.0, 0.4)].into_iter().any(|(dx, dz)| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.safe_shot(PortalColor::Blue, Vec3::new(t.x + dx, 0.0, t.z + dz), near, r))).is_ok()
+        });
+        assert!(shot, "{}: no portal under turret {i}", p.name);
+        p.wait_for(3.0, &format!("turret {i} to drop through"), |p| !p.sim.turrets[i].upright());
+        p.assert_alive(&format!("dropping turret {i} through"));
+    };
+    under(&mut p, 4, Vec3::new(-2.0, 0.0, -16.0), 6.0);
+    // (3's floor from the west end of the corridor, round the button room's corner.)
+    under(&mut p, 3, Vec3::new(-3.0, 0.0, -21.0), 2.0);
+    // 2 stands on floor that takes no portals: blue on the wall behind it, and through.
+    p.safe_shot(PortalColor::Blue, Vec3::new(13.0, 1.42, -20.3), Vec3::new(2.0, 0.0, -19.0), 10.0);
+    p.go(hole + Vec3::new(0.0, 0.0, 2.2), 0.4);
+    p.through(PortalColor::Orange, 0.5);
+    p.topple(2, p.c.feet - p.sim.turrets[2].at);
+    // A cube from the pile onto the button opens the exit doors.
+    p.pick_up(Vec3::new(4.08, 1.35, -4.10));
+    // (Wide round the corners, looking down so it rides low and close: she carries it a couple
+    // of metres out in front.)
+    for w in [Vec3::new(3.0, 0.0, -7.6), Vec3::new(1.0, 0.0, -8.9), Vec3::new(-1.1, 0.0, -10.0), Vec3::new(-1.1, 0.0, -16.6), Vec3::new(6.5, 0.0, -16.5)] {
+        let eye = p.c.view().eye;
+        p.look_at(Vec3::new(w.x, eye.y, w.z));
+        p.c.pitch = -0.8;
+        p.wait(0.5);
+        p.go(w, 0.5);
+    }
+    p.c.pitch = 0.0;
+    p.cube_on_button(Vec3::new(6.5, 0.2, -19.52));
+    // Turret 10 beyond looks through the doors: out of its sight, blue on the wall behind it,
+    // and through.
+    p.go(Vec3::new(2.0, 0.0, -19.0), 0.6);
+    let exit = p.mover("exit_door_left_a11");
+    p.wait_for(5.0, "the exit doors to open", |p| p.sim.movers[exit].node == 1 && p.sim.movers[exit].goal.is_none());
+    p.assert_alive("onto the button");
+    let t10 = p.sim.turrets[10].at;
+    let wall = p.sim.raycast(t10 + Vec3::Y * 1.2, Vec3::NEG_Z, 6.0, crate::sim::Mask::SHOT).map(|h| h.point).expect("no wall behind turret 10");
+    p.safe_shot(PortalColor::Blue, Vec3::new(wall.x, 1.42, wall.z), Vec3::new(8.9, 0.0, -20.0), 6.0);
+    p.go(hole + Vec3::new(0.0, 0.0, 2.2), 0.4);
+    p.through(PortalColor::Orange, 0.5);
+    p.topple(10, p.c.feet - p.sim.turrets[10].at);
+    // Turret 10's room is shut in; turret 11, next door, looks away from it: blue on the floor
+    // behind 11, orange on this room's floor, and down through.
+    p.go(Vec3::new(9.0, 0.0, -30.0), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(12.94, 0.0, -31.2));
+    p.shoot(PortalColor::Orange, Vec3::new(8.75, 0.0, -28.6));
+    p.through(PortalColor::Orange, 0.5);
+    // (Blue's opening reaches under 11 too: it may have dropped through already.)
+    if p.sim.turrets[11].upright() {
+        p.topple(11, Vec3::NEG_X);
+    }
+    p.assert_alive("past turret 11");
+    p.ride_exit("testchmb_a_13");
 }
