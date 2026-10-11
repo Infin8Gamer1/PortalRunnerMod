@@ -1904,3 +1904,24 @@ fn chamber_00_clock_runs() {
 
 
 
+
+
+/// Chamber 15's trapped pellet (#61): its launcher is set into its alcove's wall, firing out
+/// against a plug and back. A portal shot at it from the room (across the grill, from where she
+/// stands in section 2) opens on the wall over the pellet's way, so it can be let out.
+#[test]
+fn chamber_15_trapped_pellet_takes_a_portal_from_the_room() {
+    let Some(mut p) = Play::load("testchmb_a_10") else { return };
+    let pellet = Vec3::new(50.54, -4.99, -12.8);
+    for (x, z) in [(48.0, -0.5), (51.0, 2.5), (49.5, -5.0)] {
+        let fy = p.floors(x, z, -11.0, -8.0)[0];
+        p.c.feet = Vec3::new(x, fy, z);
+        p.c.vel = Vec3::ZERO;
+        p.sim.portals = [None, None];
+        p.look_at(pellet);
+        let eye = p.c.view().eye;
+        assert!(p.sim.fire(PortalColor::Orange, Aim { eye, dir: (pellet - eye).normalize(), yaw: p.c.yaw }), "no portal from ({x}, {z})");
+        let o = p.sim.portals[1].unwrap();
+        assert!(o.normal.z > 0.9 && o.in_oval(Vec3::new(pellet.x, pellet.y, o.center.z)), "from ({x}, {z}) it's at {} (not over the pellet)", o.center);
+    }
+}

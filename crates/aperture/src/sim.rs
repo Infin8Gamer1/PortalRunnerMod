@@ -795,7 +795,9 @@ impl Sim {
                     reload: 0.0,
                 }),
                 Item::PelletLauncher { at, dir, inputs, life, launch } => {
-                    statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
+                    if launch.body {
+                        statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
+                    }
                     // (Ready to fire as soon as it's on.)
                     sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: f32::INFINITY, since_shot: 99.0, launch, queued: false });
                 }

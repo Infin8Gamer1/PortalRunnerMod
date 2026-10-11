@@ -547,6 +547,18 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Chamber 15's section 2 (testchmb_a_10, #61): the pellet trapped in its alcove, then
+        // orange shot onto the wall it bounces off and blue on the ceiling over the receptacle,
+        // as the play harness does: out it comes, down into the receptacle.
+        "pellet15" => {
+            let map = aperture::levels::all().len() + 10;
+            let mut v = vec![Map(map), Wait(120), Teleport(Vec3::new(48.3, -9.75, -1.0)), Launch(Vec3::ZERO), Look(-7.72, 16.3), Wait(60), Shot("pellet15_a_trapped"), Fire(PortalColor::Orange), Wait(10)];
+            v.extend([Teleport(Vec3::new(57.5, -9.75, -1.0)), Launch(Vec3::ZERO), Look(-7.0, 34.2), Wait(10), Fire(PortalColor::Blue), Wait(30), Shot("pellet15_b_portals")]);
+            for k in 0..6 {
+                v.extend([Wait(60), Shot(Box::leak(format!("pellet15_c{k}").into_boxed_str()))]);
+            }
+            v
+        }
         // Chamber 09's dropper (testchmb_a_05, #54/#55): shut on the next cube once it's
         // dropped the first; the first into the grill, and it opens, drops the next and shuts.
         "dropper" => {
