@@ -247,10 +247,21 @@ fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Im
     }
     let (translucent, alphatest, glows, additive) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0, flags & 8 != 0);
     let tex = |n: &str, srgb: bool| if srgb { extracted.texture(n) } else { extracted.texture_data(n) };
-    let base = tex(&format!("map/{name}"), true).map(|t| images.add(t));
+    let base_img = tex(&format!("map/{name}"), true);
+    let see_through = translucent || alphatest || additive;
+    // What glows of it: Portal with RTX's emissive map where it has one; else, on an opaque
+    // $selfillum material, where its alpha says (a gradient wall glows along its strip, not
+    // all over); else all of it.
+    let glow = if !glows {
+        None
+    } else if let Some(t) = tex(&format!("map/{name}_emissive"), true) {
+        Some(images.add(t))
+    } else {
+        base_img.as_ref().filter(|_| !see_through).and_then(glow_mask).map(|t| images.add(t))
+    };
+    let base = base_img.map(|t| images.add(t));
     let normal = tex(&format!("map/{name}_normal"), false).map(|t| images.add(t));
     let mr = tex(&format!("map/{name}_mr"), false).map(|t| images.add(t));
-    let see_through = translucent || alphatest || additive;
     let mat = StandardMaterial {
         base_color: if base.is_some() { Color::WHITE } else { Color::srgb(0.6, 0.6, 0.62) },
         base_color_texture: base.clone(),
@@ -264,7 +275,7 @@ fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Im
         } else {
             LinearRgba::BLACK
         },
-        emissive_texture: if glows { base } else { None },
+        emissive_texture: if glows { glow.or(base) } else { None },
         alpha_mode: if additive {
             AlphaMode::Add
         } else if translucent {
@@ -283,6 +294,24 @@ fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Im
         lamps.0.insert(h.id());
     }
     h
+}
+
+/// A $selfillum texture's glow: its colour where its alpha says. None if it's opaque all
+/// over (then all of it glows).
+fn glow_mask(img: &Image) -> Option<Image> {
+    let data = img.data.as_ref()?;
+    if img.texture_descriptor.format.block_copy_size(None) != Some(4) || data.chunks_exact(4).all(|p| p[3] == 255) {
+        return None;
+    }
+    let mut out = img.clone();
+    for p in out.data.as_mut()?.chunks_exact_mut(4) {
+        let a = p[3] as u32;
+        for c in &mut p[..3] {
+            *c = (*c as u32 * a / 255) as u8;
+        }
+        p[3] = 255;
+    }
+    Some(out)
 }
 
 /// Draw the map when one's loaded (after the chamber's geometry is cleared and spawned).
