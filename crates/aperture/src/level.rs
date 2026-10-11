@@ -177,8 +177,9 @@ pub enum Item {
     /// Deadly goo (or a bottomless drop): falling in kills you, and cubes are lost.
     Goo { b: Aabb },
     /// A high energy pellet launcher at `at`, firing along `dir` while its inputs are on: a
-    /// pellet that lives `life` seconds, and a new one each time the last is gone.
-    PelletLauncher { at: Vec3, dir: Vec3, inputs: Inputs, life: f32 },
+    /// pellet that lives `life` seconds (infinite: for good), and a new one each time the last
+    /// is gone, as `launch` says.
+    PelletLauncher { at: Vec3, dir: Vec3, inputs: Inputs, life: f32, launch: Launch },
     /// A sentry turret standing at `at`, facing `yaw` (faith_move's: 0 looks down -Z).
     Turret { at: Vec3, yaw: f32 },
     /// A pellet catcher: its lens at `at`, facing `facing`; on for good once a pellet's in.
@@ -235,6 +236,24 @@ impl Swing {
     /// Its turn when it's `travelled` (radians) along its path.
     pub fn rotation(&self, travelled: f32) -> glam::Quat {
         glam::Quat::from_axis_angle(self.axis, travelled * self.angle.signum())
+    }
+}
+
+/// How a pellet launcher fires (Portal's launchers each set their own).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Launch {
+    /// How fast its pellets fly (m/s).
+    pub speed: f32,
+    /// Through a portal, a pellet lives at least this much longer (seconds).
+    pub after_portal: f32,
+    /// After its pellet's gone, it fires again this much later; `None`: only when told to
+    /// (Portal's LaunchBall).
+    pub reload: Option<f32>,
+}
+
+impl Default for Launch {
+    fn default() -> Self {
+        Launch { speed: 7.0, after_portal: 6.0, reload: Some(1.5) }
     }
 }
 
@@ -547,7 +566,7 @@ impl Level {
     }
 
     pub fn pellet_launcher(&mut self, at: [f32; 3], dir: [f32; 3], inputs: Inputs) -> &mut Self {
-        self.item(Item::PelletLauncher { at: Vec3::from(at), dir: Vec3::from(dir).normalize(), inputs, life: 12.0 })
+        self.item(Item::PelletLauncher { at: Vec3::from(at), dir: Vec3::from(dir).normalize(), inputs, life: 12.0, launch: Launch::default() })
     }
 
     pub fn pellet_catcher(&mut self, sig: Sig, at: [f32; 3], facing: [f32; 3]) -> &mut Self {

@@ -434,6 +434,12 @@ fn main() {
         std::process::exit(1);
     }
     let read_any = |path: &str| games.iter().find_map(|g| g.read(path));
+    // `--attachment <mdl path> <name>`: where a model's attachment is (Source's space).
+    if let Some(i) = args.iter().position(|a| a == "--attachment") {
+        let (Some(path), Some(name)) = (args.get(i + 1), args.get(i + 2)) else { return };
+        println!("{path} {name}: {:?}", read_any(path).and_then(|m| attachment_point(&m, name)));
+        return;
+    }
     // `--inspect <mdl path>...`: describe models (parts, bones, size) instead of extracting.
     if let Some(i) = args.iter().position(|a| a == "--inspect") {
         for path in &args[i + 1..] {
@@ -893,6 +899,18 @@ fn vmt_value(text: &str, key: &str) -> Option<String> {
 /// Each bone's place in the model's bind pose (Source space), from its pose-to-bone matrix.
 fn bone_transforms(model: &vmdl::Model) -> Vec<glam::Vec3> {
     pose_to_bone(model).iter().map(|m| m.inverse().translation.into()).collect()
+}
+
+/// Where a model's attachment (`ball_attachment` on Portal's pellet catcher) is in its bind
+/// pose, in its own space (Source's axes and units).
+pub fn attachment_point(mdl: &[u8], name: &str) -> Option<glam::Vec3> {
+    let mdl = vmdl::Mdl::read(mdl).ok()?;
+    let a = mdl.attachments.iter().find(|a| a.name.eq_ignore_ascii_case(name))?;
+    let bone = mdl.bones.get(usize::try_from(a.local_bone).ok()?)?;
+    let m: [[f32; 4]; 3] = bytemuck::cast(bone.pose_to_bone);
+    let to_bone = glam::Affine3A::from_cols_array(&[m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2], m[0][3], m[1][3], m[2][3]]);
+    let l: [[f32; 4]; 3] = bytemuck::cast(a.local);
+    Some(to_bone.inverse().transform_point3(glam::Vec3::new(l[0][3], l[1][3], l[2][3])))
 }
 
 /// Each bone's pose-to-bone matrix: from the model's bind pose into the bone's own space.

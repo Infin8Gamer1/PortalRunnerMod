@@ -13,7 +13,7 @@ use glam::Vec3;
 use faith_move::Aabb;
 
 use crate::io;
-use crate::level::{CubeKind, Gun, Inputs, Item, Level, Mat, MoverDef, SourceLight, Solid, Swing};
+use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MoverDef, SourceLight, Solid, Swing};
 use crate::portal::{Portal, PortalColor};
 
 /// A Source entity: its keys in order (a key can repeat: outputs).
@@ -416,7 +416,17 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     let (p, y, r) = angles(e, "angles");
                     let s = sig();
                     let index = l.items.iter().filter(|i| matches!(i, Item::PelletLauncher { .. })).count();
-                    l.items.push(Item::PelletLauncher { at, dir: angle_vectors(p, y, r).0, inputs: Inputs::on(s), life: num(e, "BallLifetime", 12.0) });
+                    // Its own speed (Source picks between its min and max), lifetimes (-1: for
+                    // good) and reload (-1, or no balls of its own: only on LaunchBall).
+                    let life = num(e, "BallLifetime", 12.0);
+                    let respawn = num(e, "ballrespawntime", 2.0);
+                    let launch = Launch {
+                        speed: (num(e, "minspeed", 275.0) + num(e, "maxspeed", 275.0)) * 0.5 * 0.0254,
+                        after_portal: num(e, "MinLifeAfterPortal", 6.0),
+                        reload: (respawn >= 0.0 && num(e, "ballcount", 1.0) > 0.0).then_some(respawn),
+                    };
+                    let life = if life < 0.0 { f32::INFINITY } else { life };
+                    l.items.push(Item::PelletLauncher { at, dir: angle_vectors(p, y, r).0, inputs: Inputs::on(s), life, launch });
                     initial.push((s, !start_disabled));
                     kind = io::Kind::Launcher { sig: s, index };
                 }
@@ -534,7 +544,11 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         }
     }
     let signals = l.signal_count().max(next_sig);
-    l.io = Some(io::Io::new(io_ents, initial, signals));
+    // Props that start disabled aren't shown till they're enabled.
+    let hidden = ents.iter().zip(&io_ents).enumerate().filter(|(_, (e, ent))| ent.kind == io::Kind::Animated && key(e, "StartDisabled") == Some("1")).map(|(k, _)| k).collect();
+    let mut logic = io::Io::new(io_ents, initial, signals);
+    logic.hidden = hidden;
+    l.io = Some(logic);
 
     // Without a gun in the map, Portal's chambers before you find it: none.
     if !ents.iter().any(|e| key(e, "classname") == Some("weapon_portalgun")) {

@@ -136,6 +136,9 @@ pub struct Io {
     /// one's started (so the host can tell a replay).
     pub animations: HashMap<usize, (String, u32)>,
     animation_count: u32,
+    /// Animated props (entities) that aren't shown: they start disabled, or the logic has
+    /// disabled them (a catcher's ball, until it's caught).
+    pub hidden: std::collections::HashSet<usize>,
     /// Each animated prop's (entity's) skin, where the logic has changed it.
     pub skins: HashMap<usize, u32>,
     /// The texture frame each brush model shows, where the logic has picked one.
@@ -390,8 +393,15 @@ impl Io {
         }
         if i == "kill" {
             self.ents[e].alive = false;
-            if let Kind::Mover { index, .. } = self.ents[e].kind {
-                sim.movers[index].present = false;
+            match self.ents[e].kind {
+                Kind::Mover { index, .. } => sim.movers[index].present = false,
+                // A launcher that's gone fires no more.
+                Kind::Launcher { sig, .. } => {
+                    if let Some(v) = sim.io_signals.get_mut(sig) {
+                        *v = false;
+                    }
+                }
+                _ => {}
             }
             return;
         }
@@ -550,7 +560,7 @@ impl Io {
             }
             Kind::Launcher { index, .. } if i == "launchball" => {
                 if let Some(l) = sim.launchers.get_mut(index) {
-                    l.idle = l.idle.max(crate::sim::PELLET_RELOAD);
+                    l.queued = true;
                 }
             }
             Kind::Switch { sig } | Kind::Launcher { sig, .. } => {
@@ -608,6 +618,13 @@ impl Io {
                 if !sim.props.iter().any(|p| p.alive && p.pos.distance(at) < 0.5) {
                     sim.spawn_prop(kind, at, None);
                     sim.events.push(SimEvent::CubeDropped { at });
+                }
+            }
+            Kind::Animated if matches!(i.as_str(), "enable" | "turnon" | "disable" | "turnoff") => {
+                if i == "enable" || i == "turnon" {
+                    self.hidden.remove(&e);
+                } else {
+                    self.hidden.insert(e);
                 }
             }
             Kind::Animated if i == "skin" => {

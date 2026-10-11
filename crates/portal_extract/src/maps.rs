@@ -166,7 +166,27 @@ pub type UsedModel = (String, i32, Vec<String>);
 
 /// Write a map's props out (`maps/<name>.props`, a line each: `kind|model file|x y z|pitch
 /// yaw roll|parent|name`, Source space), and say which models they use.
-fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<UsedModel>, String> {
+fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<UsedModel>, String> {
+    // Props the logic puts on an attachment of the prop they're parented to (a catcher's ball
+    // on `ball_attachment`): they're written where that is.
+    let mut on_attachment: HashMap<String, String> = HashMap::new();
+    for e in ents {
+        for (k, v) in e {
+            let f: Vec<&str> = v.split([',', '\x1b']).collect();
+            if (k.starts_with("On") || k.starts_with("Out")) && f.len() >= 3 && f[1].eq_ignore_ascii_case("SetParentAttachment") {
+                on_attachment.insert(f[0].trim().to_ascii_lowercase(), f[2].trim().to_string());
+            }
+        }
+    }
+    let attachment_at = |e: &bsp::Entity| -> Option<Vec3> {
+        let name = on_attachment.get(&bsp::key(e, "targetname")?.to_ascii_lowercase())?;
+        let parent_name = bsp::key(e, "parentname")?;
+        let parent = ents.iter().find(|p| bsp::key(p, "targetname").is_some_and(|n| n.eq_ignore_ascii_case(parent_name)))?;
+        let local = crate::attachment_point(&read(&bsp::key(parent, "model")?.to_ascii_lowercase())?, name)?;
+        let a = bsp::vec3_key(parent, "angles").unwrap_or(Vec3::ZERO);
+        let turn = glam::Quat::from_rotation_z(a.y.to_radians()) * glam::Quat::from_rotation_y(a.x.to_radians()) * glam::Quat::from_rotation_x(a.z.to_radians());
+        Some(bsp::vec3_key(parent, "origin")? + turn * local)
+    };
     // The animations the map's logic plays on each named prop.
     let mut anims: HashMap<String, Vec<String>> = HashMap::new();
     // And the skins it switches each to (a chamber sign flickering on: 2, 3, 4... 6).
@@ -228,6 +248,7 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<UsedModel>,
             continue;
         }
         let (Some(model), Some(o)) = (bsp::key(e, "model"), bsp::vec3_key(e, "origin")) else { continue };
+        let o = attachment_at(e).unwrap_or(o);
         let a = bsp::vec3_key(e, "angles").unwrap_or(Vec3::ZERO);
         let skin = bsp::key(e, "skin").and_then(|s| s.parse().ok()).unwrap_or(0);
         let kind = if class.starts_with("prop_physics") { "physics" } else { "dynamic" };
@@ -377,7 +398,7 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     std::fs::write(map_dir.join(format!("{name}.mesh")), m).map_err(|e| e.to_string())?;
     std::fs::write(map_dir.join(format!("{name}.solids")), solids).map_err(|e| e.to_string())?;
     std::fs::write(map_dir.join(format!("{name}.ents")), &bsp.entities).map_err(|e| e.to_string())?;
-    let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")))?;
+    let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")), read)?;
     Ok((groups.len(), nboxes, materials.len(), used))
 }
 

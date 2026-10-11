@@ -1009,7 +1009,7 @@ fn a_pellet_through_portals_lights_its_catcher() {
     let mut l = flat();
     l.solid(Mat::White, [6.0, 0.0, -3.0], [6.5, 4.0, 3.0]);
     l.solid(Mat::White, [-3.0, 0.0, -10.5], [3.0, 4.0, -10.0]);
-    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(0.0, 1.2, 0.0), dir: Vec3::X, inputs: Inputs::always(), life: 12.0 });
+    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(0.0, 1.2, 0.0), dir: Vec3::X, inputs: Inputs::always(), life: 12.0, launch: Default::default() });
     l.item(crate::level::Item::PelletCatcher { sig: 0, at: Vec3::new(0.0, 1.2, -5.0), facing: Vec3::NEG_Z });
     l.spawn([-8.0, 0.0, 8.0], 0.0);
     let (mut sim, mut c) = start(l);
@@ -1025,7 +1025,7 @@ fn a_pellet_bounces_off_walls_and_kills() {
     // Fired across the room at a wall: it bounces off.
     let mut l = flat();
     l.solid(Mat::Black, [-3.0, 0.0, -12.5], [3.0, 4.0, -12.0]);
-    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(-2.0, 1.0, -2.0), dir: Vec3::new(0.3, 0.0, -1.0).normalize(), inputs: Inputs::always(), life: 12.0 });
+    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(-2.0, 1.0, -2.0), dir: Vec3::new(0.3, 0.0, -1.0).normalize(), inputs: Inputs::always(), life: 12.0, launch: Default::default() });
     l.spawn([8.0, 0.0, 8.0], 0.0);
     let (mut sim, mut c) = start(l);
     let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
@@ -1039,7 +1039,7 @@ fn a_pellet_bounces_off_walls_and_kills() {
     assert!(!ev.contains(&SimEvent::PlayerDied));
     // Fired straight at her: it kills.
     let mut l = flat();
-    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(0.0, 1.0, -6.0), dir: Vec3::Z, inputs: Inputs::always(), life: 12.0 });
+    l.item(crate::level::Item::PelletLauncher { at: Vec3::new(0.0, 1.0, -6.0), dir: Vec3::Z, inputs: Inputs::always(), life: 12.0, launch: Default::default() });
     l.spawn([0.0, 0.0, 1.0], 0.0);
     let (mut sim, mut c) = start(l);
     let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
@@ -1461,5 +1461,53 @@ fn portals_cubes_rest_on_floors() {
         }
     }
     assert!(seen > 5, "only {seen} cubes");
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+
+/// Every pellet catcher in Portal's maps (#23): its ball is hidden till a pellet's caught, and a
+/// pellet in its trigger is taken and shows it.
+#[test]
+fn portals_catchers_take_pellets() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let (mut bad, mut seen) = (Vec::new(), 0);
+    for name in &names {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let (sim0, _) = start(level.clone());
+        let io = sim0.io.as_ref().unwrap();
+        let catchers: Vec<(usize, String, faith_move::Aabb)> = io.ents.iter().enumerate().filter_map(|(k, e)| match &e.kind {
+            crate::io::Kind::Trigger { b, pellets: true, .. } => Some((k, e.name.clone(), *b)),
+            _ => None,
+        }).collect();
+        for (k, trigger, b) in catchers {
+            seen += 1;
+            let (mut sim, mut c) = start(level.clone());
+            c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+            run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+            let io = sim.io.as_ref().unwrap();
+            // Its ball: the combineball the trigger enables.
+            let ball = io.ents[k].outputs.iter().find(|o| o.input.eq_ignore_ascii_case("Enable") && o.target.ends_with("_ball")).and_then(|o| io.ents.iter().position(|e| e.name.eq_ignore_ascii_case(&o.target)));
+            if let Some(ball) = ball {
+                if !io.hidden.contains(&ball) {
+                    bad.push(format!("{name}: {trigger}'s ball shows before it's caught one"));
+                }
+            }
+            sim.pellets.push(crate::sim::Pellet { id: 999, pos: b.center(), vel: Vec3::ZERO, age: 0.0, life: 10.0, after_portal: 6.0, alive: true });
+            let ev = run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+            if !ev.iter().any(|e| matches!(e, SimEvent::PelletGone { caught: true, .. })) {
+                bad.push(format!("{name}: {trigger} didn't take the pellet"));
+            }
+            if let Some(ball) = ball {
+                if sim.io.as_ref().unwrap().hidden.contains(&ball) {
+                    bad.push(format!("{name}: {trigger}'s ball didn't show"));
+                }
+            }
+        }
+    }
+    assert!(seen >= 8, "only {seen} catchers");
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

@@ -541,6 +541,8 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         (r.lasers && sim.lasers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.32)))
             || (r.bridges && sim.bridges.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.2)))
             || (r.pellets && (sim.launchers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.35)) || sim.pellet_catchers.iter().any(|x| aperture::geom::contains(b, x.at - x.facing * 0.45))))
+            // (A source map's launcher is its own prop: the box behind it is that prop's.)
+            || (l.source.is_some() && sim.launchers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.35)))
     };
     // Faith plate models sit in pits: holes in the floor as drawn (her feet stay on the
     // plate as before).

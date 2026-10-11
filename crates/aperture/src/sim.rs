@@ -101,15 +101,10 @@ impl Door {
     }
 }
 
-/// How fast a high energy pellet flies (m/s).
-pub const PELLET_SPEED: f32 = 7.0;
-/// Its size (radius, m): it hits Faith and catchers within this.
+/// A high energy pellet's size (radius, m): it hits Faith and catchers within this. (How fast
+/// it flies, how long it lives after a portal and how soon the next comes are its launcher's:
+/// [`Launch`](crate::level::Launch).)
 pub const PELLET_RADIUS: f32 = 0.25;
-/// After going through a portal, it lives at least this much longer (Portal's
-/// MinLifeAfterPortal).
-const PELLET_LIFE_AFTER_PORTAL: f32 = 6.0;
-/// A launcher waits this long after its last pellet before the next.
-pub const PELLET_RELOAD: f32 = 1.5;
 
 /// A turret sees this far...
 const TURRET_RANGE: f32 = 18.0;
@@ -197,6 +192,9 @@ pub struct PelletLauncher {
     pub idle: f32,
     /// Seconds since it fired. The mouth plays open, then close, over about two seconds.
     pub since_shot: f32,
+    pub launch: crate::level::Launch,
+    /// Told to fire (LaunchBall): it does, next frame it's on.
+    pub queued: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -206,6 +204,8 @@ pub struct Pellet {
     pub vel: Vec3,
     pub age: f32,
     pub life: f32,
+    /// Through a portal, it lives at least this much longer.
+    pub after_portal: f32,
     pub alive: bool,
 }
 
@@ -691,9 +691,10 @@ impl Sim {
                     fallen: 0.0,
                     reload: 0.0,
                 }),
-                Item::PelletLauncher { at, dir, inputs, life } => {
+                Item::PelletLauncher { at, dir, inputs, life, launch } => {
                     statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
-                    sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: PELLET_RELOAD, since_shot: 99.0 });
+                    // (Ready to fire as soon as it's on.)
+                    sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: f32::INFINITY, since_shot: 99.0, launch, queued: false });
                 }
                 Item::PelletCatcher { sig, at, facing } => {
                     statics.push(Static { b: Aabb::from_center_size(at - facing * 0.45, Vec3::splat(0.9)), mat: Mat::Prop, owner: Owner::Emitter });
@@ -1652,14 +1653,17 @@ impl Sim {
                 l.idle = 0.0;
             }
             l.idle += dt;
-            if l.on && l.pellet.is_none() && l.idle >= PELLET_RELOAD {
+            // By itself once its last pellet's gone (and it's reloaded), or when told to.
+            let ready = l.pellet.is_none() && l.launch.reload.is_some_and(|r| l.idle >= r);
+            if l.on && (ready || l.queued) {
+                l.queued = false;
                 let id = self.next_pellet;
                 self.next_pellet += 1;
                 let at = l.at + l.dir * 0.3;
                 l.pellet = Some(id);
                 l.since_shot = 0.0;
                 self.pellets.retain(|p| p.alive);
-                self.pellets.push(Pellet { id, pos: at, vel: l.dir * PELLET_SPEED, age: 0.0, life: l.life, alive: true });
+                self.pellets.push(Pellet { id, pos: at, vel: l.dir * l.launch.speed, age: 0.0, life: l.life, after_portal: l.launch.after_portal, alive: true });
                 self.events.push(SimEvent::PelletLaunched { at });
             }
         }
@@ -1690,7 +1694,7 @@ impl Sim {
                                 let link = self.link(c).unwrap();
                                 p.vel = link.dir(p.vel);
                                 p.pos = link.point(hit.point) + p.vel.normalize_or_zero() * 2e-3;
-                                p.age = p.age.min(p.life - PELLET_LIFE_AFTER_PORTAL);
+                                p.age = p.age.min(p.life - p.after_portal);
                             }
                             HitWhat::Fizzler(_) => gone = true,
                             _ => {

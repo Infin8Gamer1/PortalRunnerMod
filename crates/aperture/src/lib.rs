@@ -15,7 +15,7 @@ pub mod portal;
 pub mod sim;
 pub mod source;
 
-pub use level::{CubeKind, Gun, Inputs, Item, Level, Mat, MeProp, Paint, Sig};
+pub use level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, Paint, Sig};
 pub use portal::{Link, Portal, PortalColor};
 pub use sim::{Aim, Hit, HitWhat, MapTransition, Mask, Prop, Sim, SimEvent};
 

@@ -263,9 +263,13 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
                 let tf = Transform::from_translation(l.at - l.dir * 1.09 * s).with_rotation(basis(right, up, -l.dir)).with_scale(Vec3::splat(s));
                 spawn_model(commands, launcher.clone(), tf, PropKind::PelletLauncher(i));
             }
+            // A catcher's opening is its model's +Y (its lid's there; its arms reach 1.27 m down
+            // to the wall): facing out of its wall, the arms' ends on it (0.9 m behind the
+            // lens, where the sim's box ends), the lens in its cup.
             for c in &sim.pellet_catchers {
-                let (right, up) = frame_for(c.facing);
-                let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, c.facing)).with_scale(Vec3::splat(s));
+                let (right, _) = frame_for(c.facing);
+                let turn = Quat::from_mat3(&Mat3::from_cols(right.normalize(), c.facing.normalize(), right.normalize().cross(c.facing.normalize())));
+                let tf = Transform::from_translation(c.at - c.facing * (0.9 - 1.27 * s)).with_rotation(turn).with_scale(Vec3::splat(s));
                 spawn_model(commands, catcher.clone(), tf, PropKind::Static);
             }
         }

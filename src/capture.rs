@@ -64,6 +64,8 @@ enum Act {
     WaitPelletX(f32, u32),
     /// Put the first cube here, still.
     PlaceCube(Vec3),
+    /// Send a live pellet (the first) from here at this velocity.
+    SendPellet(Vec3, Vec3),
     /// Hang at the `k`th of `of` of the map's lights, spread through its list (they're inside
     /// its rooms), a little under it, still.
     AtLight(usize, usize),
@@ -506,6 +508,37 @@ fn script(name: &str) -> Vec<Act> {
                     v.extend([Look(-90.0, 55.0), Wait(3), Shot("elevator_c_up"), Look(90.0, -5.0)]);
                 }
             }
+            v
+        }
+        // Pellet pieces in Portal's maps up close, the camera held where it's put:
+        // PORTAL_FIRST_MAP and PORTAL_TP ("x,y,z,yaw,pitch;...") as for `p1`, PORTAL_WAIT frames
+        // into the map first (default 200).
+        "views" => {
+            let map: usize = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len());
+            let wait: u32 = std::env::var("PORTAL_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+            let mut v = vec![Map(map), Wait(wait)];
+            for (k, p) in std::env::var("PORTAL_TP").unwrap_or_default().split(';').enumerate() {
+                let f: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if f.len() == 5 {
+                    v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Launch(Vec3::ZERO), Look(f[3], f[4]), Wait(2), Shot(Box::leak(format!("view_{k}").into_boxed_str()))]);
+                }
+            }
+            v
+        }
+        // Chamber 06's catcher (testchmb_a_03): empty and open, then a pellet sent in: it
+        // closes on the pellet, which stays glowing in it (#23).
+        "catcher" => {
+            let map = aperture::levels::all().len() + 3;
+            let side = |v: &mut Vec<Act>, name: &'static str| v.extend([Teleport(Vec3::new(-8.4, 13.6, 63.5)), Launch(Vec3::ZERO), Look(146.0, 4.0), Wait(2), Shot(name)]);
+            let mut v = vec![Map(map), Wait(200)];
+            side(&mut v, "catcher_a_empty");
+            v.push(SendPellet(Vec3::new(-10.5, 15.2, 62.0), Vec3::new(0.0, 0.0, 8.0)));
+            v.push(Wait(30));
+            side(&mut v, "catcher_b_caught");
+            v.push(Wait(90));
+            side(&mut v, "catcher_c_closing");
+            v.push(Wait(150));
+            side(&mut v, "catcher_d_closed");
             v
         }
         // Holes in Portal's maps (#27): from a few of each map's lights, four ways round. Run
@@ -1042,6 +1075,13 @@ pub fn run(
                 game.ctrl.yaw = if side > 0.0 { 90f32.to_radians() } else { -90f32.to_radians() };
                 game.ctrl.pitch = -30f32.to_radians();
                 println!("capture: cube {n} at {c}");
+            }
+        }
+        Act::SendPellet(at, v) => {
+            if let Some(p) = game.sim.pellets.iter_mut().find(|p| p.alive) {
+                p.pos = *at;
+                p.vel = *v;
+                p.age = 0.0;
             }
         }
         Act::PlaceCube(at) => {

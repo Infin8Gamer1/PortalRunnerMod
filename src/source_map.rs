@@ -392,6 +392,23 @@ pub fn sync(
             None => (f[1].to_string(), 0),
         };
         let turn = source_rotation(floats(f[3]));
+        // A caught pellet in its catcher (Portal's `combineball`, sprite cards): drawn as the
+        // game's own pellets are, a glowing ball, shown when the logic enables it.
+        if f[1].ends_with("effects/combineball") {
+            commands
+                .spawn((
+                    ChamberGeom,
+                    MapProp { base: at, turn, mover, animated: animated.clone(), model: model.clone(), skin },
+                    Visibility::default(),
+                    Transform::from_translation(at).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS)),
+                    PointLight { intensity: 40_000.0, range: 7.0, radius: 0.15, color: Color::srgb(1.0, 0.42, 0.05), shadow_maps_enabled: false, ..default() },
+                ))
+                .with_children(|c| {
+                    c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet.clone()), Transform::default(), NotShadowCaster));
+                    c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.42)), NotShadowCaster));
+                });
+            continue;
+        }
         let mut spawned = commands.spawn((
             ChamberGeom,
             MapProp { base: at, turn, mover, animated, model, skin },
@@ -487,6 +504,18 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
     }
 }
 
+/// A prop the map's logic has disabled (or that starts so) isn't shown.
+pub fn show_props(game: Res<Game>, mut props: Query<(&MapProp, &mut Visibility)>) {
+    let Some(io) = &game.sim.io else { return };
+    for (p, mut vis) in &mut props {
+        let Some((e, _)) = p.animated.as_ref() else { continue };
+        let want = if io.hidden.contains(e) { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want {
+            *vis = want;
+        }
+    }
+}
+
 /// A prop shows the skin the map's logic last gave it (its model for that skin).
 pub fn show_skins(game: Res<Game>, assets: Res<AssetServer>, extracted: Res<Extracted>, mut props: Query<(&mut MapProp, &mut WorldAssetRoot)>) {
     let Some(io) = &game.sim.io else { return };
@@ -576,11 +605,24 @@ pub fn animate_props(
                     pp.showing = 0;
                 } else {
                     pp.cycle = None;
-                    if let Some(clip) = gltf.named_animations.get(name.as_str()) {
+                    // A clip the model hasn't got: Portal's catcher is told `open` and `opened`
+                    // and has only `close`, `closed` and `idle`: its close backwards, then idle.
+                    let n = &gltf.named_animations;
+                    let (clip, backwards) = match name.as_str() {
+                        k if n.contains_key(k) => (n.get(k), false),
+                        "open" => (n.get("close"), true),
+                        "opened" => (n.get("idle"), false),
+                        _ => (None, false),
+                    };
+                    if let Some(clip) = clip {
                         let (graph, node) = AnimationGraph::from_clip(clip.clone());
                         commands.entity(e).insert(AnimationGraphHandle(graphs.add(graph)));
                         player.stop_all();
-                        player.start(node);
+                        let active = player.start(node);
+                        if backwards {
+                            let len = clips.get(clip).map_or(1.0, |c| c.duration());
+                            active.set_speed(-1.0).seek_to(len);
+                        }
                         pp.node = Some(node);
                     }
                 }
