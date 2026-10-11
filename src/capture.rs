@@ -575,6 +575,21 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Chamber 15's moving platforms (testchmb_a_10): a pellet into section 3's catcher
+        // starts them, and rail carts come along the track one after another.
+        "rails15" => {
+            let map = aperture::levels::all().len() + 10;
+            // (The camera held over the pit the carts cross, looking along their track.)
+            let look = |v: &mut Vec<Act>, name: &'static str| v.extend([Teleport(Vec3::new(-1.6, -3.0, 3.0)), Launch(Vec3::ZERO), Look(30.0, -45.0), Wait(2), Shot(name)]);
+            let mut v = vec![Map(map), Wait(60)];
+            look(&mut v, "rails15_a_before");
+            v.push(SendPellet(Vec3::new(17.86, -1.86, 15.6), Vec3::new(0.0, 0.0, 6.0)));
+            for k in 0..8 {
+                v.push(Wait(240));
+                look(&mut v, Box::leak(format!("rails15_b{k}").into_boxed_str()));
+            }
+            v
+        }
         // Chamber 09's dropper (testchmb_a_05, #54/#55): shut on the next cube once it's
         // dropped the first; the first into the grill, and it opens, drops the next and shuts.
         "dropper" => {

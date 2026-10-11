@@ -610,10 +610,16 @@ pub fn sync(
 
 /// Brush models (and props parented to them) follow their movers: doors slide, elevators
 /// ride, walls come and go.
-pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform, Has<MapSprite>), Without<MapModel>>) {
+pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform, Has<MapSprite>, &mut Visibility), Without<MapModel>>) {
     let movers = &game.sim.movers;
-    for (p, mut tf, sprite) in &mut props {
+    for (p, mut tf, sprite, mut vis) in &mut props {
         let Some(mv) = p.mover.and_then(|m| movers.get(m)) else { continue };
+        // (Gone with what it rides: a rail cart at the end of its track.)
+        if !mv.present && *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        } else if mv.present && *vis == Visibility::Hidden && p.animated.is_none() {
+            *vis = Visibility::Inherited;
+        }
         let (at, turn) = match mv.def.swing {
             Some(sw) => {
                 let r = sw.rotation(mv.at.x);

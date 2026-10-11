@@ -285,7 +285,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut cube_ents: Vec<usize> = Vec::new();
     let mut buttons: Vec<Aabb> = Vec::new();
     // Train paths: each path node's (mover, node).
-    let mut path_nodes: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut path_nodes: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
     let mut spawned = false;
     let mut spawn_gun = Gun::NONE;
 
@@ -428,7 +428,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         let pts: Vec<Vec3> = names.iter().filter_map(|n| origin(named.get(n)?)).collect();
                         let first = pts.get(home).copied().unwrap_or(Vec3::ZERO);
                         for (k, n) in names.into_iter().enumerate() {
-                            path_nodes.insert(n, (movers, k));
+                            path_nodes.entry(n).or_default().push((movers, k));
                         }
                         let path = if pts.is_empty() { vec![Vec3::ZERO] } else { pts.iter().map(|p| *p - first).collect() };
                         if let (Some(p0), Some(o)) = (pts.get(home), origin(e)) {
@@ -620,12 +620,12 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         }
                         cubes.push((at, k, from));
                     }
-                    kind = io::Kind::Maker { cubes };
+                    kind = io::Kind::Maker { cubes, trains: Vec::new() };
                 }
             }
             "point_template" => {
                 if let Some((cubes, _)) = template_cube(&name) {
-                    kind = io::Kind::Maker { cubes };
+                    kind = io::Kind::Maker { cubes, trains: Vec::new() };
                 }
             }
             _ => {}
@@ -638,6 +638,33 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         io::Kind::Mover { index, .. } if !e.name.is_empty() => Some((e.name.to_ascii_lowercase(), index)),
         _ => None,
     }).collect();
+    // A maker of a template with trains in it (Chamber 15's rail carts): those trains, and the
+    // brushes riding them, are its to start; till then (as Source removes a template's
+    // entities) they're not there.
+    for (k, e) in ents.iter().enumerate() {
+        if key(e, "classname") != Some("env_entity_maker") {
+            continue;
+        }
+        let Some(t) = key(e, "EntityTemplate").and_then(|t| named.get(&t.to_ascii_lowercase())) else { continue };
+        let members: Vec<String> = t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).map(|(_, v)| v.to_ascii_lowercase()).collect();
+        let trains: Vec<usize> = members.iter().filter_map(|n| mover_named.get(n).copied()).collect();
+        if trains.is_empty() {
+            continue;
+        }
+        let mut i = 0;
+        for item in &mut l.items {
+            if let Item::Mover(m) = item {
+                if trains.contains(&i) {
+                    m.present = false;
+                }
+                i += 1;
+            }
+        }
+        match &mut io_ents[k].kind {
+            io::Kind::Maker { trains: t, .. } => *t = trains,
+            kind => *kind = io::Kind::Maker { cubes: Vec::new(), trains },
+        }
+    }
     // (The mover something's on: its parent, or its parent's, through what doesn't move by
     // itself: a rocket turret's mount on the turret, on its lift.)
     let parent_mover = |e: &Entity| -> Option<usize> {
@@ -735,10 +762,10 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut closed_nodes = Vec::new();
     for (e, ent) in ents.iter().zip(io_ents.iter_mut()) {
         if ent.class == "path_track" {
-            if let Some(&(mover, node)) = path_nodes.get(&ent.name.to_ascii_lowercase()) {
-                ent.kind = io::Kind::PathNode { mover, node };
+            if let Some(users) = path_nodes.get(&ent.name.to_ascii_lowercase()).filter(|u| !u.is_empty()) {
+                ent.kind = io::Kind::PathNode { mover: users[0].0, node: users[0].1, others: users[1..].to_vec() };
                 if flags(e) & 1 != 0 {
-                    closed_nodes.push((mover, node));
+                    closed_nodes.extend(users.iter().copied());
                 }
             }
         }

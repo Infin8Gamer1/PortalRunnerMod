@@ -93,9 +93,13 @@ pub enum Kind {
     /// outputs it fires as it goes (start, n: `OnTriggerN`); with none known, a short wait.
     Scene { lines: Vec<(f32, String)>, length: f32, triggers: Vec<(f32, u32)> },
     /// Spawns a cube here (env_entity_maker, point_template).
-    Maker { cubes: Vec<(Vec3, CubeKind, usize)> },
+    /// `trains`: the trains (and the brushes riding them) its template makes, as movers: a
+    /// spawn starts them from the start of their track, when they're not already out on it.
+    Maker { cubes: Vec<(Vec3, CubeKind, usize)>, trains: Vec<usize> },
     /// A train's path point (`node` on mover `mover`).
-    PathNode { mover: usize, node: usize },
+    /// A train's path point (`mover`'s `node`), and the other trains' it's on the path of
+    /// (Chamber 15's carts share one rail).
+    PathNode { mover: usize, node: usize, others: Vec<(usize, usize)> },
     /// Fires its outputs as the map starts.
     Auto,
     /// Finishes the level and names the next map and the landmark the two maps share: told to
@@ -320,8 +324,9 @@ impl Io {
             }
             if let SimEvent::MoverAt { mover, node, arrived } = ev {
                 for e in 0..self.ents.len() {
+                    let on_path = matches!(&self.ents[e].kind, Kind::PathNode { mover: m, node: n, others } if (*m == mover && *n == node) || others.contains(&(mover, node)));
                     match self.ents[e].kind {
-                        Kind::PathNode { mover: m, node: n } if m == mover && n == node => {
+                        Kind::PathNode { .. } if on_path => {
                             // (The train passing it is what set it off.)
                             let train = self.ents.iter().position(|t| matches!(t.kind, Kind::Mover { index, .. } if index == mover));
                             self.fire_by(e, "OnPass", None, train);
@@ -546,7 +551,16 @@ impl Io {
                 let targets: Vec<usize> = match p.target.as_str() {
                     "!self" | "!caller" => vec![p.caller],
                     "!activator" => p.activator.into_iter().collect(),
-                    t => self.by_name.get(t).cloned().unwrap_or_default(),
+                    // (A name ending in `*` is every entity whose name starts so: Source's
+                    // wildcard, as Chamber 15's moving platforms are started.)
+                    t => match t.strip_suffix('*') {
+                        Some(prefix) => {
+                            let mut v: Vec<usize> = self.by_name.iter().filter(|(n, _)| n.starts_with(prefix)).flat_map(|(_, es)| es.iter().copied()).collect();
+                            v.sort_unstable();
+                            v
+                        }
+                        None => self.by_name.get(t).cloned().unwrap_or_default(),
+                    },
                 };
                 for t in targets {
                     self.input(sim, t, &p.input, &p.param, p.caller);
@@ -601,7 +615,7 @@ impl Io {
     }
 
     /// Send `input` to entity `e`.
-    fn input(&mut self, sim: &mut Sim, e: usize, input: &str, param: &str, caller: usize) {
+    pub(crate) fn input(&mut self, sim: &mut Sim, e: usize, input: &str, param: &str, caller: usize) {
         let i = input.to_ascii_lowercase();
         if !self.ents[e].alive && i != "enable" {
             return;
@@ -618,10 +632,19 @@ impl Io {
             }
             return;
         }
-        if i == "kill" {
+        if i == "kill" || i == "killhierarchy" {
             self.ents[e].alive = false;
             match self.ents[e].kind {
-                Kind::Mover { index, .. } => sim.movers[index].present = false,
+                Kind::Mover { index, .. } => {
+                    sim.movers[index].present = false;
+                    sim.movers[index].goal = None;
+                    // (And what rides on it.)
+                    if i == "killhierarchy" {
+                        for m in sim.movers.iter_mut().filter(|m| m.def.parent == Some(index)) {
+                            m.present = false;
+                        }
+                    }
+                }
                 Kind::Animated if self.hatches.contains_key(&e) => sim.movers[self.hatches[&e]].present = false,
                 // A launcher that's gone fires no more.
                 Kind::Launcher { sig, .. } => {
@@ -845,7 +868,23 @@ impl Io {
                 "cancel" => self.queue.retain(|p| !(p.caller == e && p.input.starts_with("__"))),
                 _ => {}
             },
-            Kind::Maker { cubes } if i == "forcespawn" => {
+            Kind::Maker { ref trains, .. } if i == "forcespawn" && !trains.is_empty() && trains.iter().all(|&m| !sim.movers[m].present) => {
+                // (One of each: it runs its track and is gone at the end; the next spawn after
+                // that sets it off again.)
+                for &m in trains.clone().iter() {
+                    let mv = &mut sim.movers[m];
+                    let start = mv.def.start;
+                    mv.at = mv.def.path.get(start).copied().unwrap_or(Vec3::ZERO);
+                    mv.node = start;
+                    mv.present = true;
+                    mv.carried = Vec3::ZERO;
+                    mv.goal = (mv.def.path.len() > 1).then_some(mv.def.path.len() - 1);
+                    if let Some(k) = self.ents.iter().position(|x| matches!(x.kind, Kind::Mover { index, .. } if index == m)) {
+                        self.ents[k].alive = true;
+                    }
+                }
+            }
+            Kind::Maker { cubes, .. } if i == "forcespawn" => {
                 for (at, kind, from) in cubes {
                     // Not on top of a cube that's still there.
                     if !sim.props.iter().any(|p| p.alive && p.pos.distance(at) < 0.5) {
@@ -920,9 +959,11 @@ impl Io {
                     self.frames.insert(model, n);
                 }
             }
-            Kind::PathNode { mover, node } if i == "enablepath" || i == "disablepath" => {
-                if let Some(c) = sim.movers.get_mut(mover).and_then(|m| m.closed.get_mut(node)) {
-                    *c = i == "disablepath";
+            Kind::PathNode { mover, node, ref others } if i == "enablepath" || i == "disablepath" => {
+                for (mover, node) in std::iter::once((mover, node)).chain(others.iter().copied()) {
+                    if let Some(c) = sim.movers.get_mut(mover).and_then(|m| m.closed.get_mut(node)) {
+                        *c = i == "disablepath";
+                    }
                 }
             }
             Kind::Animated if i == "setanimation" => {

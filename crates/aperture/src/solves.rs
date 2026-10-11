@@ -1941,3 +1941,35 @@ fn chamber_15_pellet_comes_out_of_its_launcher() {
     assert!(p.sim.portals[1].is_none_or(|o| !o.in_rect(Vec3::new(at.x, at.y, o.center.z), -0.2)), "a portal went over the launcher: {:?}", p.sim.portals[1]);
 }
 
+
+/// Chamber 15's moving platforms: once section 3's catcher has its pellet, the two rail carts
+/// on the track start (wildcard targets: `tractrain_brush_*`) and are gone at its end, and
+/// more come along from the maker one after another, each running the track and gone at the
+/// end (every rail node, shared by them all, sees each pass).
+#[test]
+fn chamber_15_rail_carts_run() {
+    let Some(mut p) = Play::load("testchmb_a_10") else { return };
+    p.wait(1.0);
+    let mut io = p.sim.io.take().unwrap();
+    for (name, input) in [("logic_enable_tracknodes", "Trigger"), ("timer_spawn_tracks_intro_lvl7b", "Enable")] {
+        let e = io.ents.iter().position(|e| e.name == name).unwrap();
+        io.input(&mut p.sim, e, input, "", e);
+    }
+    p.sim.io = Some(io);
+    let train = |p: &Play, name: &str| p.mover(name);
+    let (one, two, cart) = (train(&p, "tractrain_brush_1"), train(&p, "tractrain_brush_2"), train(&p, "spawned_rail_cart_intro_lvl7b"));
+    assert!(!p.sim.movers[cart].present, "the maker's cart is there before it's made");
+    p.wait(2.0);
+    assert!(p.sim.movers[two].goal.is_some(), "the carts didn't start");
+    p.wait(20.0);
+    assert!(!p.sim.movers[one].present && !p.sim.movers[two].present, "the carts weren't gone at the end of the track");
+    // The maker's: out along the track, gone at its end, and out again.
+    let (mut runs, mut was) = (0, false);
+    for _ in 0..(70 * 60) {
+        p.step(&Input::default());
+        let now = p.sim.movers[cart].present && p.sim.movers[cart].goal.is_some();
+        runs += (now && !was) as u32;
+        was = now;
+    }
+    assert!(runs >= 2, "the maker's cart ran {runs} times in 70 s");
+}
