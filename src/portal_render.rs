@@ -558,6 +558,8 @@ pub fn update(
         *vis = if show { Visibility::Inherited } else { Visibility::Hidden };
         tf.translation = p.center + p.normal * SURFACE_LIFT;
         tf.rotation = p.rotation();
+        // (The mesh is the usual size: Portal's maps' portals are bigger.)
+        tf.scale = (p.half / aperture::portal::PORTAL_HALF).extend(1.0);
         let open = (p.age / 0.25).clamp(0.0, 1.0);
         let open = 1.0 - (1.0 - open).powi(3);
         let deepest = s.level >= depth || !active[s.color.index()][s.level + 1];
@@ -597,6 +599,7 @@ pub fn update(
         *vis = if near_it { Visibility::Inherited } else { Visibility::Hidden };
         tf.translation = p.center + p.normal * SURFACE_LIFT;
         tf.rotation = p.rotation();
+        tf.scale = (p.half / aperture::portal::PORTAL_HALF).extend(1.0);
         if let Some(mut m) = mats.get_mut(&render.tunnel_mats[tn.color.index()]) {
             m.uniform.params = Vec4::new(1.0, t, 1.0, 1.0);
         }

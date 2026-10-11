@@ -45,6 +45,11 @@ impl PortalColor {
 /// player; scaled to Faith's 1.8 m that is 1.6 x 2.8 m. A little smaller reads better here.
 pub const PORTAL_HALF: Vec2 = Vec2::new(0.7, 1.2);
 
+/// Portal's own size, in Portal's maps (64 x 112 units): what their walls, and the portals
+/// the maps open themselves (centred 56 units off the floor), are made for. Smaller, a
+/// preset portal's bottom edge stands off the floor and a cube can't be pushed through it.
+pub const PORTAL_HALF_SOURCE: Vec2 = Vec2::new(32.0 * 0.0254, 56.0 * 0.0254);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Portal {
     pub center: Vec3,
@@ -59,7 +64,12 @@ pub struct Portal {
 
 impl Portal {
     pub fn new(center: Vec3, normal: Vec3, up: Vec3) -> Self {
-        Portal { center, normal, up, half: PORTAL_HALF, age: 0.0 }
+        Self::sized(center, normal, up, PORTAL_HALF)
+    }
+
+    /// One `half` in size.
+    pub fn sized(center: Vec3, normal: Vec3, up: Vec3, half: Vec2) -> Self {
+        Portal { center, normal, up, half, age: 0.0 }
     }
 
     pub fn right(&self) -> Vec3 {

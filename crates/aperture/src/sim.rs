@@ -15,7 +15,7 @@ use crate::collide::{self, move_box, BodyWorld};
 use crate::geom::{self, ray_aabb, Rng};
 use crate::gel::{Blob, GelMap, Splat};
 use crate::level::{face_rect, CubeKind, Gun, Inputs, Item, Level, Mat, Paint, Sig};
-use crate::portal::{carry_view, Link, Portal, PortalColor, PORTAL_HALF};
+use crate::portal::{carry_view, Link, Portal, PortalColor, PORTAL_HALF, PORTAL_HALF_SOURCE};
 
 /// Faith's gravity (faith_move's measured 16.4 m/s²): cubes fall the same.
 pub const GRAVITY: f32 = 16.4;
@@ -783,13 +783,18 @@ impl Sim {
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
         sim.statics = statics;
         for p in level.portals.clone() {
-            let portal = Portal::new(p.center, p.normal, p.up);
+            let portal = Portal::sized(p.center, p.normal, p.up, sim.portal_half());
             sim.set_portal(p.color, Some(portal));
         }
         sim
     }
 
     // ------------------------------------------------------------ portals
+
+    /// How big portals are here: Portal's own size in Portal's maps.
+    pub fn portal_half(&self) -> Vec2 {
+        if self.level.source.is_some() { PORTAL_HALF_SOURCE } else { PORTAL_HALF }
+    }
 
     pub fn portal(&self, c: PortalColor) -> Option<Portal> {
         self.portals[c.index()]
@@ -1128,12 +1133,13 @@ impl Sim {
         } else {
             Vec3::Y
         };
-        let base = Portal::new(point + n * 0.0, n, up);
+        let half = self.portal_half();
+        let base = Portal::sized(point, n, up, half);
         let right = base.right();
         let other = self.portals[color.other().index()];
         // Candidate centres, nearest first.
         let step = 0.1;
-        let (nx, ny) = ((PORTAL_HALF.x * 2.2 / step) as i32, (PORTAL_HALF.y * 1.6 / step) as i32);
+        let (nx, ny) = ((half.x * 2.2 / step) as i32, (half.y * 1.6 / step) as i32);
         let mut offs: Vec<Vec2> = Vec::new();
         for i in -nx..=nx {
             for j in -ny..=ny {

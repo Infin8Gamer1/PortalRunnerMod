@@ -428,8 +428,18 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 if let Some(at) = origin(e) {
                     let (p, y, r) = angles(e, "angles");
                     let (normal, up) = angle_vectors(p, y, r);
+                    // On the wall it's on: one of Portal's (testchmb_a_00's portal_blue_2) is
+                    // centred on a wall but turned side on to it, which would send her through
+                    // the wall's side. Turned to face out of the wall behind it instead.
+                    let solid = |q: Vec3| l.solids.iter().any(|s| crate::geom::contains(&s.b, q));
+                    let on_wall = |n: Vec3| solid(at - n * 0.08) && !solid(at + n * 0.08);
+                    let (normal, up) = if on_wall(normal) || up.y.abs() < 0.9 {
+                        (normal, up)
+                    } else {
+                        [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z].into_iter().find(|n| on_wall(*n)).map_or((normal, up), |n| (n, Vec3::Y))
+                    };
                     let color = if key(e, "PortalTwo") == Some("1") { PortalColor::Orange } else { PortalColor::Blue };
-                    kind = io::Kind::Portal { color, portal: Portal::new(at, normal, up), start: key(e, "Activated") == Some("1") };
+                    kind = io::Kind::Portal { color, portal: Portal::sized(at, normal, up, crate::portal::PORTAL_HALF_SOURCE), start: key(e, "Activated") == Some("1") };
                 }
             }
             "npc_portal_turret_floor" => {

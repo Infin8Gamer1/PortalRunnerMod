@@ -38,3 +38,5 @@ pub fn tuning(hard_land_height: f32, lethal_fall_height: f32) -> faith_move::Tun
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod solves;
