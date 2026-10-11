@@ -73,6 +73,8 @@ enum Act {
     ViewCube(usize),
     /// Switch every rocket turret on.
     RocketsOn,
+    /// Retire every turret (so she can stand in their sight).
+    TurretsOff,
 }
 
 fn fwd() -> MoveInput {
@@ -562,6 +564,17 @@ fn script(name: &str) -> Vec<Act> {
             for k in 0..48 {
                 v.extend([Wait(5), Shot(Box::leak(format!("rocket_c{k:02}").into_boxed_str()))]);
             }
+            v
+        }
+        // Portals on tilted faces (#47): Chamber 16's diagonal wall (testchmb_a_11), a portal
+        // on it, a floor portal behind her, and through; then Chamber 18's 45° face
+        // (testchmb_a_14), from in front of it.
+        "tilted" => {
+            let map = aperture::levels::all().len();
+            let mut v = vec![Map(map + 11), Wait(150), TurretsOff, Teleport(Vec3::new(-4.38, 0.0, -19.0)), Look(45.0, 0.0), Wait(10), Fire(PortalColor::Blue), Wait(30), Shot("tilted_a_wall")];
+            v.extend([Look(225.0, -70.0), Wait(5), Fire(PortalColor::Orange), Wait(30), Look(45.0, 0.0), Wait(10), Shot("tilted_b_linked")]);
+            v.extend([Hold(fwd(), 80), Wait(10), Shot("tilted_c_out"), Look(225.0, -30.0), Wait(5), Shot("tilted_d_behind")]);
+            v.extend([Map(map + 13), Wait(150), TurretsOff, Teleport(Vec3::new(-17.0, 79.4, 30.9)), Launch(Vec3::ZERO), Look(90.0, -45.0), Fire(PortalColor::Blue), Wait(1), Shot("tilted_e_ramp")]);
             v
         }
         // Chamber 01's cycling portals (testchmb_a_00's upper rooms, #21): the cycle started,
@@ -1126,6 +1139,11 @@ pub fn run(
                 p.pos = *at;
                 p.vel = *v;
                 p.age = 0.0;
+            }
+        }
+        Act::TurretsOff => {
+            for t in &mut game.sim.turrets {
+                t.state = aperture::sim::TurretState::Retired;
             }
         }
         Act::RocketsOn => {

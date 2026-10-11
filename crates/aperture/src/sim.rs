@@ -1092,7 +1092,10 @@ impl Sim {
         // The way she was facing along the last leg (for a floor portal's up).
         let last_dir = legs.last().map(|(a, b)| (*b - *a).normalize_or_zero()).unwrap_or(aim.dir);
         let placed = match h.what {
-            HitWhat::Static(i) => self.place(color, h.point, h.normal, i, last_dir),
+            HitWhat::Static(i) => match self.slope_hit(from, last_dir, h.t) {
+                Some((k, at)) => self.place_on_slope(color, at, k, last_dir),
+                None => self.place(color, h.point, h.normal, i, last_dir),
+            },
             _ => None,
         };
         match placed {
@@ -1111,8 +1114,62 @@ impl Sim {
         }
     }
 
+    /// A shot from `o` along `d` that met still box at `t`, if that box is one of the steps
+    /// along a tilted face that takes portals (the face just behind it): the face, and where
+    /// on it.
+    fn slope_hit(&self, o: Vec3, d: Vec3, t: f32) -> Option<(usize, Vec3)> {
+        let d = d.normalize_or_zero();
+        let mut best: Option<(f32, usize)> = None;
+        for (k, s) in self.level.slopes.iter().enumerate() {
+            let Some(ts) = s.hit(o, d) else { continue };
+            // Just past the box it met, and solid between the two (inside the steps).
+            if ts < t - 0.05 || ts > t + 0.4 || (ts > t + 0.02 && !self.solid_at(o + d * (t + ts) * 0.5)) {
+                continue;
+            }
+            if best.is_none_or(|(b, _)| ts < b) {
+                best = Some((ts, k));
+            }
+        }
+        best.map(|(ts, k)| (k, o + d * ts))
+    }
+
+    /// Whether a point on (or near) tilted face plane `n` lies on a tilted face that takes
+    /// portals (a panel can be made of several, side by side).
+    fn on_slope(&self, p: Vec3, n: Vec3) -> bool {
+        self.level.slopes.iter().any(|s| s.normal.dot(n) > 0.999 && s.distance(p).abs() < 0.05 && s.contains(p, -0.01))
+    }
+
+    /// Where a portal shot at `point` on tilted face `k` would open: on its plane, its top
+    /// up the slope, nudged to fit.
+    fn place_on_slope(&self, color: PortalColor, point: Vec3, k: usize, view: Vec3) -> Option<Portal> {
+        let n = self.level.slopes[k].normal;
+        let flat = Vec3::Y - n * n.y;
+        let up = if flat.length_squared() > 1e-4 {
+            flat.normalize()
+        } else {
+            let h = view - n * view.dot(n);
+            if h.length_squared() < 1e-6 { return None } else { h.normalize() }
+        };
+        let half = self.portal_half();
+        let right = up.cross(n);
+        let other = self.portals[color.other().index()];
+        let step = 0.1;
+        let (nx, ny) = ((half.x * 2.2 / step) as i32, (half.y * 1.6 / step) as i32);
+        let mut offs: Vec<Vec2> = Vec::new();
+        for i in -nx..=nx {
+            for j in -ny..=ny {
+                offs.push(Vec2::new(i as f32 * step, j as f32 * step));
+            }
+        }
+        offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
+        offs.into_iter().map(|o| Portal::sized(point + right * o.x + up * o.y, n, up, half)).find(|cand| self.portal_fits(cand, other.as_ref()))
+    }
+
     /// Whether a portal could sit on the surface at `p` facing `n`.
     fn portalable_at(&self, p: Vec3, n: Vec3) -> bool {
+        if n.abs().max_element() < 0.999 {
+            return self.on_slope(p, n);
+        }
         if self.gel.paint_at(p, n) == Some(Paint::Portal) {
             return self.statics.iter().any(|s| geom::contains(&s.b, p - n * 0.02));
         }
@@ -1185,6 +1242,19 @@ impl Sim {
         let n = p.normal;
         let (r, u) = (p.right(), p.up);
         // Every sample over the outline: on a portal surface, open in front.
+        if !p.axial() {
+            // A tilted face: its steps stand a little proud of it, so the room in front is
+            // looked at point by point, further out.
+            let clear = |q: Vec3| !self.solid_at(q) && !self.doors.iter().any(|d| d.solid() && geom::contains(&d.b, q)) && !self.movers.iter().any(|m| m.boxes().any(|b| geom::contains(&b, q)));
+            if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && clear(q + n * 0.15) && clear(q + n * 0.3)) {
+                return false;
+            }
+            let apart = |o: &Portal| {
+                let d = o.center - p.center;
+                o.normal.dot(n) < 0.99 || d.dot(n).abs() > 0.05 || d.dot(r).abs() >= p.half.x + o.half.x || d.dot(u).abs() >= p.half.y + o.half.y
+            };
+            return other.is_none_or(apart);
+        }
         if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && !self.solid_at(q + n * 0.03)) {
             return false;
         }

@@ -1201,9 +1201,8 @@ fn solve_testchmb_a_08() {
     p.ride_exit("testchmb_a_09");
 }
 
-/// Chamber 14 (testchmb_a_09): up the stairs (they rise as she comes to them). The rest needs a
-/// portal on the tilted ceiling panel, flinging her up to the cube: portals don't go on tilted
-/// surfaces yet.
+/// Chamber 14 (testchmb_a_09): up the stairs (they rise as she comes to them). The rest (up
+/// to the cube room's floor, about 5 m above the top step) isn't scripted yet.
 #[test]
 fn solve_testchmb_a_09() {
     let Some(mut p) = Play::load("testchmb_a_09") else { return };
@@ -1213,4 +1212,46 @@ fn solve_testchmb_a_09() {
     p.wait_for(10.0, "the stairs to rise", |p| p.sim.movers[top].node == 0 && p.sim.movers[top].goal.is_none());
     p.go(Vec3::new(17.0, 6.5, -13.8), 0.6);
     p.assert_alive("on the stairs");
+}
+
+/// Portals go on Portal's tilted faces on their true plane (#47): a diagonal wall in
+/// Chamber 16 (testchmb_a_11), walked through; a 45° ramp face in Chamber 18 (testchmb_a_14).
+#[test]
+fn tilted_faces_take_portals() {
+    if let Some(mut p) = Play::load("testchmb_a_11") {
+        let at = Vec3::new(-6.5, 1.6, -21.13);
+        let n = Vec3::new(1.0, 0.0, 1.0).normalize();
+        let stand = at + n * 3.0;
+        // (The chamber's turrets watch this corner.)
+        for t in &mut p.sim.turrets {
+            t.state = crate::sim::TurretState::Retired;
+        }
+        let floor = p.floors(stand.x, stand.z, -2.0, 1.5).into_iter().reduce(f32::max).expect("no floor in front of the diagonal wall");
+        p.c.feet = Vec3::new(stand.x, floor, stand.z);
+        p.c.vel = Vec3::ZERO;
+        p.wait(0.3);
+        p.shoot(PortalColor::Blue, at);
+        let blue = p.sim.portals[0].unwrap();
+        assert!(blue.normal.dot(n) > 0.999, "the portal on the diagonal wall faces {}", blue.normal);
+        assert!(blue.up.dot(Vec3::Y) > 0.999, "and its up is {}", blue.up);
+        // Out of a floor portal behind her.
+        let back = Vec3::new(stand.x + n.x * 2.0, floor, stand.z + n.z * 2.0);
+        p.shoot(PortalColor::Orange, back);
+        p.through(PortalColor::Blue, 0.5);
+        // And back: down the floor portal, out of the diagonal wall.
+        p.through(PortalColor::Orange, 0.5);
+        let out = p.c.feet - blue.center;
+        assert!(out.dot(n) > 0.4, "not out in front of the diagonal wall: {}", p.c.feet);
+        p.assert_alive("through the diagonal wall");
+    }
+    if let Some(mut p) = Play::load("testchmb_a_14") {
+        let at = Vec3::new(-19.145, 77.63, 30.89);
+        let n = Vec3::new(1.0, 1.0, 0.0).normalize();
+        let eye = at + n * 3.0;
+        assert!(p.sim.fire(PortalColor::Blue, Aim { eye, dir: -n, yaw: 0.0 }), "no portal on the 45° face");
+        let blue = p.sim.portals[0].unwrap();
+        assert!(blue.normal.dot(n) > 0.999 && blue.center.distance(at) < 1.6, "the portal on the 45° face: {blue:?}");
+        // Its top up the slope.
+        assert!(blue.up.y > 0.7, "its up is {}", blue.up);
+    }
 }

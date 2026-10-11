@@ -339,6 +339,45 @@ pub struct Level {
     /// `info_landmark` points (name, position). A level change keeps the offset from the
     /// landmark of the same name.
     pub landmarks: Vec<(String, Vec3)>,
+    /// Tilted faces that take portals (Portal's maps): its boxes only step along these, so a
+    /// portal shot at one goes on its true plane.
+    pub slopes: Vec<Slope>,
+}
+
+/// A flat, tilted face that takes portals: its outward normal and its corners, in order round.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slope {
+    pub normal: Vec3,
+    pub pts: Vec<Vec3>,
+}
+
+impl Slope {
+    /// Where a ray from `o` along `d` meets the face's front, if it does.
+    pub fn hit(&self, o: Vec3, d: Vec3) -> Option<f32> {
+        let dn = d.dot(self.normal);
+        if dn > -1e-6 {
+            return None;
+        }
+        let t = (self.pts[0] - o).dot(self.normal) / dn;
+        (t >= 0.0 && self.contains(o + d * t, 0.0)).then_some(t)
+    }
+
+    /// Whether a point on (or near) its plane lies within its outline, by at least `inset`.
+    pub fn contains(&self, p: Vec3, inset: f32) -> bool {
+        let n = self.normal;
+        let k = self.pts.len();
+        (0..k).all(|i| {
+            let (a, b) = (self.pts[i], self.pts[(i + 1) % k]);
+            // Inward, along the face: the corners go round counter-clockwise seen from the front.
+            let inward = n.cross(b - a).normalize_or_zero();
+            (p - a).dot(inward) >= inset
+        })
+    }
+
+    /// How far `p` is in front of its plane.
+    pub fn distance(&self, p: Vec3) -> f32 {
+        (p - self.pts[0]).dot(self.normal)
+    }
 }
 
 /// A light in one of Portal's maps.
@@ -393,6 +432,7 @@ impl Level {
             hidden_models: Vec::new(),
             io: None,
             landmarks: Vec::new(),
+            slopes: Vec::new(),
         }
     }
 

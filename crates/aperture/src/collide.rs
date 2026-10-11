@@ -30,9 +30,19 @@ pub fn carve(statics: &[Aabb], p: &Portal) -> BoxWorld {
     let hole = p.slab(TUNNEL_DEPTH, 0.005);
     let mut boxes = Vec::with_capacity(statics.len() + 4);
     for b in statics {
-        boxes.extend(geom::subtract(b, &hole));
+        // (A tilted face's hole is the box round its tunnel: only what's behind the face is
+        // cut, not the room in front of it.)
+        if p.axial() || p.signed_distance(b.center()) < 0.0 {
+            boxes.extend(geom::subtract(b, &hole));
+        } else {
+            boxes.push(*b);
+        }
     }
     // The sleeve: four walls round the hole, from the surface back (corners overlapping).
+    // (Not on a tilted face: boxes square to the world would close the tunnel.)
+    if !p.axial() {
+        return BoxWorld::indexed(boxes, Vec::new(), 4.0);
+    }
     let (hx, hy) = (p.half.x, p.half.y);
     let (ox, oy) = (hx + SLEEVE, hy + SLEEVE);
     for (lo, hi) in [
@@ -46,12 +56,11 @@ pub fn carve(statics: &[Aabb], p: &Portal) -> BoxWorld {
     BoxWorld::indexed(boxes, Vec::new(), 4.0)
 }
 
-/// The world box of a box given in a portal's local frame (portals are axis-aligned, so it
-/// stays a box).
+/// The world box of a box given in a portal's local frame (on a tilted face, the box round
+/// it).
 pub fn local_box(p: &Portal, lo: Vec3, hi: Vec3) -> Aabb {
-    let a = p.from_local(lo);
-    let b = p.from_local(hi);
-    Aabb::new(a.min(b), a.max(b))
+    let corners = [0, 1, 2, 3, 4, 5, 6, 7].map(|k| p.from_local(Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z })));
+    Aabb::new(corners.iter().fold(Vec3::splat(f32::MAX), |a, c| a.min(*c)), corners.iter().fold(Vec3::splat(f32::MIN), |a, c| a.max(*c)))
 }
 
 /// Which portal a body is going through, if any; `linked` says whether both portals are

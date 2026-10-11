@@ -106,6 +106,18 @@ pub fn parse_solids(text: &str) -> Vec<MapBox> {
         .collect()
 }
 
+/// The still world's tilted faces that take portals (`slope 0 nx ny nz x y z ...`).
+pub fn parse_slopes(text: &str) -> Vec<crate::level::Slope> {
+    text.lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            (it.next()? == "slope" && it.next()? == "0").then_some(())?;
+            let v: Vec<f32> = it.filter_map(|s| s.parse().ok()).collect();
+            (v.len() >= 12 && v.len().is_multiple_of(3)).then(|| crate::level::Slope { normal: Vec3::new(v[0], v[1], v[2]), pts: v[3..].chunks(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect() })
+        })
+        .collect()
+}
+
 /// Source's angles (pitch, yaw, roll; degrees) to our forward and up.
 pub fn angle_vectors(pitch: f32, yaw: f32, roll: f32) -> (Vec3, Vec3) {
     let (sp, cp) = pitch.to_radians().sin_cos();
@@ -184,6 +196,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut l = Level::new(title);
     l.source = Some(name.to_string());
     let boxes = parse_solids(solids);
+    l.slopes = parse_slopes(solids);
     let ents = parse_entities(ents);
     let model_of = |e: &Entity| key(e, "model").and_then(|m| m.strip_prefix('*')).and_then(|m| m.parse::<usize>().ok());
     let bounds: HashMap<usize, Aabb> = boxes.iter().filter(|b| b.kind == "bounds").map(|b| (b.model, b.b)).collect();

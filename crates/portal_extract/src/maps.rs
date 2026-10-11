@@ -495,6 +495,33 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             } else {
                 continue;
             };
+            // A tilted side that takes portals: its outline too, for a portal to go on its true
+            // plane (its boxes only step along it).
+            if kind == "white" || kind == "black" {
+                let corners = bsp.brush_corners(b);
+                let sides: Vec<&bsp::BrushSide> = (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel).collect();
+                for (k, side) in sides.iter().enumerate() {
+                    let plane = &bsp.planes[side.plane];
+                    if plane.axial || plane.normal.abs().max_element() > 0.999 || !material_of(side.texinfo, &mut materials).is_some_and(|m| materials[m].portalable) {
+                        continue;
+                    }
+                    let mut pts: Vec<Vec3> = corners.iter().filter(|(_, on)| on.contains(&k)).map(|(p, _)| ours(place(mi, *p + origin))).collect();
+                    pts.dedup_by(|a, b| a.distance(*b) < 1e-3);
+                    if pts.len() < 3 {
+                        continue;
+                    }
+                    let n = ours(turn(mi, plane.normal)).normalize_or_zero();
+                    let c = pts.iter().copied().sum::<Vec3>() / pts.len() as f32;
+                    let e1 = (pts[0] - c).normalize_or_zero();
+                    let e2 = n.cross(e1);
+                    pts.sort_by(|a, b| (*a - c).dot(e2).atan2((*a - c).dot(e1)).total_cmp(&(*b - c).dot(e2).atan2((*b - c).dot(e1))));
+                    solids.push_str(&format!("slope {mi} {:.5} {:.5} {:.5}", n.x, n.y, n.z));
+                    for p in &pts {
+                        solids.push_str(&format!(" {:.4} {:.4} {:.4}", p.x, p.y, p.z));
+                    }
+                    solids.push('\n');
+                }
+            }
             for (lo, hi) in bsp::brush_boxes(&bsp, b) {
                 let (a, z) = place_box(mi, lo + origin, hi + origin);
                 solids.push_str(&format!("{kind} {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));

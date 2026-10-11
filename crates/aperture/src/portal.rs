@@ -53,9 +53,9 @@ pub const PORTAL_HALF_SOURCE: Vec2 = Vec2::new(32.0 * 0.0254, 56.0 * 0.0254);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Portal {
     pub center: Vec3,
-    /// Out of the surface (axis-aligned: portals go on box faces).
+    /// Out of the surface (axis-aligned on box faces; a map's tilted faces have their own).
     pub normal: Vec3,
-    /// Up along the surface (axis-aligned).
+    /// Up along the surface.
     pub up: Vec3,
     pub half: Vec2,
     /// Seconds since it opened (for the opening animation).
@@ -113,13 +113,24 @@ impl Portal {
         l.x.abs() <= self.half.x - inset && l.y.abs() <= self.half.y - inset
     }
 
-    /// The box covering the opening, from `back` behind the surface to `front` in front of it.
+    /// On a surface square to the world's axes (not one of a map's tilted faces).
+    pub fn axial(&self) -> bool {
+        self.normal.abs().max_element() > 0.999
+    }
+
+    /// The box covering the opening, from `back` behind the surface to `front` in front of it
+    /// (on a tilted surface, the box round that).
     pub fn slab(&self, back: f32, front: f32) -> Aabb {
         let r = self.right() * self.half.x;
         let u = self.up * self.half.y;
-        let a = self.center + r + u - self.normal * back;
-        let b = self.center - r - u + self.normal * front;
-        Aabb::new(a.min(b), a.max(b))
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        for k in 0..8 {
+            let p = self.center + r * if k & 1 == 0 { 1.0 } else { -1.0 } + u * if k & 2 == 0 { 1.0 } else { -1.0 } + self.normal * if k & 4 == 0 { -back } else { front };
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        Aabb::new(lo, hi)
     }
 
     /// The four corners of the rectangle round the oval, on the surface.
