@@ -1549,6 +1549,7 @@ fn movers_push_but_dont_crush() {
         path: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
         speed: 1.5,
         start: 0,
+        home: 0,
         present: true,
         shift: Vec3::ZERO,
         inputs: Some(Inputs::always()),

@@ -74,8 +74,8 @@ pub enum Kind {
     Case { cases: Vec<String> },
     /// Touched by Faith (`players`), cubes (`cubes`), high energy pellets (`pellets`: Portal's
     /// catchers, which take the pellet) or rockets (`rockets`: flying in, or going off in it);
-    /// once: then it's done.
-    Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, pellets: bool, rockets: bool, player_in: bool, cubes_in: Vec<u32> },
+    /// once: then it's done. Parented to a mover (`mover`), it rides along with it (a lift's).
+    Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, pellets: bool, rockets: bool, mover: Option<usize>, player_in: bool, cubes_in: Vec<u32> },
     /// A floor button's moving top (a func_door in the map; the sim's button `button` stands in
     /// for it): it opens as the button goes down and closes as it comes up.
     ButtonDoor { button: usize, down: bool },
@@ -332,10 +332,11 @@ impl Io {
             if !self.ents[e].alive {
                 continue;
             }
-            let Kind::Trigger { b, once, enabled, players, cubes: takes_cubes, pellets, rockets, player_in, ref cubes_in } = self.ents[e].kind else { continue };
+            let Kind::Trigger { b, once, enabled, players, cubes: takes_cubes, pellets, rockets, mover, player_in, ref cubes_in } = self.ents[e].kind else { continue };
             if !enabled {
                 continue;
             }
+            let b = mover.and_then(|m| sim.movers.get(m)).map_or(b, |m| b.translated(m.offset()));
             if rockets {
                 // (Each rocket once: `cubes_in` holds the ones that have been in.)
                 let new: Vec<u32> = sim.rockets.iter().filter(|r| r.alive && geom::contains(&b, r.pos) && !cubes_in.contains(&r.id)).map(|r| r.id).collect();
@@ -451,7 +452,12 @@ impl Io {
                         self.fire(e, "OnBreak", None);
                     }
                 }
-                Kind::Trigger { b, enabled: true, rockets: true, .. } if self.ents[e].alive && geom::contains(&Aabb::new(b.min - Vec3::splat(0.5), b.max + Vec3::splat(0.5)), at) => {
+                Kind::Trigger { b, enabled: true, rockets: true, mover, .. }
+                    if self.ents[e].alive && {
+                        let b = mover.and_then(|m| sim.movers.get(m)).map_or(b, |m| b.translated(m.offset()));
+                        geom::contains(&Aabb::new(b.min - Vec3::splat(0.5), b.max + Vec3::splat(0.5)), at)
+                    } =>
+                {
                     self.fire(e, "OnStartTouch", None);
                     self.fire(e, "OnTrigger", None);
                     if matches!(self.ents[e].kind, Kind::Trigger { once: true, .. }) {

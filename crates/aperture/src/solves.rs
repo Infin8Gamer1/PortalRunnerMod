@@ -26,6 +26,8 @@ const STEP: f32 = 0.65;
 const DROP: f32 = 4.0;
 /// The map's boxes are bucketed in columns this wide.
 const BUCKET: f32 = 2.0;
+/// The widest gap she's walked across with a jump (a running jump goes much further).
+const JUMP: f32 = 2.5;
 
 /// A chamber being played.
 pub struct Play {
@@ -161,8 +163,9 @@ impl Play {
     }
 
     /// A path over the floors from her feet to within `reach` of `to` (horizontally, and at
-    /// about its height), as the cells' feet points.
-    pub fn path(&self, to: Vec3, reach: f32) -> Option<Vec<Vec3>> {
+    /// about its height), as the cells' feet points, each marked if she jumps to it (over a
+    /// gap, as far as `JUMP`, to a floor not much higher).
+    pub fn path(&self, to: Vec3, reach: f32) -> Option<Vec<(Vec3, bool)>> {
         let cell = |p: Vec3| ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
         let centre = |i: i32, k: i32| Vec2::new((i as f32 + 0.5) * CELL, (k as f32 + 0.5) * CELL);
         let at = self.c.feet;
@@ -182,6 +185,7 @@ impl Play {
         let mut cost: HashMap<Node, f32> = HashMap::new();
         let mut from: HashMap<Node, Node> = HashMap::new();
         let mut floors_at: HashMap<(i32, i32), Vec<f32>> = HashMap::new();
+        let mut jumped: HashSet<Node> = HashSet::new();
         cost.insert(start, 0.0);
         open.push(Open(h(&start), start));
         let mut expanded = 0;
@@ -194,7 +198,7 @@ impl Play {
                     k = p;
                 }
                 path.reverse();
-                return Some(path.into_iter().map(|(i, k, y)| { let c = centre(i, k); Vec3::new(c.x, y as f32 / 100.0, c.y) }).collect());
+                return Some(path.into_iter().map(|n| { let c = centre(n.0, n.1); (Vec3::new(c.x, n.2 as f32 / 100.0, c.y), jumped.contains(&n)) }).collect());
             }
             expanded += 1;
             if expanded > 600_000 {
@@ -229,7 +233,41 @@ impl Play {
                 if cost.get(&m).is_none_or(|&c| ng < c) {
                     cost.insert(m, ng);
                     from.insert(m, n);
+                    jumped.remove(&m);
                     open.push(Open(ng + h(&m), m));
+                }
+            }
+            // Jumps: off an edge (no floor at her height next to her) across a gap to a floor
+            // not much higher, with room over the gap.
+            for (di, dk) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let near = |i: i32, k: i32, lo: f32, hi: f32| {
+                    let c = centre(i, k);
+                    !self.floors(c.x, c.y, lo, hi).is_empty()
+                };
+                if near(n.0 + di, n.1 + dk, y - 0.6, y + STEP) {
+                    continue;
+                }
+                for len in 2..=(JUMP / CELL) as i32 {
+                    let (i, k) = (n.0 + di * len, n.1 + dk * len);
+                    let c = centre(i, k);
+                    let over = (1..len).all(|j| {
+                        let c = centre(n.0 + di * j, n.1 + dk * j);
+                        self.fits(Vec3::new(c.x, y + 0.5, c.y))
+                    });
+                    if !over {
+                        break;
+                    }
+                    let land = self.floors(c.x, c.y, y - 1.5, y + 0.35).into_iter().reduce(f32::max);
+                    let Some(ny) = land else { continue };
+                    let m: Node = (i, k, (ny * 100.0).round() as i32);
+                    let ng = g + len as f32 * CELL * 1.5 + 1.0;
+                    if cost.get(&m).is_none_or(|&c| ng < c) {
+                        cost.insert(m, ng);
+                        from.insert(m, n);
+                        jumped.insert(m);
+                        open.push(Open(ng + h(&m), m));
+                    }
+                    break;
                 }
             }
         }
@@ -260,7 +298,9 @@ impl Play {
 
     /// Steer her along `path` (a little ahead of where she is on it) until she's within
     /// `reach` of `to`; false if she stops getting closer.
-    fn follow(&mut self, path: &[Vec3], to: Vec3, reach: f32) -> bool {
+    fn follow(&mut self, path: &[(Vec3, bool)], to: Vec3, reach: f32) -> bool {
+        let jumps: Vec<bool> = path.iter().map(|p| p.1).collect();
+        let path: Vec<Vec3> = path.iter().map(|p| p.0).collect();
         let mut on = 0usize;
         let mut best = f32::MAX;
         let mut since = 0.0;
@@ -276,15 +316,21 @@ impl Play {
                     on = k;
                 }
             }
-            let ahead = path[(on + 3).min(path.len() - 1)];
+            // A jump coming up: head for where she lands, and jump at the edge.
+            let jump = (on + 1..(on + 4).min(path.len())).find(|&j| jumps[j]);
+            let ahead = match jump {
+                Some(j) => path[j],
+                None => path[(on + 3).min(path.len() - 1)],
+            };
             let d = Vec2::new(ahead.x - feet.x, ahead.z - feet.z);
             let left = path.len() - 1 - on;
             if d.length() > 1e-3 {
                 self.c.yaw = (-d.x).atan2(-d.y);
             }
+            let take_off = jump.is_some_and(|j| flat(path[j - 1]) < 0.3) && self.c.state == State::Ground;
             // Walk the last few cells (she runs fast, and would overshoot).
-            let speed = if left < 6 { 0.35 } else { 1.0 };
-            self.step(&Input { move_axis: Vec2::new(0.0, speed), ..Default::default() });
+            let speed = if left < 6 && jump.is_none() { 0.35 } else { 1.0 };
+            self.step(&Input { move_axis: Vec2::new(0.0, speed), jump_pressed: take_off, jump_held: take_off || self.c.state != State::Ground, ..Default::default() });
             let dist = flat(to);
             if dist < best - 0.05 {
                 best = dist;
@@ -476,6 +522,22 @@ impl Play {
             }
         }
         panic!("{}: never got through the {color:?} portal at {at}", self.name);
+    }
+
+    /// Into lift `train` (a train), where the trigger that starts it is, and ride it to the
+    /// end of its path.
+    pub fn ride(&mut self, train_name: &str) {
+        let train = self.mover(train_name);
+        let io = self.sim.io.as_ref().unwrap();
+        let ride = io.ents.iter().find_map(|e| match e.kind {
+            crate::io::Kind::Trigger { b, .. } if e.outputs.iter().any(|o| o.target.eq_ignore_ascii_case(train_name) && o.input.eq_ignore_ascii_case("StartForward")) => Some(b),
+            _ => None,
+        }).unwrap_or_else(|| panic!("{}: nothing starts {train_name}", self.name));
+        let car = self.sim.movers[train].boxes().filter(|b| b.size().x > 2.5 && b.size().z > 2.5 && b.size().y < 0.3).map(|b| b.max.y).fold(f32::MIN, f32::max);
+        let c = ride.center();
+        self.go(Vec3::new(c.x, car, c.z), 0.3);
+        self.wait_for(60.0, &format!("{train_name} to the top"), |p| p.sim.movers[train].node + 1 == p.sim.movers[train].def.path.len() && p.sim.movers[train].goal.is_none());
+        self.wait(2.0);
     }
 
     /// Into the exit elevator (the train whose path ends changing the level), where its ride
@@ -730,4 +792,44 @@ fn solve_testchmb_a_02() {
     eprintln!("on the catwalk at {}", p.c.feet);
     p.assert_alive("in Chamber 05");
     p.ride_exit("testchmb_a_03");
+}
+
+/// Chamber 06 (testchmb_a_03's first half): the ceiling's launcher fires its pellet down into
+/// the fixed orange in the floor; her blue on the ceiling over the catcher (in the floor)
+/// drops it in, and the pillar barring the way out sinks. Up the lift to Chamber 07.
+#[test]
+fn solve_testchmb_a_03() {
+    let Some(mut p) = Play::load("testchmb_a_03") else { return };
+    let pillar = p.mover("lift_a");
+    p.go(Vec3::new(3.24, -3.66, 3.0), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(3.24, 5.5, 0.01));
+    p.wait_for(20.0, "the pellet to be caught", |p| p.sim.movers[pillar].node == 1 && p.sim.movers[pillar].goal.is_none());
+    // The lift's come down: onto it, and up to the way out.
+    let platform = p.mover("lift_brush_a03");
+    let top = p.sim.movers[platform].boxes().reduce(|a, b| Aabb::new(a.min.min(b.min), a.max.max(b.max))).unwrap();
+    p.go(Vec3::new(top.center().x, top.max.y, top.center().z), 0.3);
+    p.wait_for(20.0, "the lift to go up", |p| p.sim.movers[pillar].node == 0 && p.sim.movers[pillar].goal.is_none());
+    p.ride("a03-middle_elevator_body");
+    p.assert_alive("in Chamber 06");
+    eprintln!("up to Chamber 07 at {}", p.c.feet);
+    // Chamber 07: the wall's launcher fires across the room; blue on the far wall in its way
+    // sends the pellet up out of the orange in the pit's floor into the ceiling's catcher, and
+    // the platform starts along its rail over the pit.
+    p.go(Vec3::new(3.0, 30.89, -3.0), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(-8.128, 35.63, -1.63));
+    let train = p.mover("func_tracktrain_b00");
+    p.wait_for(20.0, "the platform to set off", |p| p.sim.movers[train].goal.is_some());
+    // Onto the platform as Portal has it: blue on the ceiling over where it stops at the west
+    // end, then down through the orange in the pit's floor while it's stopped there.
+    let over = Vec3::new(-5.33, 40.64, 9.75);
+    p.go(Vec3::new(-2.0, 30.89, 2.0), 0.5);
+    p.shoot(PortalColor::Blue, over);
+    let over = p.sim.portals[0].unwrap().center;
+    p.wait_for(40.0, "the platform to stop at the west end", |p| p.sim.movers[train].node == 0 && p.sim.movers[train].goal.is_none());
+    p.through(PortalColor::Orange, 1.0);
+    p.wait(2.0);
+    eprintln!("dropped from {over} to {} (platform at {})", p.c.feet, p.sim.movers[train].at);
+    p.assert_alive("dropping onto the platform");
+    p.ride_exit("testchmb_a_04");
+    p.assert_alive("in Chamber 07");
 }

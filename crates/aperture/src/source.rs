@@ -321,6 +321,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 let mut speed = num(e, "speed", 100.0).max(1.0) * 0.0254;
                 let mut shift = Vec3::ZERO;
                 let mut swing = None;
+                let mut home = 0;
                 // A door shuts itself `wait` seconds after it's open (-1: it stays).
                 let reset = matches!(class, "func_door" | "func_door_rotating").then(|| num(e, "wait", 4.0)).filter(|w| *w >= 0.0);
                 let (path, start, mk, present) = match class {
@@ -349,30 +350,44 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     }
                     "func_tracktrain" => {
                         // (The extractor put it on its first path node; models riding it go too.)
-                        // Its path: from the node it starts on, following each node's target.
-                        let mut pts = Vec::new();
-                        let mut names = Vec::new();
-                        let mut at = key(e, "target").map(str::to_ascii_lowercase);
+                        // Its path: from the node it starts on, following each node's target;
+                        // before it, the nodes leading to it (it can be started backwards).
+                        let mut names: Vec<String> = Vec::new();
+                        let start_node = key(e, "target").map(str::to_ascii_lowercase);
+                        let mut at = start_node.clone();
                         while let Some(n) = at.take() {
                             if names.contains(&n) {
                                 break;
                             }
-                            let Some(node) = named.get(&n) else { break };
-                            let Some(p) = origin(node) else { break };
-                            pts.push(p);
+                            if !named.contains_key(&n) {
+                                break;
+                            }
+                            at = named.get(&n).and_then(|node| key(node, "target")).map(str::to_ascii_lowercase);
                             names.push(n);
-                            at = key(node, "target").map(str::to_ascii_lowercase);
                         }
-                        let first = pts.first().copied().unwrap_or(Vec3::ZERO);
+                        let mut before = Vec::new();
+                        let mut cur = start_node.clone();
+                        while let Some(c) = cur.take() {
+                            let prev = ents.iter().find(|p| key(p, "classname") == Some("path_track") && key(p, "target").is_some_and(|t| t.eq_ignore_ascii_case(&c))).and_then(|p| key(p, "targetname")).map(str::to_ascii_lowercase);
+                            if let Some(p) = prev.filter(|p| !names.contains(p) && !before.contains(p)) {
+                                before.push(p.clone());
+                                cur = Some(p);
+                            }
+                        }
+                        before.reverse();
+                        home = before.len();
+                        let names: Vec<String> = before.into_iter().chain(names).collect();
+                        let pts: Vec<Vec3> = names.iter().filter_map(|n| origin(named.get(n)?)).collect();
+                        let first = pts.get(home).copied().unwrap_or(Vec3::ZERO);
                         for (k, n) in names.into_iter().enumerate() {
                             path_nodes.insert(n, (movers, k));
                         }
                         let path = if pts.is_empty() { vec![Vec3::ZERO] } else { pts.iter().map(|p| *p - first).collect() };
-                        if let (Some(p0), Some(o)) = (pts.first(), origin(e)) {
+                        if let (Some(p0), Some(o)) = (pts.get(home), origin(e)) {
                             let height = num(e, "height", 0.0) * 0.0254;
                             shift = *p0 + Vec3::Y * height - o;
                         }
-                        (path, 0, io::MoverKind::Train, true)
+                        (path, home, io::MoverKind::Train, true)
                     }
                     _ => {
                         let present = !start_disabled;
@@ -395,7 +410,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         }
                     }
                 }
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset }));
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }
@@ -420,7 +435,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     let enabled = !start_disabled;
                     kind = match buttons.iter().position(|bt| class == "trigger_multiple" && b.overlaps(&Aabb::new(bt.min - Vec3::splat(0.6), bt.max + Vec3::splat(0.6)))) {
                         Some(button) => io::Kind::ButtonTrigger { button, enabled, players, cubes, on: false },
-                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, pellets, rockets, player_in: false, cubes_in: Vec::new() },
+                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, pellets, rockets, mover: None, player_in: false, cubes_in: Vec::new() },
                     };
                 }
             }
@@ -589,6 +604,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 m.path = p.path.clone();
                 m.swing = p.swing;
                 m.start = p.start;
+                m.home = p.home;
                 m.shift = p.shift;
             } else if let Some(&(_, direct)) = children.iter().find(|(c, _)| *c == k) {
                 m.parent = Some(direct);
@@ -602,6 +618,12 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         let Some(&mover) = key(e, "parentname").and_then(|p| mover_named.get(&p.to_ascii_lowercase())) else { continue };
         if let Some(Item::GunPickup { mover: m, .. }) = l.items.iter_mut().filter(|i| matches!(i, Item::GunPickup { .. })).nth(index) {
             *m = Some(mover);
+        }
+    }
+    // A trigger parented to a mover rides it (a lift's, that starts it).
+    for (e, ent) in ents.iter().zip(io_ents.iter_mut()) {
+        if let io::Kind::Trigger { mover, .. } = &mut ent.kind {
+            *mover = parent_mover(e);
         }
     }
     // A rocket turret on a lift rides it.

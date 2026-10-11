@@ -209,6 +209,9 @@ pub struct MoverDef {
     pub speed: f32,
     /// Which point on its path it starts at.
     pub start: usize,
+    /// Which point on its path its boxes and model are at as the map has them (a train that
+    /// starts part way along its track: the node it starts on).
+    pub home: usize,
     /// Solid and drawn at the start.
     pub present: bool,
     /// How far it was moved from where the map has it (a train put on its first path node):
@@ -566,7 +569,7 @@ impl Level {
     /// its inputs are on.
     pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
         let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
-        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None }))
+        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None }))
     }
 
     pub fn turret(&mut self, at: [f32; 3], yaw_deg: f32) -> &mut Self {

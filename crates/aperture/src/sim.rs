@@ -293,7 +293,7 @@ impl Mover {
     pub fn offset(&self) -> Vec3 {
         match self.def.swing {
             Some(_) => self.carried,
-            None => self.at - self.def.path.first().copied().unwrap_or(Vec3::ZERO) + self.carried,
+            None => self.at - self.def.path.get(self.def.home).copied().unwrap_or(Vec3::ZERO) + self.carried,
         }
     }
 

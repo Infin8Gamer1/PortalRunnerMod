@@ -948,7 +948,7 @@ pub fn update(
             }
             Vis::Mover(i) => {
                 let mv = &sim.movers[i];
-                tf.translation = mv.at - mv.def.path.first().copied().unwrap_or(Vec3::ZERO);
+                tf.translation = mv.at - mv.def.path.get(mv.def.home).copied().unwrap_or(Vec3::ZERO);
                 *visible = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
                 None
             }
