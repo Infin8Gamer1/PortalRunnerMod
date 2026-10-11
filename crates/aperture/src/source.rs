@@ -194,6 +194,15 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         }
     }
     let named: HashMap<String, &Entity> = ents.iter().filter_map(|e| Some((key(e, "targetname")?.to_ascii_lowercase(), e))).collect();
+    // What a trigger_multiple opens (a floor button's top, as it's pressed).
+    let pressed_open: std::collections::HashSet<String> = ents
+        .iter()
+        .filter(|e| key(e, "classname") == Some("trigger_multiple"))
+        .flat_map(|e| e.iter().filter(|(k, _)| k.starts_with("On")).filter_map(|(_, v)| {
+            let f: Vec<&str> = v.split([',', '\x1b']).collect();
+            (f.len() >= 2 && f[1].eq_ignore_ascii_case("Open")).then(|| f[0].to_ascii_lowercase())
+        }))
+        .collect();
     // Entities a template makes: not there until it's told to make them.
     let mut templated = std::collections::HashSet::new();
     for e in &ents {
@@ -299,8 +308,9 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 });
                 l.lights.push(SourceLight { at, color, brightness, spot });
             }
-            // A floor button's moving top: the game's own button stands in for it.
-            "func_door" if name.to_ascii_lowercase().contains("button") && mb.is_some_and(|b| b.size().x < 2.2 && b.size().z < 2.2) => {
+            // A floor button's moving top (one its trigger opens as it's pressed; not a pedestal
+            // switch's lift): the game's own button stands in for it.
+            "func_door" if name.to_ascii_lowercase().contains("button") && pressed_open.contains(&name.to_ascii_lowercase()) && mb.is_some_and(|b| b.size().x < 2.2 && b.size().z < 2.2) => {
                 let b = mb.unwrap();
                 let c = b.center();
                 let floor = l
@@ -649,11 +659,15 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             damageable.push((k, at, 0.6));
         }
     }
-    // Path nodes know their train.
-    for ent in &mut io_ents {
+    // Path nodes know their train (and which start disabled).
+    let mut closed_nodes = Vec::new();
+    for (e, ent) in ents.iter().zip(io_ents.iter_mut()) {
         if ent.class == "path_track" {
             if let Some(&(mover, node)) = path_nodes.get(&ent.name.to_ascii_lowercase()) {
                 ent.kind = io::Kind::PathNode { mover, node };
+                if flags(e) & 1 != 0 {
+                    closed_nodes.push((mover, node));
+                }
             }
         }
     }
@@ -674,6 +688,14 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut logic = io::Io::new(io_ents, initial, signals);
     logic.hidden = hidden;
     logic.damageable = damageable;
+    logic.closed_nodes = closed_nodes;
+    // Doors she opens by using them (Use Opens; Toggle to shut them again too).
+    logic.usable = ents
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(key(e, "classname"), Some("func_door" | "func_door_rotating")) && flags(e) & 256 != 0)
+        .map(|(k, e)| (k, flags(e) & 32 != 0))
+        .collect();
     l.io = Some(logic);
 
     // The gun she starts with: what the map leaves by the start (none: Portal's chambers

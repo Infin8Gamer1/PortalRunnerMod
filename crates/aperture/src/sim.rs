@@ -283,6 +283,8 @@ pub struct Mover {
     pub wait: f32,
     /// How far what it's parented to has carried it (one with a motion of its own).
     pub carried: Vec3,
+    /// Points on its path it can't go on to (a train's disabled path_track): it stops short.
+    pub closed: Vec<bool>,
 }
 
 /// How long a shuttling platform waits at each end.
@@ -441,6 +443,8 @@ pub enum SimEvent {
     ButtonDown { at: Vec3 },
     ButtonUp { at: Vec3 },
     PedestalPressed { at: Vec3 },
+    /// She used (E) mover `mover` (a map's switch: the logic decides what that does).
+    MoverUsed { mover: usize },
     DoorOpening { at: Vec3 },
     DoorClosing { at: Vec3 },
     CubeDropped { at: Vec3 },
@@ -778,7 +782,7 @@ impl Sim {
                 }
                 Item::Mover(def) => {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, def });
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], def });
                 }
             }
         }
@@ -1535,6 +1539,7 @@ impl Sim {
                 self.held_far = 0.0;
                 self.events.push(SimEvent::PickUp { id: self.props[i].id });
             }
+            Some(HitWhat::Mover(i)) => self.events.push(SimEvent::MoverUsed { mover: i }),
             Some(HitWhat::Static(s)) => {
                 if let Owner::Pedestal(i) = self.statics[s].owner {
                     let p = &mut self.pedestals[i];
@@ -2000,8 +2005,14 @@ impl Sim {
             let mut node = m.node;
             let mut left = m.speed * dt;
             let mut passed = Vec::new();
+            let mut stopped = false;
             while node != goal && left > 0.0 {
                 let next = if goal > node { node + 1 } else { node - 1 };
+                // A disabled path point: it stops at the one before.
+                if m.closed.get(next) == Some(&true) && at == m.def.path[node] {
+                    stopped = true;
+                    break;
+                }
                 let target = m.def.path[next];
                 let gap = target.distance(at);
                 if gap <= left {
@@ -2056,6 +2067,9 @@ impl Sim {
             let m = &mut self.movers[i];
             m.at = at;
             m.node = node;
+            if stopped {
+                m.goal = None;
+            }
             if node == goal {
                 m.goal = None;
                 if m.def.shuttle {

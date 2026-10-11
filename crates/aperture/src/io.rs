@@ -125,6 +125,8 @@ pub struct Ent {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Pending {
+    /// What set it off, for `!activator` (the train passing a path point).
+    activator: Option<usize>,
     at: f32,
     target: String,
     input: String,
@@ -158,6 +160,12 @@ pub struct Io {
     pub named_frames: HashMap<String, u32>,
     /// GLaDOS's lines as she says them: a count that goes up with each, and the sound.
     pub voice: Vec<(u32, String)>,
+    /// Movers she can use (E) to open (a door flagged Use Opens: Portal's pedestal switches),
+    /// and whether using it toggles it (flagged Toggle).
+    pub usable: HashMap<usize, bool>,
+    /// Train path points that start disabled (mover, point): the train stops short of them till
+    /// they're enabled (EnablePath).
+    pub closed_nodes: Vec<(usize, usize)>,
     /// What a rocket going off hurts (fires its OnTakeDamage): entity, centre and radius.
     pub damageable: Vec<(usize, Vec3, f32)>,
     /// Which preset portal (entity) is open in each colour.
@@ -190,6 +198,11 @@ impl Io {
     /// Fire entity `e`'s output `event` (`value` stands in for empty parameters: a counter's
     /// value, passed on).
     fn fire(&mut self, e: usize, event: &str, value: Option<&str>) {
+        self.fire_by(e, event, value, None);
+    }
+
+    /// Fire, with what set it off (for its outputs' `!activator`).
+    fn fire_by(&mut self, e: usize, event: &str, value: Option<&str>, activator: Option<usize>) {
         let now = self.time;
         let mut sends = Vec::new();
         for o in self.ents[e].outputs.iter_mut() {
@@ -200,7 +213,7 @@ impl Io {
                 o.times -= 1;
             }
             let param = if o.param.is_empty() { value.unwrap_or("").to_string() } else { o.param.clone() };
-            sends.push(Pending { at: now + o.delay, target: o.target.clone(), input: o.input.clone(), param, caller: e });
+            sends.push(Pending { activator, at: now + o.delay, target: o.target.clone(), input: o.input.clone(), param, caller: e });
         }
         self.queue.extend(sends);
     }
@@ -214,6 +227,11 @@ impl Io {
             for &(s, on) in &self.initial {
                 if let Some(v) = sim.io_signals.get_mut(s) {
                     *v = on;
+                }
+            }
+            for &(m, n) in &self.closed_nodes {
+                if let Some(c) = sim.movers.get_mut(m).and_then(|m| m.closed.get_mut(n)) {
+                    *c = true;
                 }
             }
             // Source fires OnMapSpawn whenever a map loads, OnNewGame only for a fresh start,
@@ -251,15 +269,32 @@ impl Io {
             if let SimEvent::RocketExploded { at, .. } = ev {
                 self.rocket_blast(sim, at);
             }
+            // A switch she's pressed.
+            if let SimEvent::MoverUsed { mover } = ev {
+                for e in 0..self.ents.len() {
+                    let Kind::Mover { index, .. } = self.ents[e].kind else { continue };
+                    let Some(&toggle) = self.usable.get(&e) else { continue };
+                    if index == mover && self.ents[e].alive {
+                        let at = sim.movers[index].boxes().next().map_or(Vec3::ZERO, |b| b.center());
+                        sim.events.push(SimEvent::PedestalPressed { at });
+                        self.fire(e, "OnUse", None);
+                        self.input(sim, e, if toggle { "Toggle" } else { "Open" }, "", e);
+                    }
+                }
+            }
             if let SimEvent::MoverAt { mover, node, arrived } = ev {
                 for e in 0..self.ents.len() {
                     match self.ents[e].kind {
-                        Kind::PathNode { mover: m, node: n } if m == mover && n == node => self.fire(e, "OnPass", None),
+                        Kind::PathNode { mover: m, node: n } if m == mover && n == node => {
+                            // (The train passing it is what set it off.)
+                            let train = self.ents.iter().position(|t| matches!(t.kind, Kind::Mover { index, .. } if index == mover));
+                            self.fire_by(e, "OnPass", None, train);
+                        }
                         Kind::Mover { index, kind: MoverKind::Door } if index == mover && arrived => {
                             let last = sim.movers[index].def.path.len() - 1;
                             self.fire(e, if node == last { "OnFullyOpen" } else { "OnFullyClosed" }, None);
                             if let Some(wait) = sim.movers[index].def.reset.filter(|_| node == last) {
-                                self.queue.push(Pending { at: self.time + wait, target: "!self".into(), input: "Close".into(), param: String::new(), caller: e });
+                                self.queue.push(Pending { activator: None, at: self.time + wait, target: "!self".into(), input: "Close".into(), param: String::new(), caller: e });
                             }
                         }
                         _ => {}
@@ -426,6 +461,7 @@ impl Io {
             for p in due {
                 let targets: Vec<usize> = match p.target.as_str() {
                     "!self" | "!caller" => vec![p.caller],
+                    "!activator" => p.activator.into_iter().collect(),
                     t => self.by_name.get(t).cloned().unwrap_or_default(),
                 };
                 for t in targets {
@@ -484,6 +520,18 @@ impl Io {
     fn input(&mut self, sim: &mut Sim, e: usize, input: &str, param: &str, caller: usize) {
         let i = input.to_ascii_lowercase();
         if !self.ents[e].alive && i != "enable" {
+            return;
+        }
+        // A new output (Source's "Event target:input:param:delay:times"; a key's new value,
+        // "key value", is left alone).
+        if i == "addoutput" {
+            let mut it = param.trim().splitn(2, char::is_whitespace);
+            if let (Some(event), Some(rest)) = (it.next(), it.next())
+                && rest.contains(':')
+                && let Some(o) = Output::parse(event, &rest.replace(':', ","))
+            {
+                self.ents[e].outputs.push(o);
+            }
             return;
         }
         if i == "kill" {
@@ -691,12 +739,12 @@ impl Io {
                 "start" => {
                     self.fire(e, "OnStart", None);
                     let length = if length > 0.0 { length } else { SCENE_SECONDS };
-                    self.queue.push(Pending { at: now + length, target: "!self".into(), input: "__done".into(), param: String::new(), caller: e });
+                    self.queue.push(Pending { activator: None, at: now + length, target: "!self".into(), input: "__done".into(), param: String::new(), caller: e });
                     for (at, sound) in lines {
-                        self.queue.push(Pending { at: now + at, target: "!self".into(), input: "__say".into(), param: sound, caller: e });
+                        self.queue.push(Pending { activator: None, at: now + at, target: "!self".into(), input: "__say".into(), param: sound, caller: e });
                     }
                     for (at, n) in triggers {
-                        self.queue.push(Pending { at: now + at, target: "!self".into(), input: "__trigger".into(), param: n.to_string(), caller: e });
+                        self.queue.push(Pending { activator: None, at: now + at, target: "!self".into(), input: "__trigger".into(), param: n.to_string(), caller: e });
                     }
                 }
                 "__trigger" => self.fire(e, &format!("OnTrigger{}", param.trim()), None),
@@ -767,6 +815,11 @@ impl Io {
                     let model = sim.movers[index].def.model;
                     let n = if i == "settextureindex" { num(param).max(0.0) as u32 } else { self.frames.get(&model).map_or(1, |f| f + 1) };
                     self.frames.insert(model, n);
+                }
+            }
+            Kind::PathNode { mover, node } if i == "enablepath" || i == "disablepath" => {
+                if let Some(c) = sim.movers.get_mut(mover).and_then(|m| m.closed.get_mut(node)) {
+                    *c = i == "disablepath";
                 }
             }
             Kind::Animated if i == "setanimation" => {

@@ -88,7 +88,8 @@ impl Play {
 
     /// One frame with this input.
     pub fn step(&mut self, input: &Input) {
-        self.sim.events.clear();
+        // (As the game does: what she did between frames, using a switch, is in this frame's
+        // events for the logic.)
         self.sim.step_player(&mut self.c, input, DT);
         self.sim.step(DT, &mut self.c);
         for e in &self.sim.events {
@@ -97,6 +98,7 @@ impl Play {
             }
         }
         self.events.extend(self.sim.events.iter().copied());
+        self.sim.events.clear();
         self.time += DT;
     }
 
@@ -435,8 +437,9 @@ impl Play {
             if Vec2::new(d.x, d.z).length() > 1e-3 {
                 self.c.yaw = (-d.x).atan2(-d.z);
             }
+            let seen = self.events.len();
             self.step(&Input { move_axis: Vec2::new(0.0, self.entry_speed), ..Default::default() });
-            crossed |= self.sim.events.iter().any(|e| matches!(e, SimEvent::Teleported { entered: c, .. } if *c == color));
+            crossed |= self.events[seen..].iter().any(|e| matches!(e, SimEvent::Teleported { entered: c, .. } if *c == color));
         }
         self.wait(0.3);
         true
@@ -521,6 +524,15 @@ impl Play {
     /// stays put for 6 s is there for good); if one goes before she's in, she backs off and
     /// waits for it again.
     pub fn enter(&mut self, color: PortalColor, at: Vec3, to: Option<Vec3>) {
+        self.enter_when(color, at, to, true);
+    }
+
+    /// As [`enter`](Self::enter), straight in (portals she's placed herself, that stay put).
+    pub fn enter_now(&mut self, color: PortalColor, at: Vec3, to: Option<Vec3>) {
+        self.enter_when(color, at, to, false);
+    }
+
+    fn enter_when(&mut self, color: PortalColor, at: Vec3, to: Option<Vec3>, fresh: bool) {
         let both = |p: &Play| {
             p.sim.portals[color.index()].is_some_and(|x| x.center.distance(at) < 1.0)
                 && p.sim.portals[color.other().index()].is_some_and(|x| to.is_none_or(|to| x.center.distance(to) < 1.0))
@@ -537,7 +549,7 @@ impl Play {
             .unwrap_or(q.center - Vec3::Y * 1.0 + q.normal * 2.5);
         for _ in 0..6 {
             self.go(front, 0.4);
-            let end = self.time + 6.0;
+            let end = self.time + if fresh { 6.0 } else { 0.0 };
             while both(self) && self.time < end {
                 self.step(&Input::default());
             }
@@ -990,4 +1002,91 @@ fn solve_testchmb_a_06() {
     p.assert_alive("flung over the pit");
     // Area C (the receding panels, flung out of the pit's floor orange twice to the exit) isn't
     // played yet.
+}
+
+impl Play {
+    /// Press the switch (a door she uses) of the map's entity `name`: walk up to it, look at it,
+    /// use it.
+    pub fn press(&mut self, name: &str) {
+        let m = self.mover(name);
+        let at = self.sim.movers[m].boxes().next().expect("a switch with no box").center();
+        let floor = self.floors(at.x, at.z, at.y - 3.0, at.y).into_iter().reduce(f32::max).unwrap_or(at.y - 1.0);
+        self.go(Vec3::new(at.x, floor, at.z), 1.2);
+        self.look_at(at);
+        self.sim.use_key(Aim::of(&self.c));
+        self.wait(0.3);
+        assert!(self.events.iter().rev().take(40).any(|e| matches!(e, SimEvent::PedestalPressed { .. })), "{}: pressing {name} did nothing (from {})", self.name, self.c.feet);
+    }
+}
+
+/// Chamber 11 (testchmb_a_07's first half): the turning gun puts orange in three places in
+/// turn. Blue in the corridor, out of orange behind the switch's platform, the switch (it opens
+/// the launcher room); ...
+#[test]
+fn solve_testchmb_a_07() {
+    let Some(mut p) = Play::load("testchmb_a_07") else { return };
+    let spot_a = Vec3::new(9.8, 4.7, -11.4);
+    p.go(Vec3::new(10.5, 9.96, -4.6), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(6.5, 11.6, -4.6));
+    let blue = p.sim.portals[0].unwrap().center;
+    eprintln!("blue at {:?}", p.sim.portals[0].map(|q| (q.center, q.normal)));
+    p.enter(PortalColor::Blue, blue, Some(spot_a));
+    eprintln!("behind the switch at {}", p.c.feet);
+    p.press("button_1");
+    eprintln!("pressed at {}", p.c.feet);
+    let door = p.mover("door_launcher_room");
+    p.wait_for(10.0, "the launcher room's door", |p| p.sim.movers[door].node == 1 && p.sim.movers[door].goal.is_none());
+    // Blue through it on the launcher room's back wall; through orange when it's back behind
+    // her, and out in there.
+    p.shoot(PortalColor::Blue, Vec3::new(9.43, 8.2, 21.94));
+    let back = p.sim.portals[0].unwrap().center;
+    p.enter(PortalColor::Orange, spot_a, Some(back));
+    eprintln!("in the launcher room at {}", p.c.feet);
+    // Part 2: blue where the pellet hits the east wall; when orange's opposite the catcher,
+    // the pellet goes through to it.
+    let spot_b = Vec3::new(-4.88, 4.34, 4.86);
+    p.shoot(PortalColor::Blue, Vec3::new(12.9, 8.14, 16.2));
+    eprintln!("blue at {:?}", p.sim.portals[0].map(|q| (q.center, q.normal)));
+    let cart = p.mover("rail_cart_rm6");
+    let wall = p.sim.portals[0].unwrap().center;
+    p.wait_for(40.0, "the pellet caught (the cart sets off)", |p| p.sim.movers[cart].goal.is_some());
+    eprintln!("cart path {:?} home {}", p.sim.movers[cart].def.path, p.sim.movers[cart].def.home);
+    p.wait_for(20.0, "the cart to stop", |p| p.sim.movers[cart].goal.is_none());
+    eprintln!("cart at {} boxes {:?}", p.sim.movers[cart].at, p.sim.movers[cart].boxes().collect::<Vec<_>>());
+    // Through blue onto the scaffold, when orange's at B again.
+    p.enter(PortalColor::Blue, wall, Some(spot_b));
+    eprintln!("out at {}", p.c.feet);
+    // Part 3: the cart takes her back to the middle, to the gun on its pedestal: hers (orange too).
+    p.wait_for(30.0, "the cart back", |p| p.sim.movers[cart].node == 0 && p.sim.movers[cart].goal.is_none());
+    eprintln!("cart back, her at {}", p.c.feet);
+    let gun = p.sim.gun_pose(0).0;
+    p.go(Vec3::new(gun.x, p.c.feet.y, gun.z), 0.8);
+    p.wait_for(3.0, "her to take the gun", |p| p.sim.gun.orange);
+    eprintln!("both colours at {}", p.c.feet);
+    let lift = p.mover("button_pedistal");
+    // (It starts down, open: taking the gun shuts it, raising the switch.)
+    p.wait_for(15.0, "the switch to rise", |p| p.sim.movers[lift].node == 0 && p.sim.movers[lift].goal.is_none());
+    p.press("button_exit_door_a07_pA");
+    let door = p.mover("door_exit_a07_pA");
+    p.wait_for(10.0, "the exit door to open", |p| p.sim.movers[door].node == 1 && p.sim.movers[door].goal.is_none());
+    p.go(Vec3::new(8.0, 3.15, 4.88), 0.4);
+    // Orange through the opened door on the wall beyond; blue on the wall where the scaffold
+    // stops, onto the scaffold, over, and through.
+    p.shoot(PortalColor::Orange, Vec3::new(30.07, 8.9, 4.88));
+    let beyond = p.sim.portals[1].unwrap().center;
+    eprintln!("orange at {:?}", p.sim.portals[1].map(|q| (q.center, q.normal)));
+    // (Since she stood by the gun, the cart shuttles: 2 s at each end.)
+    let west = Vec3::new(-4.88, 4.6, 4.86);
+    p.shoot(PortalColor::Blue, west);
+    let west = p.sim.portals[0].unwrap().center;
+    p.wait_for(40.0, "the cart back by the pedestal", |p| p.sim.movers[cart].node == 0 && p.sim.movers[cart].goal.is_none());
+    let deck = p.sim.movers[cart].boxes().next().unwrap();
+    p.go(Vec3::new(deck.center().x, deck.max.y, deck.center().z), 0.4);
+    p.wait_for(40.0, "the cart over to the west wall", |p| p.sim.movers[cart].node == 1 && p.sim.movers[cart].goal.is_none());
+    // (In before it sets off back.)
+    p.enter_now(PortalColor::Blue, west, Some(beyond));
+    eprintln!("past the exit door at {}", p.c.feet);
+    p.assert_alive("in Chamber 11");
+    p.ride("07a_07b_elevator_body");
+    eprintln!("up to Chamber 12 at {}", p.c.feet);
 }
