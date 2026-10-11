@@ -1774,9 +1774,10 @@ fn solve_testchmb_a_11() {
 
 /// Chamber 17 (testchmb_a_13), the companion cube's chamber, as Portal's walkthrough has it: so
 /// far, up the ledges with the cube (she vaults them; from below, it's held up over each and
-/// let go onto it, and she climbs after it), through the pellet hallways behind it, and the
-/// first catcher's pellet bounced off it. The rest (the other two catchers, the lifts, the
-/// button and the incinerator) isn't played yet.
+/// let go onto it, and she climbs after it), through the pellet hallways behind it (orange
+/// left at the second's end), the first catcher's pellet bounced off it, and the second
+/// hallway's pellet down out of blue on an angled panel into the second catcher. The rest (the
+/// third catcher, the lifts, the button and the incinerator) isn't played yet.
 #[test]
 fn solve_testchmb_a_13() {
     let Some(mut p) = Play::load("testchmb_a_13") else { return };
@@ -1806,7 +1807,20 @@ fn solve_testchmb_a_13() {
     // to the ledge over the lifts' room, and down into it.
     p.c.pitch = -0.2;
     p.wait(0.5);
-    for w in [Vec3::new(17.9, 2.2, -40.4), Vec3::new(18.4, 1.9, -38.6), Vec3::new(11.4, 4.9, -38.6), Vec3::new(10.1, 4.9, -37.9), Vec3::new(-12.6, 0.0, -27.9), Vec3::new(-11.9, -6.5, -25.4)] {
+    // (Along each pellet's line: it meets the cube, not her.)
+    for w in [Vec3::new(-12.0, 3.25, -40.61), Vec3::new(15.0, 3.25, -40.61), Vec3::new(17.9, 2.2, -40.4), Vec3::new(18.4, 1.9, -38.6), Vec3::new(11.4, 4.9, -38.6), Vec3::new(10.1, 4.88, -37.62), Vec3::new(-9.0, 4.88, -37.62), Vec3::new(-14.9, 2.9, -37.1)] {
+        p.go(w, 0.4);
+        assert_eq!(p.sim.held, Some(0), "lost the cube on the way to {w} (at {})", p.c.feet);
+    }
+    // Down the ramp at the second hallway's west end, under its pellet's way: the cube down,
+    // orange on the end wall the pellet turns at (for the second catcher, later), and the cube
+    // up again.
+    p.sim.use_key(Aim::of(&p.c));
+    p.wait(0.3);
+    p.shoot(PortalColor::Orange, Vec3::new(-19.5, 6.54, -37.62));
+    p.pick_up(p.sim.props[0].pos);
+    p.c.pitch = -0.2;
+    for w in [Vec3::new(-12.6, 0.0, -27.9), Vec3::new(-11.9, -6.5, -25.4)] {
         p.go(w, 0.4);
         assert_eq!(p.sim.held, Some(0), "lost the cube on the way to {w} (at {})", p.c.feet);
     }
@@ -1834,8 +1848,39 @@ fn solve_testchmb_a_13() {
     p.wait_for(10.0, "the first catcher to take the pellet (the first lift to rise)", |p| p.sim.movers[lift1].goal.is_some());
     p.assert_alive("catching the first pellet");
     assert_eq!(p.sim.held, Some(0));
-    // (The second and third catchers, the lifts, the button and the incinerator aren't played
-    // yet.)
+    // The second catcher sits in an angled panel, facing up and out: blue on the angled panel
+    // across from it. The second hallway's pellet comes out of it, up off the ceiling and down
+    // into the catcher.
+    p.sim.use_key(Aim::of(&p.c));
+    p.go(Vec3::new(-6.0, -6.5, -20.0), 0.2);
+    // (Where on the panel matters: high enough that the pellet comes down into the catcher's
+    // notch, in line with it. The shot nearest that, aiming round about.)
+    let eye = p.c.view().eye;
+    let want = |c: Vec3| (c.x + c.y + 3.0).abs() + (c.z + 18.83).abs();
+    let mut best: Option<(f32, f32, f32)> = None;
+    for i in -20..=20 {
+        for j in -20..=20 {
+            let (yaw, pitch) = (-1.8432 + i as f32 * 0.005, 0.62 + j as f32 * 0.005);
+            let (saved, on) = (p.sim.portals, p.sim.portal_mover);
+            let ok = p.sim.fire(PortalColor::Blue, Aim { eye, dir: crate::portal::view_dir(yaw, pitch), yaw });
+            let got = p.sim.portals[0];
+            (p.sim.portals, p.sim.portal_mover) = (saved, on);
+            if let Some(g) = got.filter(|g| ok && g.normal.x < -0.5 && g.normal.y > 0.5) {
+                if best.is_none_or(|(s, ..)| want(g.center) < s) {
+                    best = Some((want(g.center), yaw, pitch));
+                }
+            }
+        }
+    }
+    let (score, yaw, pitch) = best.expect("no shot opens blue on the angled panel");
+    assert!(score < 0.4, "blue can't go where the pellet would reach the catcher (off by {score})");
+    p.c.yaw = yaw;
+    p.c.pitch = pitch;
+    assert!(p.sim.fire(PortalColor::Blue, Aim::of(&p.c)), "blue didn't open on the angled panel");
+    let trap = |p: &Play, name: &str| p.sim.io.as_ref().unwrap().ents.iter().any(|e| e.name == name && e.alive && matches!(e.kind, crate::io::Kind::Trigger { enabled: true, .. }));
+    p.wait_for(20.0, "the second catcher to take the pellet", |p| !trap(p, "ball_trap_12"));
+    p.assert_alive("catching the second pellet");
+    // (The third catcher, the lifts, the button and the incinerator aren't played yet.)
 }
 
 /// Chamber 00's clock runs its hundredths and thousandths (#48), not just its seconds.
@@ -1856,4 +1901,5 @@ fn chamber_00_clock_runs() {
     assert!(a[1].is_some() && (a[1] != b[1] || b[1] != c[1]), "the thousandths don't run: {a:?} {b:?} {c:?}");
     assert!(a[0] != c[0] || b[0] != c[0], "the hundredths don't run: {a:?} {b:?} {c:?}");
 }
+
 
