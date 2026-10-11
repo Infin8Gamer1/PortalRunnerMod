@@ -416,6 +416,30 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Portal's stairs walk (#39): Chamber 02's steel stair (testchmb_a_01), down and back
+        // up. PORTAL_FIRST_MAP picks the map index (Portal's maps come after the game's).
+        "stairs" => {
+            let first: usize = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len() + 1);
+            vec![
+                Map(first),
+                Wait(200),
+                Teleport(Vec3::new(-22.7, 14.64, 20.0)),
+                Look(180.0, -25.0),
+                Wait(30),
+                Shot("stairs_a_top"),
+                Hold(fwd(), 40),
+                Shot("stairs_b_halfway"),
+                Hold(fwd(), 50),
+                Shot("stairs_c_bottom"),
+                Look(0.0, 10.0),
+                Wait(10),
+                Shot("stairs_d_looking_up"),
+                Hold(fwd(), 45),
+                Shot("stairs_e_climbing"),
+                Hold(fwd(), 60),
+                Shot("stairs_f_top"),
+            ]
+        }
         // High energy pellets and the platform they power (#23, #22): Chamber 06, its pellet
         // sent through portals into the catcher.
         "pellets" => vec![

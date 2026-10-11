@@ -41,10 +41,15 @@ pub const CONTENTS_PLAYERCLIP: i32 = 0x10000;
 /// Texinfo flags of faces that aren't drawn: sky, nodraw, hint, skip, trigger.
 pub const SURF_HIDDEN: i32 = 0x4 | 0x80 | 0x100 | 0x200 | 0x40;
 
-/// Angled brushes are cut into slices this thick (metres) along their longest side...
+/// Angled brushes are cut into slices at most this thick (metres), across the way their
+/// angled sides face...
 const SLICE: f32 = 0.25;
+/// ...and thin enough that a slope climbs no more than this in one (a slice is as tall as the
+/// slope's highest point in it: on a stair's clip ramp, too coarse a slice makes a step too
+/// tall to walk)...
+const SLICE_RISE: f32 = 0.03;
 /// ...but no more than this many.
-const MAX_SLICES: usize = 48;
+const MAX_SLICES: usize = 160;
 
 pub struct Plane {
     pub normal: Vec3,
@@ -383,10 +388,17 @@ pub fn brush_boxes(bsp: &Bsp, b: &Brush) -> Vec<(Vec3, Vec3)> {
             }
         }
     }
+    // Across the way its angled sides face, on the ground (a ramp becomes a stair, a
+    // diagonal wall a row of posts), finely enough that a slope's steps stay small.
+    let angled: Vec<Vec3> = (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| &bsp.planes[s.plane]).filter(|p| !p.axial).map(|p| p.normal).collect();
+    let across = angled.iter().fold(Vec3::ZERO, |m, n| m + n.abs());
+    let axis = if across.x >= across.y { 0 } else { 1 };
     let size = hi - lo;
-    let axis = if size.x >= size.y && size.x >= size.z { 0 } else if size.y >= size.z { 1 } else { 2 };
     let len = size[axis];
-    let n = ((len * 0.0254 / SLICE).ceil() as usize).clamp(1, MAX_SLICES);
+    // (Only for something you'd walk on, or under: a wall that leans has no steps to keep small.)
+    let sloped = angled.iter().any(|n| n.z.abs() > 0.5 && n[axis].abs() > 0.05);
+    let by_rise = if sloped { (size.z * 0.0254 / SLICE_RISE).ceil() as usize } else { 1 };
+    let n = ((len * 0.0254 / SLICE).ceil() as usize).max(by_rise).clamp(1, MAX_SLICES);
     let mut out = Vec::new();
     for k in 0..n {
         let (s0, s1) = (lo[axis] + len * k as f32 / n as f32, lo[axis] + len * (k + 1) as f32 / n as f32);

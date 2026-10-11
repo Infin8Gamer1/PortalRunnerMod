@@ -1202,3 +1202,40 @@ fn portals_chamber_00_glados_speaks_on_cue() {
     run(&mut sim, &mut c, 1.0, |_, _| Input::default());
     assert!(said(&sim).contains(&"vo_00_part1_entry-1".to_string()), "she didn't speak: {:?}", said(&sim));
 }
+
+/// Portal's stairs walk (#39): Chamber 02's steel stair (testchmb_a_01, 16-unit risers on
+/// 32-unit treads, a clip ramp over them), down and back up without jumping.
+#[test]
+fn portals_stairs_walk() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_01.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    for x in [-26.0f32, -22.7, -19.4] {
+        let mut level = crate::source::level("testchmb_a_01", "02", &solids, &ents);
+        // Top of the stair, facing down it (+Z).
+        level.spawn([x, 14.64, 20.3], std::f32::consts::PI);
+        let (mut sim, mut c) = start(level);
+        c.yaw = std::f32::consts::PI;
+        let mut log = Vec::new();
+        let mut t = 0.0;
+        run(&mut sim, &mut c, 4.0, |_, c| {
+            t += DT;
+            if (t * 10.0).fract() < DT * 10.0 { log.push(format!("{:.1}:{:.2},{:.2}", t, c.feet.y, c.feet.z)); }
+            forward()
+        });
+        assert!(c.feet.y < 11.5 && c.feet.z > 27.0, "x {x}: didn't walk down: {} {:?}\n{}", c.feet, c.state, log.join(" "));
+        c.yaw = 0.0;
+        let mut log = Vec::new();
+        let mut t = 0.0;
+        let mut jumped = false;
+        run(&mut sim, &mut c, 4.0, |_, c| {
+            t += DT;
+            if c.state == State::Air && c.vel.y > 1.0 { jumped = true; }
+            if (t * 10.0).fract() < DT * 10.0 { log.push(format!("{:.1}:{:.2},{:.2}", t, c.feet.y, c.feet.z)); }
+            forward()
+        });
+        assert!(c.feet.y > 14.5 && c.feet.z < 21.0, "x {x}: didn't walk up: {} {:?}\n{}", c.feet, c.state, log.join(" "));
+        assert!(!jumped, "x {x}: went up in the air");
+    }
+}
+
