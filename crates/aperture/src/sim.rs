@@ -515,7 +515,9 @@ pub struct Mask {
 }
 
 impl Mask {
-    pub const SHOT: Mask = Mask { doors: true, bridges: true, props: true, fizzlers: true, portals: true, grates: false, glass: true, skip_prop: None };
+    /// The portal gun's shot: through emancipation grills, as in Portal (they stop her and her
+    /// cubes, not the shot).
+    pub const SHOT: Mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
     pub const LASER: Mask = Mask { doors: true, bridges: false, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
     pub const BRIDGE: Mask = Mask { doors: true, bridges: false, props: false, fizzlers: false, portals: true, grates: true, glass: true, skip_prop: None };
     pub const GEL: Mask = Mask { doors: true, bridges: false, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
@@ -1524,7 +1526,7 @@ impl Sim {
             self.events.push(SimEvent::Drop { id: self.props[h].id });
             return;
         }
-        let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask { fizzlers: false, ..Mask::SHOT }, 1);
+        let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask::SHOT, 1);
         match hit.map(|h| h.what) {
             Some(HitWhat::Prop(i)) if self.props[i].fizzle.is_none() => {
                 self.held = Some(i);

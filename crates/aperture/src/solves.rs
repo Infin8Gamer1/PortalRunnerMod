@@ -155,8 +155,14 @@ impl Play {
         let hw = self.c.body().half_width - 0.05;
         let col = Aabb::new(Vec3::new(x - hw, lo - 0.01, z - hw), Vec3::new(x + hw, hi + 0.01, z + hw));
         let mut tops: Vec<f32> = self.near(&col).map(|b| b.max.y).filter(|y| *y >= lo && *y <= hi).collect();
-        // Not goo.
+        // Not goo, nor an open floor portal (she'd fall in).
         tops.retain(|y| !self.sim.goo.iter().any(|g| g.max.y >= *y - 0.05 && geom_in(g, x, z)));
+        tops.retain(|y| {
+            !self.sim.portals.iter().flatten().any(|q| q.normal.y > 0.5 && (q.center.y - y).abs() < 0.3 && {
+                let l = q.to_local(Vec3::new(x, q.center.y, z));
+                (l.x / (q.half.x + 0.3)).powi(2) + (l.y / (q.half.y + 0.3)).powi(2) <= 1.0
+            })
+        });
         tops.sort_by(|a, b| a.total_cmp(b));
         tops.dedup_by(|a, b| (*a - *b).abs() < 0.01);
         tops.into_iter().filter(|y| self.fits(Vec3::new(x, *y, z))).collect()
@@ -399,6 +405,7 @@ impl Play {
         let q = self.sim.portals[color.other().index()].expect("no other portal");
         let end = self.time + 6.0;
         let mut entered = false;
+        let mut crossed = false;
         loop {
             entered |= self.sim.player_env == Some(color);
             let gone = |c: PortalColor, want: Option<Vec3>| want.is_some_and(|w| !self.sim.portals[c.index()].is_some_and(|x| x.center.distance(w) < 1.0));
@@ -406,19 +413,28 @@ impl Play {
                 return false;
             }
             let feet = self.c.feet;
-            // Past the far portal's mouth (in front of it).
-            let past = (feet - q.center).dot(q.normal);
-            if entered && past > out && Vec2::new(feet.x - q.center.x, feet.z - q.center.z).length() < out + 3.0 && self.sim.player_env.is_none() {
-                break;
+            let flat_q = Vec2::new(feet.x - q.center.x, feet.z - q.center.z).length();
+            if crossed && self.sim.player_env.is_none() {
+                // Out of a floor portal: once she's down beside it. Out of a wall (or
+                // ceiling) one: once she's clear of its mouth.
+                let done = if q.normal.y > 0.5 {
+                    self.c.state == State::Ground && flat_q > 1.3
+                } else {
+                    (feet - q.center).dot(q.normal) > out && flat_q < out + 3.0
+                };
+                if done {
+                    break;
+                }
             }
             assert!(self.time < end, "{}: didn't get through the {color:?} portal (at {feet})", self.name);
-            // Into this one while she's on its side; on out of the far one once through.
-            let near_side = feet.distance(p.center) < feet.distance(q.center);
-            let d = if near_side { p.center - feet } else { q.normal };
+            // Into this one till she's through it; then on out of the far one (off to the side
+            // of a floor portal, the way she was going).
+            let d = if !crossed { p.center - feet } else if q.normal.y > 0.5 { Vec3::ZERO } else { q.normal };
             if Vec2::new(d.x, d.z).length() > 1e-3 {
                 self.c.yaw = (-d.x).atan2(-d.z);
             }
             self.step(&Input { move_axis: Vec2::new(0.0, 0.6), ..Default::default() });
+            crossed |= self.sim.events.iter().any(|e| matches!(e, SimEvent::Teleported { entered: c, .. } if *c == color));
         }
         self.wait(0.3);
         true
@@ -509,7 +525,14 @@ impl Play {
         };
         self.wait_portal(color, at, 60.0);
         let q = self.sim.portals[color.index()].unwrap();
-        let front = q.center - Vec3::Y * 1.0 + q.normal * 2.5;
+        // Where she waits: 2.5 m out from it, or nearer where there's no floor that far (on a
+        // ledge in front of it), at the foot of it.
+        let foot = q.center.y - q.half.y;
+        let front = [2.5f32, 2.0, 1.6, 1.2]
+            .into_iter()
+            .map(|d| q.center + q.normal * d)
+            .find_map(|p| self.floors(p.x, p.z, foot - 0.6, foot + 0.5).into_iter().reduce(f32::max).map(|y| Vec3::new(p.x, y, p.z)))
+            .unwrap_or(q.center - Vec3::Y * 1.0 + q.normal * 2.5);
         for _ in 0..6 {
             self.go(front, 0.4);
             let end = self.time + 6.0;
@@ -528,16 +551,43 @@ impl Play {
     /// end of its path.
     pub fn ride(&mut self, train_name: &str) {
         let train = self.mover(train_name);
-        let io = self.sim.io.as_ref().unwrap();
-        let ride = io.ents.iter().find_map(|e| match e.kind {
-            crate::io::Kind::Trigger { b, .. } if e.outputs.iter().any(|o| o.target.eq_ignore_ascii_case(train_name) && o.input.eq_ignore_ascii_case("StartForward")) => Some(b),
-            _ => None,
-        }).unwrap_or_else(|| panic!("{}: nothing starts {train_name}", self.name));
-        let car = self.sim.movers[train].boxes().filter(|b| b.size().x > 2.5 && b.size().z > 2.5 && b.size().y < 0.3).map(|b| b.max.y).fold(f32::MIN, f32::max);
-        let c = ride.center();
-        self.go(Vec3::new(c.x, car, c.z), 0.3);
+        self.board(train, train_name);
         self.wait_for(60.0, &format!("{train_name} to the top"), |p| p.sim.movers[train].node + 1 == p.sim.movers[train].def.path.len() && p.sim.movers[train].goal.is_none());
         self.wait(2.0);
+    }
+
+    /// Into train `train`'s car, where the trigger that starts it is. A trigger that starts it
+    /// from outside the car (calling a car waiting up its shaft down to her) she walks through
+    /// first, and waits for the car.
+    fn board(&mut self, train: usize, train_name: &str) {
+        let io = self.sim.io.as_ref().unwrap();
+        let starters: Vec<Aabb> = io.ents.iter().filter_map(|e| match e.kind {
+            crate::io::Kind::Trigger { b, .. } if e.outputs.iter().any(|o| o.target.eq_ignore_ascii_case(train_name) && o.input.eq_ignore_ascii_case("StartForward")) => Some(b),
+            _ => None,
+        }).collect();
+        assert!(!starters.is_empty(), "{}: nothing starts {train_name}", self.name);
+        let car = |p: &Play| p.sim.movers[train].boxes().filter(|b| b.size().x > 2.5 && b.size().z > 2.5 && b.size().y < 0.3).reduce(|a, b| if a.max.y > b.max.y { a } else { b });
+        // The car, and the trigger in it (one it's level with: its floor at the trigger's foot).
+        let in_car = |p: &Play| {
+            let c = car(p)?;
+            let room = Aabb::new(c.min - Vec3::new(0.3, 0.5, 0.3), c.max + Vec3::new(0.3, 3.0, 0.3));
+            Some((c, starters.iter().copied().find(|b| b.overlaps(&room) && (c.max.y - b.min.y).abs() < 1.0)))
+        };
+        if let Some((c, None)) = in_car(self) {
+            // (Not the one in the car's shaft.)
+            let column = Aabb::new(Vec3::new(c.min.x, -1e4, c.min.z), Vec3::new(c.max.x, 1e4, c.max.z));
+            for b in starters.iter().copied().filter(|b| !b.overlaps(&column)) {
+                let c = b.center();
+                let floor = self.floors(c.x, c.z, b.min.y - 0.5, b.max.y).into_iter().reduce(f32::max).unwrap_or(b.min.y);
+                self.go(Vec3::new(c.x, floor, c.z), 0.4);
+            }
+        }
+        // (Not while it's on its way.)
+        self.wait_for(40.0, "the car to come", |p| p.sim.movers[train].goal.is_none() && in_car(p).is_some_and(|(_, r)| r.is_some()));
+        self.wait(1.5);
+        let (car, ride) = in_car(self).expect("no car");
+        let at = ride.map_or(car.center(), |b| b.center());
+        self.go(Vec3::new(at.x, car.max.y, at.z), 0.3);
     }
 
     /// Into the exit elevator (the train whose path ends changing the level), where its ride
@@ -550,13 +600,7 @@ impl Play {
             _ => None,
         }).unwrap_or_else(|| panic!("{}: no exit elevator", self.name));
         let train_name = io.ents.iter().find(|e| matches!(e.kind, crate::io::Kind::Mover { index, .. } if index == train)).map(|e| e.name.clone()).unwrap_or_default();
-        let ride = io.ents.iter().find_map(|e| match e.kind {
-            crate::io::Kind::Trigger { b, .. } if e.outputs.iter().any(|o| o.target == train_name && o.input.eq_ignore_ascii_case("StartForward")) => Some(b),
-            _ => None,
-        }).unwrap_or_else(|| panic!("{}: nothing starts the exit elevator", self.name));
-        let car = self.sim.movers[train].boxes().filter(|b| b.size().x > 2.5 && b.size().z > 2.5 && b.size().y < 0.3).map(|b| b.max.y).fold(f32::MIN, f32::max);
-        let c = ride.center();
-        self.go(Vec3::new(c.x, car, c.z), 0.3);
+        self.board(train, &train_name);
         self.wait_for(60.0, "the exit elevator to finish the map", |p| p.sim.transition.is_some());
         self.assert_leads_to(next);
     }
@@ -816,9 +860,11 @@ fn solve_testchmb_a_03() {
     // sends the pellet up out of the orange in the pit's floor into the ceiling's catcher, and
     // the platform starts along its rail over the pit.
     p.go(Vec3::new(3.0, 30.89, -3.0), 0.5);
+    p.assert_alive("going down into the pit");
     p.shoot(PortalColor::Blue, Vec3::new(-8.128, 35.63, -1.63));
     let train = p.mover("func_tracktrain_b00");
     p.wait_for(20.0, "the platform to set off", |p| p.sim.movers[train].goal.is_some());
+    p.assert_alive("waiting for the pellet");
     // Onto the platform as Portal has it: blue on the ceiling over where it stops at the west
     // end, then down through the orange in the pit's floor while it's stopped there.
     let over = Vec3::new(-5.33, 40.64, 9.75);
@@ -874,4 +920,30 @@ fn solve_testchmb_a_04() {
     p.wait_for(30.0, "the cart at the exit", |p| p.sim.movers[cart].node == 1 && p.sim.movers[cart].goal.is_none());
     p.ride_exit("testchmb_a_05");
     p.assert_alive("in Chamber 08");
+}
+
+/// Chamber 09 (testchmb_a_05): the cube can't go through the grill. With the cube, blue low on
+/// the east wall and up through it to the fixed orange's alcove; from there blue down on the
+/// far room's floor (shots go through grills), back into orange with the cube and out past the
+/// grill, the cube on the button, and out of the doors it opens.
+#[test]
+fn solve_testchmb_a_05() {
+    let Some(mut p) = Play::load("testchmb_a_05") else { return };
+    let orange = Vec3::new(4.86, 4.55, 3.25);
+    p.wait(3.0);
+    p.pick_up(Vec3::new(-0.81, 0.45, 4.88));
+    p.wait_portal(PortalColor::Orange, orange, 20.0);
+    p.go(Vec3::new(2.0, 0.0, -3.0), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(7.3, 1.42, -3.0));
+    let low = p.sim.portals[0].unwrap().center;
+    p.enter(PortalColor::Blue, low, Some(orange));
+    eprintln!("in orange's alcove at {} holding {:?}", p.c.feet, p.sim.held);
+    p.shoot(PortalColor::Blue, Vec3::new(-10.0, 0.2, -3.0));
+    let far = p.sim.portals[0].unwrap().center;
+    eprintln!("blue at {far}");
+    p.enter(PortalColor::Orange, orange, Some(far));
+    eprintln!("past the grill at {} holding {:?}", p.c.feet, p.sim.held);
+    p.cube_on_button(Vec3::new(-7.39, 0.2, -1.52));
+    p.ride_exit("testchmb_a_06");
+    p.assert_alive("in Chamber 09");
 }
