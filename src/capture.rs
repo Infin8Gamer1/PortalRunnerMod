@@ -660,6 +660,54 @@ fn script(name: &str) -> Vec<Act> {
         }
         // Chamber 16's turret 3 (testchmb_a_11, #21): orange on the floor near her, blue opened
         // on the floor under the turret: it drops through and topples out beside orange.
+        // Chamber 16's training turret (testchmb_a_11, #63/#65/#66): in front of it, searching
+        // (laser sweeping), spotting her (wings out), firing, and its laser following her as she
+        // steps aside.
+        "turretfire" => {
+            let map = aperture::levels::all().len() + 11;
+            vec![
+                Map(map),
+                Wait(200),
+                Teleport(Vec3::new(17.07, 0.05, -5.5)),
+                Launch(Vec3::ZERO),
+                Look(0.0, -6.0),
+                Wait(3),
+                Shot("turretfire_a_searching"),
+                Wait(36),
+                Shot("turretfire_b_deploying"),
+                Wait(20),
+                Shot("turretfire_c_firing"),
+                Teleport(Vec3::new(18.6, 0.05, -6.2)),
+                Launch(Vec3::ZERO),
+                Look(18.0, -6.0),
+                Wait(14),
+                Shot("turretfire_d_tracking"),
+            ]
+        }
+        // Picking Chamber 16's training turret up from behind (#62), carrying it, setting it
+        // down.
+        "turretcarry" => {
+            let map = aperture::levels::all().len() + 11;
+            vec![
+                Map(map),
+                Wait(200),
+                Teleport(Vec3::new(17.07, 0.05, -12.0)),
+                Launch(Vec3::ZERO),
+                Look(180.0, -30.0),
+                Wait(20),
+                Shot("turretcarry_a_behind"),
+                Use,
+                Wait(20),
+                Look(90.0, -15.0),
+                Wait(30),
+                Shot("turretcarry_b_carried"),
+                Use,
+                Wait(30),
+                Look(90.0, -25.0),
+                Wait(5),
+                Shot("turretcarry_c_put_down"),
+            ]
+        }
         "turret16" => {
             let map = aperture::levels::all().len() + 11;
             let mut v = vec![Map(map), Wait(200), TurretsOff, Teleport(Vec3::new(-2.4, 0.1, -8.0)), Launch(Vec3::ZERO), Look(0.0, -18.0), Wait(30)];

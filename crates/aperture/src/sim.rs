@@ -124,6 +124,14 @@ pub const TURRET_HALF: f32 = 0.3;
 pub const TURRET_HEIGHT: f32 = 1.6;
 /// Its eyes, above its feet.
 const TURRET_EYE: f32 = 1.05;
+/// How fast a turret's guns turn onto her (radians a second), and how far they sweep either
+/// way while it searches (radians), how fast (radians a second of the sweep's phase).
+const TURRET_TURN: f32 = 3.0;
+const TURRET_SWEEP: f32 = 0.45;
+const TURRET_SWEEP_RATE: f32 = 0.9;
+/// Carried, a turret's held this far in front of her, this high off the floor.
+const TURRET_CARRY: f32 = 1.1;
+const TURRET_CARRY_LIFT: f32 = 0.3;
 /// Faith's melee: turrets are her targets with handles from here up.
 const TURRET_TARGET_ID: u32 = 1_000_000;
 
@@ -153,6 +161,11 @@ pub struct Turret {
     pub fallen: f32,
     /// Firing: seconds to the next shot.
     pub reload: f32,
+    /// Where its guns (and laser sight) point: sweeping about while it searches, onto her
+    /// while it fires.
+    pub aim: Vec3,
+    /// Carried by her (it doesn't shoot while it is).
+    pub held: bool,
 }
 
 impl Turret {
@@ -483,6 +496,9 @@ pub enum SimEvent {
     /// A turret's shot: from its gun, to where it went (hit: her).
     TurretShot { from: Vec3, to: Vec3, hit: bool },
     TurretTipped { at: Vec3 },
+    /// She's picked a turret up, or put it down.
+    TurretPickedUp { at: Vec3 },
+    TurretPutDown { at: Vec3 },
     TurretRetired { at: Vec3 },
     PelletLaunched { at: Vec3 },
     /// Hit `at`, on the face with this outward normal.
@@ -626,6 +642,8 @@ pub struct Sim {
     pub io: Option<crate::io::Io>,
     /// The prop Faith is carrying (index into `props`).
     pub held: Option<usize>,
+    /// The turret she's carrying.
+    pub held_turret: Option<usize>,
     /// Which portal the held cube is through, from Faith: None, it's on her side; Some(c),
     /// it's on the far side of portal `c` (in through `c`, out of the other). Kept up to date
     /// as she or the cube go through portals, so the cube is always held where she's looking
@@ -699,6 +717,7 @@ impl Sim {
             io_signals: vec![false; level.signal_count()],
             io: level.io.clone(),
             held: None,
+            held_turret: None,
             held_through: None,
             held_far: 0.0,
             portals_checked_at: 0,
@@ -793,6 +812,8 @@ impl Sim {
                     fall_dir: Vec3::ZERO,
                     fallen: 0.0,
                     reload: 0.0,
+                    aim: Vec3::new(-yaw.sin(), 0.0, -yaw.cos()),
+                    held: false,
                 }),
                 Item::PelletLauncher { at, dir, inputs, life, launch } => {
                     if launch.body {
@@ -930,7 +951,7 @@ impl Sim {
     /// Boxes that move: closed doors, bridges, cubes (but not `skip`).
     fn moving_boxes(&self, skip: Option<usize>, include_held: bool, env: Option<PortalColor>) -> Vec<Aabb> {
         let mut v: Vec<Aabb> = self.doors.iter().filter(|d| d.solid()).map(|d| d.b).collect();
-        v.extend(self.turrets.iter().map(|t| t.aabb()));
+        v.extend(self.turrets.iter().filter(|t| !t.held).map(|t| t.aabb()));
         // (Going through a portal, the hole goes through what moves behind it too: a mover it's
         // on, or one just under the surface it's on.)
         let hole = env.filter(|_| self.linked()).and_then(|c| self.portals[c.index()]).map(|p| (p, collide::tunnel(&p)));
@@ -1724,6 +1745,36 @@ impl Sim {
             self.events.push(SimEvent::Drop { id: self.props[h].id });
             return;
         }
+        // A turret she's carrying: put down, standing, on the floor under it.
+        if let Some(i) = self.held_turret.take() {
+            let t = self.turrets[i];
+            let floor = self.raycast(t.at + Vec3::Y * 0.5, Vec3::NEG_Y, 30.0, Mask::SOLID).map_or(t.at.y, |h| h.point.y);
+            let t = &mut self.turrets[i];
+            t.held = false;
+            t.at.y = floor;
+            t.t = 0.0;
+            self.events.push(SimEvent::TurretPutDown { at: t.at });
+            return;
+        }
+        // A standing turret in reach: picked up (before what's behind it).
+        let turret = (0..self.turrets.len())
+            .filter(|&i| self.turrets[i].upright())
+            .filter_map(|i| geom::ray_aabb(aim.eye, aim.dir, &self.turrets[i].aabb()).map(|(t, _)| (t, i)))
+            .filter(|(t, _)| *t < USE_REACH + TURRET_HALF)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((d, i)) = turret {
+            let to = self.turrets[i].aabb().center() - aim.eye;
+            let walls = Mask { props: false, fizzlers: false, ..Mask::SOLID };
+            if self.raycast(aim.eye, aim.dir, d, walls).is_none() && to.length() > 0.0 {
+                let t = &mut self.turrets[i];
+                t.held = true;
+                t.state = TurretState::Searching;
+                t.sight = 0.0;
+                self.held_turret = Some(i);
+                self.events.push(SimEvent::TurretPickedUp { at: t.at });
+                return;
+            }
+        }
         // (Her reach stops at grating and clip, as her hand would: a switch's own brush can be
         // clip.)
         let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask { grates: true, ..Mask::SHOT }, 1);
@@ -1787,6 +1838,11 @@ impl Sim {
 
     /// Let go of what she's carrying with a push along `dir`.
     pub fn throw(&mut self, dir: Vec3, speed: f32) {
+        // A turret she's carrying, pushed off: over it goes.
+        if let Some(i) = self.held_turret {
+            self.tip_turret(i, dir * speed);
+            return;
+        }
         if let Some(h) = self.held.take() {
             self.props[h].vel += dir * speed;
             self.events.push(SimEvent::Drop { id: self.props[h].id });
@@ -1863,25 +1919,81 @@ impl Sim {
         self.signals = sig;
     }
 
-    /// Knock a turret over, falling along `push`.
     /// Whether a standing turret `i` would see someone whose chest is at `chest`.
     pub fn turret_sees(&self, i: usize, chest: Vec3) -> bool {
-        let t = &self.turrets[i];
-        if !matches!(t.state, TurretState::Searching | TurretState::Firing) {
-            return false;
-        }
-        let eye = t.eye();
-        let to = chest - eye;
-        let dist = to.length();
-        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
-        dist < TURRET_RANGE && to.normalize_or_zero().dot(t.facing()) > TURRET_CONE && self.raycast(eye, to / dist, dist, mask).is_none_or(|h| h.t > dist - 0.4)
+        self.turret_target(i, chest).is_some()
     }
 
+    /// Where standing turret `i` sees her chest (at `chest`): straight, or through a portal
+    /// (her chest as it looks through the near one). `None` when it can't: out of range, out
+    /// of its view, something in the way (a cube she's holding is a shield).
+    pub fn turret_target(&self, i: usize, chest: Vec3) -> Option<Vec3> {
+        let t = &self.turrets[i];
+        if !matches!(t.state, TurretState::Searching | TurretState::Firing) || t.held {
+            return None;
+        }
+        let eye = t.eye();
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
+        let in_view = |p: Vec3| {
+            let to = p - eye;
+            to.length() < TURRET_RANGE && to.normalize_or_zero().dot(t.facing()) > TURRET_CONE
+        };
+        let clear = |a: Vec3, b: Vec3| {
+            let to = b - a;
+            let dist = to.length();
+            dist < 1e-3 || self.raycast(a, to / dist, dist, mask).is_none_or(|h| h.t > dist - 0.4)
+        };
+        // (A cube she's holding is in the way across her front, whatever height the line's at.)
+        let shielded = |a: Vec3, b: Vec3| {
+            self.held.is_some_and(|h| {
+                let c = self.props[h].pos;
+                let (a2, b2, c2) = (Vec2::new(a.x, a.z), Vec2::new(b.x, b.z), Vec2::new(c.x, c.z));
+                let ab = b2 - a2;
+                let k = ((c2 - a2).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                k > 0.05 && k < 0.98 && (a2 + ab * k).distance(c2) < CUBE_HALF + 0.15 && c.y > chest.y - 1.4 && c.y < chest.y + 1.0
+            })
+        };
+        if in_view(chest) && clear(eye, chest) && !shielded(eye, chest) {
+            return Some(chest);
+        }
+        // Through a portal: her chest seen through the near one, the way there clear to it and
+        // on from the far one to her.
+        if !self.linked() {
+            return None;
+        }
+        for c in PortalColor::BOTH {
+            let (near, far) = (self.portals[c.index()]?, self.portals[c.other().index()]?);
+            let seen = Link::new(far, near).point(chest);
+            if near.signed_distance(eye) <= 0.0 || !in_view(seen) {
+                continue;
+            }
+            // Where the line to it crosses the near portal: in its oval.
+            let (da, db) = (near.signed_distance(eye), near.signed_distance(seen));
+            if db >= 0.0 {
+                continue;
+            }
+            let cross = eye + (seen - eye) * (da / (da - db));
+            if !near.in_oval(cross) {
+                continue;
+            }
+            let out = Link::new(near, far).point(cross);
+            if clear(eye, cross - (seen - eye).normalize() * 0.05) && clear(out + far.normal * 0.05, chest) && !shielded(out, chest) {
+                return Some(seen);
+            }
+        }
+        None
+    }
+
+    /// Knock a turret over, falling along `push`.
     pub fn tip_turret(&mut self, i: usize, push: Vec3) {
+        if self.held_turret == Some(i) {
+            self.held_turret = None;
+        }
         let t = &mut self.turrets[i];
         if !t.upright() {
             return;
         }
+        t.held = false;
         let d = Vec3::new(push.x, 0.0, push.z);
         let d = if d.length_squared() > 1e-4 { d.normalize() } else { -t.facing() };
         // It lies along X or Z (its box is axis-aligned).
@@ -1900,6 +2012,9 @@ impl Sim {
         if self.linked() {
             for i in 0..self.turrets.len() {
                 let t = self.turrets[i];
+                if t.held {
+                    continue;
+                }
                 let Some(c) = PortalColor::BOTH.into_iter().find(|c| self.portals[c.index()].is_some_and(|q| q.normal.y > 0.7 && q.signed_distance(t.at).abs() < 0.3 && q.in_oval(t.at))) else { continue };
                 let out = self.portals[c.other().index()].unwrap();
                 // (Out of a floor portal, it topples off beside it, not back onto it.)
@@ -1918,17 +2033,39 @@ impl Sim {
         let me = ctrl.body().aabb(ctrl.feet);
         let chest = ctrl.feet + Vec3::Y * 1.2;
         let run = Vec3::new(ctrl.vel.x, 0.0, ctrl.vel.z);
-        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
         let mut shot = 0.0;
+        // The one she's carrying: in front of her, facing where she faces, a little off the
+        // floor; it doesn't shoot.
+        if let Some(i) = self.held_turret {
+            let ahead = Vec3::new(-ctrl.yaw.sin(), 0.0, -ctrl.yaw.cos());
+            let t = &mut self.turrets[i];
+            t.at = ctrl.feet + ahead * TURRET_CARRY + Vec3::Y * TURRET_CARRY_LIFT;
+            t.yaw = ctrl.yaw;
+            t.aim = ahead;
+            t.sight = 0.0;
+            if t.state == TurretState::Firing {
+                t.state = TurretState::Searching;
+            }
+        }
         for i in 0..self.turrets.len() {
             let tu = self.turrets[i];
-            // Knocked over: a cube thrown at it, Faith running into it.
+            if tu.held {
+                continue;
+            }
+            // Knocked over: a cube thrown at it, or dropped on it; Faith running into it.
             if tu.upright() {
                 let b = tu.aabb();
                 // (A cube coming at it fast, about to hit: cubes stop dead on contact.)
                 let near = Aabb::new(b.min - Vec3::splat(0.25), b.max + Vec3::splat(0.25));
                 let bumped = self.props.iter().find(|p| p.alive && p.vel.length() > 1.5 && p.vel.dot(b.center() - p.pos) > 0.0 && p.aabb().overlaps(&near)).map(|p| p.vel);
-                let push = bumped.or_else(|| (run.length() > 3.0 && me.overlaps(&Aabb::new(b.min - Vec3::splat(0.08), b.max + Vec3::splat(0.08)))).then_some(run));
+                // (Or come down on top of it: Portal's turrets don't hold a cube up.)
+                let on_top = || {
+                    self.props.iter().enumerate().find(|(k, p)| {
+                        let pb = p.aabb();
+                        p.alive && Some(*k) != self.held && p.vel.y <= 0.5 && pb.min.y > b.max.y - 0.15 && pb.min.y < b.max.y + 0.2 && pb.min.x < b.max.x && pb.max.x > b.min.x && pb.min.z < b.max.z && pb.max.z > b.min.z
+                    }).map(|(_, p)| Vec3::new(b.center().x - p.pos.x, 0.0, b.center().z - p.pos.z) + tu.facing() * 0.01)
+                };
+                let push = bumped.or_else(on_top).or_else(|| (run.length() > 3.0 && me.overlaps(&Aabb::new(b.min - Vec3::splat(0.08), b.max + Vec3::splat(0.08)))).then_some(run));
                 if let Some(push) = push {
                     self.tip_turret(i, push);
                     continue;
@@ -1939,12 +2076,21 @@ impl Sim {
             match t.state {
                 TurretState::Searching | TurretState::Firing => {
                     let eye = t.eye();
-                    let to = chest - eye;
-                    let dist = to.length();
-                    let sees = dist < TURRET_RANGE && to.normalize_or_zero().dot(t.facing()) > TURRET_CONE;
-                    let tu = *t;
-                    let clear = sees && self.raycast(eye, to / dist, dist, mask).is_none_or(|h| h.t > dist - 0.4);
+                    let target = self.turret_target(i, chest);
+                    let clear = target.is_some();
+                    let tu = self.turrets[i];
                     let t = &mut self.turrets[i];
+                    // Its guns: onto her (as fast as they turn) when it's firing and sees her;
+                    // else sweeping about its front.
+                    let want = match (t.state, target) {
+                        (TurretState::Firing, Some(at)) => (at - eye).normalize_or(t.facing()),
+                        _ => Quat::from_rotation_y((t.t * TURRET_SWEEP_RATE).sin() * if t.state == TurretState::Searching { TURRET_SWEEP } else { 0.0 }) * t.facing(),
+                    };
+                    let angle = t.aim.angle_between(want);
+                    if angle > 1e-4 {
+                        let axis = t.aim.cross(want).normalize_or(Vec3::Y);
+                        t.aim = (Quat::from_axis_angle(axis, (TURRET_TURN * dt).min(angle)) * t.aim).normalize();
+                    }
                     t.sight = if clear { (t.sight + dt).min(TURRET_SPOT + 1.0) } else { (t.sight - dt * 0.5).max(0.0) };
                     match (t.state, t.sight >= TURRET_SPOT, clear) {
                         (TurretState::Searching, true, _) => {
@@ -1967,7 +2113,7 @@ impl Sim {
                         }
                         if t.reload <= 0.0 {
                             t.reload = 0.1;
-                            let to = if clear { chest } else { eye + t.facing() * TURRET_RANGE };
+                            let to = target.unwrap_or(eye + t.aim * TURRET_RANGE);
                             self.events.push(SimEvent::TurretShot { from: eye, to, hit: clear });
                         }
                     }

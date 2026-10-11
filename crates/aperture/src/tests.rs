@@ -1935,3 +1935,77 @@ fn portals_droppers_hold_the_next_cube() {
     assert!(then.len() == 1 && then[0] != second, "lost out of the world, the waiting cube didn't drop: {then:?} (was {second})");
     assert!(sim.movers[m].present && waiting(&sim, m) == 1, "no cube waiting after the loss");
 }
+
+/// A cube she holds between her and a turret is a shield (#69): it doesn't hurt her.
+#[test]
+fn a_held_cube_shields_her_from_a_turret() {
+    let mut l = flat();
+    l.turret([0.0, 0.0, -7.0], 180.0);
+    l.cube(CubeKind::Storage, [0.0, 0.45, -1.4]);
+    l.spawn([0.0, 0.0, 0.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    c.pitch = -0.3;
+    sim.use_key(crate::sim::Aim::of(&c));
+    assert_eq!(sim.held, Some(0));
+    c.pitch = 0.0;
+    let ev = run(&mut sim, &mut c, 4.0, |_, _| Input::default());
+    assert!(!ev.contains(&SimEvent::PlayerDied) && sim.hurt == 0.0, "the cube didn't shield her (hurt {})", sim.hurt);
+}
+
+/// A cube dropped on a turret knocks it over (#70).
+#[test]
+fn a_cube_dropped_on_a_turret_knocks_it_over() {
+    let mut l = flat();
+    l.turret([0.0, 0.0, -6.0], 0.0);
+    l.cube(CubeKind::Storage, [0.0, 2.6, -6.0]);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 2.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::TurretTipped { .. })), "still standing: {:?} (cube at {})", sim.turrets[0].state, sim.props[0].pos);
+}
+
+/// She can pick a turret up (E), carry it, and put it down standing (#62); while she has it,
+/// it doesn't shoot.
+#[test]
+fn a_turret_can_be_picked_up_and_put_down() {
+    let mut l = flat();
+    l.turret([0.0, 0.0, -1.6], 0.0);
+    let (mut sim, mut c) = start(l);
+    c.pitch = -0.4;
+    sim.use_key(crate::sim::Aim::of(&c));
+    assert_eq!(sim.held_turret, Some(0), "not picked up");
+    c.pitch = 0.0;
+    c.yaw = std::f32::consts::PI;
+    run(&mut sim, &mut c, 1.5, |_, _| forward());
+    let t = sim.turrets[0];
+    assert!(t.held && t.at.z > 1.0, "it didn't come with her: {}", t.at);
+    sim.use_key(crate::sim::Aim::of(&c));
+    run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+    let t = sim.turrets[0];
+    assert!(sim.held_turret.is_none() && !t.held && t.upright() && t.at.y.abs() < 0.05, "not put down standing: {:?}", t);
+}
+
+/// A turret sees her through a portal and shoots her (#73); its guns turn onto her (#66).
+#[test]
+fn a_turret_shoots_her_through_a_portal() {
+    let mut l = flat();
+    l.turret([0.0, 0.0, -10.0], 180.0);
+    // A wall across its view (portal A on its near face), another she stands in front of
+    // (portal B), out of its sight.
+    l.solid(Mat::White, [-3.0, 0.0, -4.3], [20.0, 3.0, -4.0]);
+    l.solid(Mat::White, [6.0, 0.0, -2.0], [6.3, 3.0, 2.0]);
+    l.spawn([9.0, 0.0, 0.0], 90.0);
+    let (mut sim, mut c) = start(l);
+    let chest = c.feet + Vec3::Y * 1.2;
+    assert!(!sim.turret_sees(0, chest), "it sees her without the portals");
+    sim.set_portal(PortalColor::Blue, Some(Portal::sized(Vec3::new(0.0, 1.4, -4.3), Vec3::NEG_Z, Vec3::Y, sim.portal_half())));
+    sim.set_portal(PortalColor::Orange, Some(Portal::sized(Vec3::new(6.3, 1.4, 0.0), Vec3::X, Vec3::Y, sim.portal_half())));
+    assert!(sim.turret_sees(0, chest), "it doesn't see her through the portals");
+    let mut aimed = false;
+    let ev = run(&mut sim, &mut c, 3.0, |s, _| {
+        let t = s.turrets[0];
+        aimed |= t.state == crate::sim::TurretState::Firing && t.aim.dot((Vec3::new(0.0, 1.2, -1.6) - t.eye()).normalize()) > 0.99;
+        Input::default()
+    });
+    assert!(ev.contains(&SimEvent::PlayerDied), "it didn't shoot her through the portals");
+    assert!(aimed, "its guns didn't turn onto her");
+}

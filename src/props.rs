@@ -67,6 +67,8 @@ pub struct PropModels {
     /// A pellet launcher's mouth: open, then close.
     launcher_fire: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; 2])>,
     catcher_close: Option<(Handle<AnimationGraph>, AnimationNodeIndex)>,
+    /// A sentry turret's: deploy, fire, retract.
+    turret_clips: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; 3])>,
 }
 
 impl PropModels {
@@ -148,7 +150,13 @@ pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<Asse
         let (graph, node) = AnimationGraph::from_clip(assets.load(GltfAssetLabel::Animation(1).from_asset(path)));
         (graphs.add(graph), node)
     });
-    commands.insert_resource(PropModels { scenes, plate_launch, launcher_fire, catcher_close });
+    // turret.glb writes idle (its rest pose, no keys), deploy, fire, retract.
+    let turret_clips = extracted.model("turret").map(|path| {
+        let clips: [Handle<AnimationClip>; 3] = std::array::from_fn(|i| assets.load(GltfAssetLabel::Animation(i + 1).from_asset(path.clone())));
+        let (graph, nodes) = AnimationGraph::from_clips(clips);
+        (graphs.add(graph), [nodes[0], nodes[1], nodes[2]])
+    });
+    commands.insert_resource(PropModels { scenes, plate_launch, launcher_fire, catcher_close, turret_clips });
 }
 
 fn spawn_model(commands: &mut Commands, scene: Handle<WorldAsset>, tf: Transform, kind: PropKind) -> Entity {
@@ -544,6 +552,10 @@ pub fn tag_launcher_players(
         for _ in 0..8 {
             let Ok(p) = parents.get(cur) else { break };
             cur = p.parent();
+            if let (Ok(PropKind::Turret(i)), Some((graph, _))) = (roots.get(cur), &models.turret_clips) {
+                commands.entity(e).insert((AnimationGraphHandle(graph.clone()), TurretPlayer { turret: *i, fired: false, lost: 0.0 }));
+                break;
+            }
             match (roots.get(cur), &models.launcher_fire, &models.catcher_close) {
                 (Ok(PropKind::PelletLauncher(i)), Some((graph, _)), _) => {
                     commands.entity(e).insert((AnimationGraphHandle(graph.clone()), LauncherPlayer(*i)));
@@ -555,6 +567,70 @@ pub fn tag_launcher_players(
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// A sentry turret's animation player: which turret, whether it's been firing (it folds its
+/// wings away when it stops), and how long ago it stopped (seconds, on the simulation's clock).
+#[derive(Component)]
+pub struct TurretPlayer {
+    turret: usize,
+    fired: bool,
+    lost: f32,
+}
+
+/// Pose each turret from what it's doing: shut while it searches (or she carries it); wings
+/// out and guns firing once it's spotted her, or as it falls flailing; folding away when it's
+/// lost her, and as it dies. The simulation's clock drives it.
+pub fn animate_turrets(
+    game: Res<Game>,
+    models: Res<PropModels>,
+    clips: Res<Assets<AnimationClip>>,
+    graphs: Res<Assets<AnimationGraph>>,
+    mut players: Query<(&mut TurretPlayer, &mut AnimationPlayer)>,
+    mut clock: Local<Option<f32>>,
+) {
+    use aperture::sim::TurretState;
+    let Some((graph, nodes)) = &models.turret_clips else { return };
+    let Some(graph) = graphs.get(graph) else { return };
+    let len = |i: usize| {
+        graph.get(nodes[i]).and_then(|n| match &n.node_type {
+            AnimationNodeType::Clip(h) => clips.get(h).map(|c| c.duration().max(1e-3)),
+            _ => None,
+        })
+    };
+    let (Some(deploy), Some(fire), Some(retract)) = (len(0), len(1), len(2)) else { return };
+    let dt = clock.map_or(0.0, |c| (game.sim.time - c).max(0.0));
+    *clock = Some(game.sim.time);
+    for (mut tp, mut player) in &mut players {
+        let Some(t) = game.sim.turrets.get(tp.turret) else { continue };
+        // (Which clip, and how far into it.)
+        let firing = |since: f32| if since < deploy { (0, since) } else { (1, (since - deploy) % fire) };
+        let (clip, at) = match t.state {
+            TurretState::Firing if !t.held => {
+                tp.fired = true;
+                tp.lost = 0.0;
+                firing(t.t)
+            }
+            TurretState::Tipped => firing(t.t),
+            TurretState::Retired => (2, t.t.min(retract)),
+            _ if tp.fired && !t.held => {
+                tp.lost += dt;
+                if tp.lost >= retract {
+                    tp.fired = false;
+                }
+                (2, tp.lost.min(retract))
+            }
+            _ => (2, retract),
+        };
+        let node = nodes[clip];
+        if !player.is_playing_animation(node) {
+            player.stop_all();
+            player.start(node).pause();
+        }
+        if let Some(active) = player.animation_mut(node) {
+            active.set_seek_time(at);
         }
     }
 }

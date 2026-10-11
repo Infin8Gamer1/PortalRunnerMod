@@ -26,6 +26,8 @@ pub struct PortalAudio {
     recent: std::collections::HashMap<AssetId<AudioSource>, f32>,
     /// GLaDOS's last line played: (the level load it was in, its count).
     voice: (u64, u32),
+    /// Turret shots heard (every other one plays).
+    shots: u64,
 }
 
 /// The same sound doesn't start again within this long (s).
@@ -173,9 +175,18 @@ pub fn play(
                 one_shot(&mut commands, pick(&ex, "turret_active_", n), at_volume(at, 0.9), 1.0);
             }
             SimEvent::TurretSearching { at } => one_shot(&mut commands, pick(&ex, "turret_search_", n), at_volume(at, 0.9), 1.0),
-            SimEvent::TurretShot { from, .. } if n % 2 == 0 => one_shot(&mut commands, pick(&ex, "turret_shoot_", n), at_volume(from, 0.35), 1.0),
-            SimEvent::TurretShot { .. } => {}
+            // (Every other shot, counted by shots: the frame count went in step with them and
+            // could leave every shot on an odd frame, silent.)
+            SimEvent::TurretShot { from, .. } => {
+                st.shots += 1;
+                if st.shots % 2 == 0 {
+                    one_shot(&mut commands, pick(&ex, "turret_shoot_", st.shots / 2), at_volume(from, 0.35), 1.0);
+                }
+            }
             SimEvent::TurretTipped { at } => one_shot(&mut commands, pick(&ex, "turret_tipped_", n), at_volume(at, 0.9), 1.0),
+            // Picked up, it protests; put down, it looks about again.
+            SimEvent::TurretPickedUp { at } => one_shot(&mut commands, pick(&ex, "turret_pickup_", n), at_volume(at, 0.9), 1.0),
+            SimEvent::TurretPutDown { at } => one_shot(&mut commands, pick(&ex, "turret_autosearch_", n), at_volume(at, 0.9), 1.0),
             SimEvent::TurretRetired { at } => {
                 one_shot(&mut commands, pick(&ex, "turret_retire_", n), at_volume(at, 0.9), 1.0);
                 one_shot(&mut commands, ex.sound("turret_die"), at_volume(at, 0.5), 1.0);

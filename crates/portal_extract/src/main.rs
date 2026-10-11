@@ -401,8 +401,9 @@ const MAPS: &[&str] = &[
 const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
     // The paddle snapping up to throw, holding, then settling back into its pit.
     ("faith_plate", &[("@angled", "angled"), ("@straightup", "straightup")]),
-    // (Its bind pose has it hanging upside down: its idle stands it up.)
-    ("turret", &[("@idle", "idle")]),
+    // (Its bind pose has it hanging upside down: its idle stands it up.) Its wings open as it
+    // deploys, its guns fire, they fold away as it retracts.
+    ("turret", &[("@idle", "idle"), ("@deploy", "deploy"), ("@fire", "fire"), ("@retract", "retract")]),
     // Rest pose is `@idle_closed` (see `convert_model`): the bind pose isn't the closed mouth.
     ("pellet_launcher", &[("@idle_closed", "idle_closed"), ("@open", "open"), ("@close", "close"), ("@idle_open", "idle_open")]),
     // Open at rest; it closes on the pellet it's caught.

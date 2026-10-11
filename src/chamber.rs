@@ -777,9 +777,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             commands.entity(e).insert(Vis::Mover(i));
         }
     }
-    // Turrets' laser sights.
+    // Turrets' laser sights (glowing: the plain laser's unlit red draws dark under the
+    // ray-traced lighting).
     for i in 0..sim.turrets.len() {
-        let e = geom(commands, m.beam.clone(), m.laser.clone(), Transform::default());
+        let e = geom(commands, m.beam.clone(), m.sight.clone(), Transform::default());
         commands.entity(e).insert((Vis::TurretSight(i), NotShadowCaster));
     }
     // Pellet catchers' lenses.
@@ -937,10 +938,11 @@ pub fn update(
             Vis::TurretSight(i) => {
                 let t = &sim.turrets[i];
                 if t.upright() {
-                    let (eye, dir) = (t.eye(), t.facing());
+                    // (Along its guns' aim: sweeping while it searches, onto her as it fires.)
+                    let (eye, dir) = (t.eye(), t.aim.normalize_or(t.facing()));
                     let mask = aperture::Mask { portals: false, ..aperture::Mask::LASER };
                     let len = sim.raycast(eye, dir, 18.0, mask).map_or(18.0, |h| h.t);
-                    *tf = Transform::from_translation(eye + dir * len * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Y, dir)).with_scale(Vec3::new(0.2, len, 0.2));
+                    *tf = Transform::from_translation(eye + dir * len * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Y, dir)).with_scale(Vec3::new(0.25, len, 0.25));
                     *visible = Visibility::Inherited;
                 } else {
                     *visible = Visibility::Hidden;

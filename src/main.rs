@@ -129,6 +129,7 @@ fn main() {
             props::tag_launcher_players,
             props::animate_launchers,
             props::animate_catchers,
+            props::animate_turrets,
             chamber::scorches,
         )
             .chain(),
@@ -624,7 +625,7 @@ fn play(
         }
         g.look.apply(&mut g.ctrl, dt);
         let aim = Aim::of(&g.ctrl);
-        if g.sim.held.is_some() && (fire_blue || fire_orange) {
+        if (g.sim.held.is_some() || g.sim.held_turret.is_some()) && (fire_blue || fire_orange) {
             // Holding something, the trigger lets it go with a push.
             g.sim.throw(aim.dir, 4.0);
         } else if fire_blue {
