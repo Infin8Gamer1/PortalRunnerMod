@@ -157,7 +157,7 @@ fn source_rotation(a: Vec3) -> Quat {
 pub struct MapMats(HashMap<String, Handle<StandardMaterial>>);
 
 /// Materials that light the chambers, as the chambers' ceiling lamps do (ray tracing gives
-/// them the lamps' extra boost).
+/// them the lamps' extra boost): Portal's light panels.
 #[derive(Resource, Default)]
 pub struct Lamps(pub HashSet<AssetId<StandardMaterial>>);
 
@@ -292,7 +292,9 @@ fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Im
         ..default()
     };
     let h = materials.add(mat);
-    if glows {
+    // Only Portal's light textures light its rooms (they're what its lights.rad lists); a sign,
+    // a hazard stripe, a wall's glowing strip shows but lights nothing much.
+    if glows && name.starts_with("lights/") {
         lamps.0.insert(h.id());
     }
     h
