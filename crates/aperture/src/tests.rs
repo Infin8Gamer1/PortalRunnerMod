@@ -1094,8 +1094,15 @@ fn portals_chamber_06_pellet_catcher_raises_the_lift() {
     let ev = run(&mut sim, &mut c, 3.0, |_, _| Input::default());
     assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletLaunched { .. })), "the launcher didn't fire");
     let k = sim.pellets.iter().position(|p| p.alive).expect("a pellet in the air");
-    // Into the catcher (its trigger, Source's ball_trap_10).
-    sim.pellets[k].pos = Vec3::new(-10.5, 15.2, 67.9);
+    // Into the catcher (its trigger, Source's ball_trap_10): in the chamber, by its floor,
+    // where the map's maker builds it from its template as the map starts.
+    let trap = sim.io.as_ref().unwrap().ents.iter().find_map(|e| match e.kind {
+        crate::io::Kind::Trigger { b, .. } if e.name == "ball_trap_10" => Some(b),
+        _ => None,
+    });
+    let trap = trap.expect("the catcher's trigger");
+    assert!(trap.center().distance(Vec3::new(3.2, -3.0, 0.0)) < 1.5, "the catcher isn't in the chamber: {:?}", trap.center());
+    sim.pellets[k].pos = trap.center();
     sim.pellets[k].vel = Vec3::ZERO;
     let ev = run(&mut sim, &mut c, 6.0, |_, _| Input::default());
     assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletGone { caught: true, .. })), "not caught");

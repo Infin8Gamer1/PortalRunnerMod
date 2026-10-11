@@ -17,6 +17,7 @@ mod glb;
 mod maps;
 mod remix;
 mod scenes;
+mod templates;
 mod usd;
 mod vpk;
 

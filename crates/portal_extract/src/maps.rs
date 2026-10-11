@@ -335,8 +335,16 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
 /// the prop models it uses.
 pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<(usize, usize, usize, Vec<UsedModel>), String> {
     let bsp = Bsp::parse(bytes)?;
-    let ents = bsp::parse_entities(&bsp.entities);
+    let mut ents = bsp::parse_entities(&bsp.entities);
     let origins = bsp::model_origins(&ents);
+    // Templates made as the map starts, moved to where they're made (their brushes too).
+    let placed = crate::templates::place(&mut ents);
+    let place = |mi: usize, p: Vec3| placed.get(&mi).map_or(p, |t| t.point(p));
+    let turn = |mi: usize, d: Vec3| placed.get(&mi).map_or(d, |t| t.turn * d);
+    let place_box = |mi: usize, lo: Vec3, hi: Vec3| -> (Vec3, Vec3) {
+        let corners = [0, 1, 2, 3, 4, 5, 6, 7].map(|k| ours(place(mi, Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z }))));
+        (corners.iter().fold(Vec3::splat(f32::MAX), |a, c| a.min(*c)), corners.iter().fold(Vec3::splat(f32::MIN), |a, c| a.max(*c)))
+    };
     let tex_dir = out.join("textures").join("map");
     let map_dir = out.join("maps");
     std::fs::create_dir_all(&map_dir).map_err(|e| e.to_string())?;
@@ -380,7 +388,7 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             // Source winds a face clockwise seen from its front (the plane's `side` isn't to be
             // trusted): its normal is the winding's, turned round.
             let newell = pts.iter().zip(pts.iter().cycle().skip(1)).fold(Vec3::ZERO, |n, (a, b)| n + Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y)));
-            let n = ours(-newell).normalize_or_zero();
+            let n = ours(turn(mi, -newell)).normalize_or_zero();
             let gi = *group_at.entry((mi, mat)).or_insert_with(|| {
                 groups.push(((mi, mat), Group::default()));
                 groups.len() - 1
@@ -390,7 +398,7 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             // A displacement: its grid, textured as its flat face is, each triangle wound to
             // face the way the face does, normals from the grid.
             if let Some((grid, side)) = bsp.disp_grid(f) {
-                let q: Vec<Vec3> = grid.iter().map(|(p, _)| ours(*p + origin)).collect();
+                let q: Vec<Vec3> = grid.iter().map(|(p, _)| ours(place(mi, *p + origin))).collect();
                 let mut nrm = vec![Vec3::ZERO; q.len()];
                 let mut tris = Vec::new();
                 for i in 0..side - 1 {
@@ -421,11 +429,11 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             for p in &pts {
                 let u = (ti.s[0] * p.x + ti.s[1] * p.y + ti.s[2] * p.z + ti.s[3]) / w;
                 let v = (ti.t[0] * p.x + ti.t[1] * p.y + ti.t[2] * p.z + ti.t[3]) / h;
-                g.pos.push(ours(*p + origin).to_array());
+                g.pos.push(ours(place(mi, *p + origin)).to_array());
                 g.nrm.push(n.to_array());
                 g.uv.push([u, v]);
             }
-            let q: Vec<Vec3> = pts.iter().map(|p| ours(*p)).collect();
+            let q: Vec<Vec3> = pts.iter().map(|p| ours(turn(mi, *p))).collect();
             g.idx.extend(fan(&q, n).into_iter().map(|k| base + k));
         }
     }
@@ -435,8 +443,7 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     let mut nboxes = 0;
     for (mi, model) in bsp.models.iter().enumerate() {
         let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };
-        let (a, z) = (ours(model.mins + origin), ours(model.maxs + origin));
-        let (a, z) = (a.min(z), a.max(z));
+        let (a, z) = place_box(mi, model.mins + origin, model.maxs + origin);
         solids.push_str(&format!("bounds {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));
     }
     // A floor displacement stands on its brush: a box a grid cell, up to the cell's highest
@@ -489,8 +496,7 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
                 continue;
             };
             for (lo, hi) in bsp::brush_boxes(&bsp, b) {
-                let (a, z) = (ours(lo + origin), ours(hi + origin));
-                let (a, z) = (a.min(z), a.max(z));
+                let (a, z) = place_box(mi, lo + origin, hi + origin);
                 solids.push_str(&format!("{kind} {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));
                 nboxes += 1;
             }
@@ -523,7 +529,8 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     }
     std::fs::write(map_dir.join(format!("{name}.mesh")), m).map_err(|e| e.to_string())?;
     std::fs::write(map_dir.join(format!("{name}.solids")), solids).map_err(|e| e.to_string())?;
-    std::fs::write(map_dir.join(format!("{name}.ents")), &bsp.entities).map_err(|e| e.to_string())?;
+    let lump = if placed.is_empty() { bsp.entities.clone() } else { crate::templates::write(&ents) };
+    std::fs::write(map_dir.join(format!("{name}.ents")), lump).map_err(|e| e.to_string())?;
     let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")), read)?;
     overlays(&bsp, &ents, &map_dir.join(format!("{name}.overlays")), read, remix, &tex_dir)?;
     Ok((groups.len(), nboxes, materials.len(), used))

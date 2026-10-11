@@ -537,14 +537,15 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
-        // Chamber 06's catcher (testchmb_a_03): empty and open, then a pellet sent in: it
-        // closes on the pellet, which stays glowing in it (#23).
+        // Chamber 06's catcher (testchmb_a_03, in the floor where its maker builds it): empty
+        // and open, then a pellet sent in: it closes on the pellet, which stays glowing in it
+        // (#23).
         "catcher" => {
             let map = aperture::levels::all().len() + 3;
-            let side = |v: &mut Vec<Act>, name: &'static str| v.extend([Teleport(Vec3::new(-8.4, 13.6, 63.5)), Launch(Vec3::ZERO), Look(146.0, 4.0), Wait(2), Shot(name)]);
+            let side = |v: &mut Vec<Act>, name: &'static str| v.extend([Teleport(Vec3::new(0.2, -3.66, 2.6)), Launch(Vec3::ZERO), Look(-50.0, -30.0), Wait(2), Shot(name)]);
             let mut v = vec![Map(map), Wait(200)];
             side(&mut v, "catcher_a_empty");
-            v.push(SendPellet(Vec3::new(-10.5, 15.2, 62.0), Vec3::new(0.0, 0.0, 8.0)));
+            v.push(SendPellet(Vec3::new(3.24, -1.2, 0.01), Vec3::new(0.0, -6.0, 0.0)));
             v.push(Wait(30));
             side(&mut v, "catcher_b_caught");
             v.push(Wait(90));
@@ -552,31 +553,6 @@ fn script(name: &str) -> Vec<Act> {
             v.push(Wait(150));
             side(&mut v, "catcher_d_closed");
             v
-        }
-        // The escape's rocket turret (escape_01, #24), switched on, seen from beyond the glass
-        // in front of it: its sight on her, the rocket, the glass going.
-        "rockets" => {
-            let map = aperture::levels::all().len() + 16;
-            let mut v = vec![Map(map), Wait(150), Teleport(Vec3::new(-14.74, -6.0, -0.6)), Look(180.0, 0.0), Wait(30), Shot("rocket_a_off"), RocketsOn, Wait(20), Shot("rocket_b_sight")];
-            for k in 0..48 {
-                v.extend([Wait(5), Shot(Box::leak(format!("rocket_c{k:02}").into_boxed_str()))]);
-            }
-            v
-        }
-        // Chamber 01's cycling portals (testchmb_a_00's upper rooms, #21): the cycle started,
-        // then the last room's portal on its wall, at Portal's size, from in front of it.
-        "chamber01" => {
-            let map = aperture::levels::all().len();
-            let mut v = vec![Map(map), Wait(100), Teleport(Vec3::new(13.0, 14.7, 27.6)), Wait(20), Teleport(Vec3::new(5.7, 14.7, 30.0)), Look(180.0, 5.0)];
-            for k in 0..6 {
-                v.extend([Wait(50), Shot(Box::leak(format!("chamber01_{k}").into_boxed_str()))]);
-            }
-            v
-        }
-        // The escape's first way on (escape_00, #21): walked into, it takes her to escape_01.
-        "escape_exit" => {
-            let map = aperture::levels::all().len() + 15;
-            vec![Map(map), Wait(150), Shot("escape_exit_a_before"), Teleport(Vec3::new(-55.27, 14.7, -14.63)), Look(90.0, 0.0), Wait(20), Shot("escape_exit_b_after"), Wait(40), Shot("escape_exit_c_after")]
         }
         // Holes in Portal's maps (#27): from a few of each map's lights, four ways round. Run
         // with PORTAL_DEBUG_VOID=1 and anything not drawn shows magenta. PORTAL_FIRST_MAP and
