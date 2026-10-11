@@ -362,7 +362,7 @@ impl Play {
             let feet = self.c.feet;
             // Past the far portal's mouth (in front of it).
             let past = (feet - q.center).dot(q.normal);
-            if past > out && Vec2::new(feet.x - q.center.x, feet.z - q.center.z).length() < out + 3.0 {
+            if entered && past > out && Vec2::new(feet.x - q.center.x, feet.z - q.center.z).length() < out + 3.0 && self.sim.player_env.is_none() {
                 break;
             }
             assert!(self.time < end, "{}: didn't get through the {color:?} portal (at {feet})", self.name);
@@ -653,4 +653,81 @@ fn solve_testchmb_a_01() {
     eprintln!("across the second pit at {}", p.c.feet);
     p.ride_exit("testchmb_a_02");
     p.assert_alive("in Chamber 03");
+}
+
+/// Chamber 04 (testchmb_a_02's first half): the cube's dropped down a pit. Blue on the pit's
+/// far wall, in through the fixed orange by the button to the cube, back out through blue
+/// with it, onto the button: the exit doors open, to the lift up to Chamber 05.
+#[test]
+fn solve_testchmb_a_02() {
+    let Some(mut p) = Play::load("testchmb_a_02") else { return };
+    let orange = Vec3::new(-0.02, 1.40, 11.38);
+    // Past the trigger that opens orange, into the room with the pit.
+    p.go(Vec3::new(-4.67, 0.0, 21.0), 0.5);
+    p.wait_portal(PortalColor::Orange, orange, 10.0);
+    // (As low as the white wall goes: the floor by the wall is a grate, 0.4 m down.)
+    let pit_wall = Vec3::new(3.25, -5.08, 0.0);
+    p.go(Vec3::new(-5.0, 0.0, 0.0), 0.4);
+    p.shoot(PortalColor::Blue, pit_wall);
+    p.enter(PortalColor::Orange, orange, Some(pit_wall));
+    eprintln!("in the pit at {}", p.c.feet);
+    p.pick_up(Vec3::new(-1.7, -6.0, 0.0));
+    p.enter(PortalColor::Blue, pit_wall, Some(orange));
+    eprintln!("out with the cube at {}", p.c.feet);
+    p.cube_on_button(Vec3::new(-4.8, 0.0, 11.6));
+    // Out of the opened doors, to the lift.
+    let lift = p.mover("a02-middle_elevator_body");
+    p.go(Vec3::new(-4.88, 0.0, -21.0), 0.5);
+    p.go(Vec3::new(-4.88, 0.5, -22.76), 0.5);
+    p.wait_for(40.0, "the lift to reach the top", |p| p.sim.movers[lift].node + 1 == p.sim.movers[lift].def.path.len() && p.sim.movers[lift].goal.is_none());
+    p.wait(2.0);
+    p.assert_alive("in Chamber 04");
+    eprintln!("up to Chamber 05 at {}", p.c.feet);
+    // Chamber 05: orange high on the west alcove's wall once she's in the room, a cube in the
+    // east alcove (as high) and one in a pit, a button for each.
+    let orange = Vec3::new(-29.17, 19.29, -17.89);
+    p.go(Vec3::new(-12.2, 14.63, -12.2), 0.5);
+    p.wait_portal(PortalColor::Orange, orange, 10.0);
+    let floor_blue = Vec3::new(-29.26, 16.1, -13.0);
+    let up_to_orange = |p: &mut Play| {
+        p.go(Vec3::new(-24.0, 14.63, -10.0), 0.5);
+        p.shoot(PortalColor::Blue, floor_blue);
+        let at = p.sim.portals[0].unwrap().center;
+        p.enter(PortalColor::Blue, at, Some(orange));
+    };
+    up_to_orange(&mut p);
+    eprintln!("on the west alcove at {}", p.c.feet);
+    // Blue on the east alcove's back wall, across to its cube and back.
+    let east = Vec3::new(-12.9, 19.3, -17.4);
+    p.shoot(PortalColor::Blue, east);
+    let east = p.sim.portals[0].unwrap().center;
+    p.enter(PortalColor::Orange, orange, Some(east));
+    p.pick_up(Vec3::new(-14.4, 18.4, -17.4));
+    p.enter(PortalColor::Blue, east, Some(orange));
+    eprintln!("back with the first cube at {}", p.c.feet);
+    p.cube_on_button(Vec3::new(-24.4, 14.63, -13.1));
+    // Up again, and from the alcove blue down in the pit by its cube; there and back.
+    up_to_orange(&mut p);
+    // (The east end of its far wall: a wall hides the west end from the alcove.)
+    let pit = Vec3::new(-19.5, 12.82, -27.64);
+    p.shoot(PortalColor::Blue, pit);
+    let pit = p.sim.portals[0].unwrap().center;
+    p.enter(PortalColor::Orange, orange, Some(pit));
+    p.pick_up(Vec3::new(-19.8, 11.8, -24.2));
+    p.enter(PortalColor::Blue, pit, Some(orange));
+    eprintln!("back with the second cube at {}", p.c.feet);
+    p.cube_on_button(Vec3::new(-17.9, 14.63, -13.0));
+    // Through the exit doors; the ceiling's orange opens over the catwalk. Blue by the floor,
+    // and out of the ceiling onto it.
+    p.go(Vec3::new(-19.9, 14.63, -3.2), 0.5);
+    let ceiling = Vec3::new(-21.12, 24.28, -2.82);
+    p.wait_portal(PortalColor::Orange, ceiling, 10.0);
+    eprintln!("past the doors at {}", p.c.feet);
+    let wall = Vec3::new(-24.38, 16.1, -3.0);
+    p.shoot(PortalColor::Blue, wall);
+    let wall = p.sim.portals[0].unwrap().center;
+    p.enter(PortalColor::Blue, wall, Some(ceiling));
+    eprintln!("on the catwalk at {}", p.c.feet);
+    p.assert_alive("in Chamber 05");
+    p.ride_exit("testchmb_a_03");
 }
