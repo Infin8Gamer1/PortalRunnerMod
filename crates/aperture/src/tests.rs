@@ -1869,3 +1869,69 @@ fn on_the_way(io: &crate::io::Io, e: usize, depth: usize, out: &mut Vec<usize>) 
         }
     }
 }
+
+/// Portal's cube droppers (#55): once one has dropped its cube, its cover shuts on the next,
+/// which waits in the tube. In Chamber 09 (#54), dissolving the cube in the grill drops the
+/// waiting one and puts another in the tube; so does losing it out of the world.
+#[test]
+fn portals_droppers_hold_the_next_cube() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let load = |name: &str| {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        crate::source::level(name, "map", &text("solids"), &text("ents"))
+    };
+    // Each hatch's cube waiting on it, and the cubes out of the tube.
+    let waiting = |sim: &Sim, m: usize| {
+        let b = sim.movers[m].def.boxes[0].b;
+        sim.props.iter().filter(|p| p.alive && p.fizzle.is_none() && p.pos.x > b.min.x && p.pos.x < b.max.x && p.pos.z > b.min.z && p.pos.z < b.max.z && (p.pos.y - b.max.y - crate::sim::CUBE_HALF).abs() < 0.1).count()
+    };
+    let mut bad = Vec::new();
+    for name in &names {
+        // (Chamber 17's dropper is broken, flapping open and shut; Chamber 18's is a lid
+        // that's knocked off.)
+        if name == "testchmb_a_11" || name == "testchmb_a_15" {
+            continue;
+        }
+        let (mut sim, mut c) = start(load(name));
+        let hatches: Vec<usize> = sim.io.as_ref().unwrap().hatches.values().copied().collect();
+        c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+        run(&mut sim, &mut c, 12.0, |_, _| Input::default());
+        for &m in &hatches {
+            if !sim.movers[m].present || waiting(&sim, m) != 1 {
+                bad.push(format!("{name}: shut {} waiting {}", sim.movers[m].present, waiting(&sim, m)));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+
+    // Chamber 09: its cube's dropped by now; into the grill with it.
+    let (mut sim, mut c) = start(load("testchmb_a_05"));
+    let m = *sim.io.as_ref().unwrap().hatches.values().next().unwrap();
+    c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+    run(&mut sim, &mut c, 12.0, |_, _| Input::default());
+    let below = |sim: &Sim| sim.props.iter().filter(|p| p.alive && p.fizzle.is_none() && p.pos.y < 1.0).map(|p| p.id).collect::<Vec<u32>>();
+    let first = below(&sim);
+    assert_eq!(first.len(), 1, "the first cube didn't drop");
+    let io = sim.io.as_ref().unwrap();
+    let k = io.cleansers.iter().position(|&e| io.ents[e].name == "trigger_fryer_rm5-a").unwrap();
+    let grill = sim.fizzlers[k].b.center();
+    let p = sim.props.iter_mut().find(|p| p.id == first[0]).unwrap();
+    p.pos = grill;
+    p.vel = Vec3::ZERO;
+    run(&mut sim, &mut c, 8.0, |_, _| Input::default());
+    let now = below(&sim);
+    assert!(now.len() == 1 && now[0] != first[0], "the waiting cube didn't drop: {now:?} (was {first:?})");
+    assert!(sim.movers[m].present && waiting(&sim, m) == 1, "no cube waiting after: shut {} waiting {}", sim.movers[m].present, waiting(&sim, m));
+
+    // And lost out of the world (its OnOutOfWorld): the same.
+    let second = now[0];
+    let p = sim.props.iter_mut().find(|p| p.id == second).unwrap();
+    p.pos.y = sim.level.kill_y - 1.0;
+    run(&mut sim, &mut c, 8.0, |_, _| Input::default());
+    let then = below(&sim);
+    assert!(then.len() == 1 && then[0] != second, "lost out of the world, the waiting cube didn't drop: {then:?} (was {second})");
+    assert!(sim.movers[m].present && waiting(&sim, m) == 1, "no cube waiting after the loss");
+}

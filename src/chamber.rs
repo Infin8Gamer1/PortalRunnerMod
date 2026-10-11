@@ -764,9 +764,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             commands.entity(e).insert(Vis::Hatch { dropper: i, side });
         }
     }
-    // A hand-built chamber's movers: their boxes, moving together.
+    // A hand-built chamber's movers: their boxes, moving together. (A Portal map's that have
+    // no model of their own, a cube dropper's hatch, are drawn by their props.)
     for (i, mv) in sim.movers.iter().enumerate() {
-        if mv.def.model != aperture::level::NO_MODEL {
+        if mv.def.model != aperture::level::NO_MODEL || sim.level.source.is_some() {
             continue;
         }
         for b in &mv.def.boxes {

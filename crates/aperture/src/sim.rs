@@ -368,6 +368,8 @@ pub struct Fizzler {
     pub b: Aabb,
     pub inputs: Inputs,
     pub on: bool,
+    /// Cubes it's taken since the map's logic last looked (they fire its OnDissolveBox).
+    pub dissolved: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -606,6 +608,8 @@ pub struct Sim {
     pub pedestals: Vec<Pedestal>,
     pub droppers: Vec<Dropper>,
     pub fizzlers: Vec<Fizzler>,
+    /// Cubes lost (in goo, out of the world) since the map's logic last looked.
+    pub lost: Vec<u32>,
     pub plates: Vec<Plate>,
     pub bridges: Vec<Bridge>,
     pub lasers: Vec<Laser>,
@@ -681,6 +685,7 @@ impl Sim {
             pedestals: Vec::new(),
             droppers: Vec::new(),
             fizzlers: Vec::new(),
+            lost: Vec::new(),
             plates: Vec::new(),
             bridges: Vec::new(),
             lasers: Vec::new(),
@@ -740,7 +745,7 @@ impl Sim {
                 Item::Dropper { at, kind, inputs } => {
                     sim.droppers.push(Dropper { at, kind, inputs, was_on: false, cube: None, refill: None, opened: 99.0 })
                 }
-                Item::Fizzler { b, inputs } => sim.fizzlers.push(Fizzler { b, inputs, on: true }),
+                Item::Fizzler { b, inputs } => sim.fizzlers.push(Fizzler { b, inputs, on: true, dissolved: Vec::new() }),
                 Item::FaithPlate { at, target, apex, inputs } => {
                     let i = sim.plates.len();
                     statics.push(Static {
@@ -927,7 +932,13 @@ impl Sim {
         // (Going through a portal, the hole goes through what moves behind it too: a mover it's
         // on, or one just under the surface it's on.)
         let hole = env.filter(|_| self.linked()).and_then(|c| self.portals[c.index()]).map(|p| (p, collide::tunnel(&p)));
-        for m in &self.movers {
+        // (A cube dropper's hatch, and the cube waiting on it, are inside the dropper: they hold
+        // cubes, but she can't get at them, nor catch their edges.)
+        let hatches: Vec<usize> = if skip.is_none() { self.hatches().collect() } else { Vec::new() };
+        for (k, m) in self.movers.iter().enumerate() {
+            if hatches.contains(&k) {
+                continue;
+            }
             for b in m.boxes().filter(|b| b.size().min_element() > 0.0) {
                 match hole {
                     Some((p, h)) if collide::behind(&p, &b) => v.extend(geom::subtract(&b, &h)),
@@ -939,12 +950,26 @@ impl Sim {
             v.extend(b.segs.iter().map(|s| s.aabb));
         }
         for (i, p) in self.props.iter().enumerate() {
-            if Some(i) == skip || !p.alive || p.fizzle.is_some() || (!include_held && Some(i) == self.held) {
+            if Some(i) == skip || !p.alive || p.fizzle.is_some() || (!include_held && Some(i) == self.held) || (skip.is_none() && self.in_dropper(i)) {
                 continue;
             }
             v.push(p.aabb());
         }
         v
+    }
+
+    /// Portal's cube droppers' hatches (movers).
+    fn hatches(&self) -> impl Iterator<Item = usize> + '_ {
+        self.io.iter().flat_map(|io| io.hatches.values().copied())
+    }
+
+    /// Whether cube `i` is in a dropper's tube, over its shut hatch (waiting to drop).
+    pub fn in_dropper(&self, i: usize) -> bool {
+        let at = self.props[i].pos;
+        self.hatches().any(|m| {
+            let b = self.movers[m].def.boxes[0].b;
+            self.movers[m].present && at.x > b.min.x && at.x < b.max.x && at.z > b.min.z && at.z < b.max.z && at.y > b.max.y
+        })
     }
 
     /// The world as Faith sees it this frame.
@@ -1770,6 +1795,12 @@ impl Sim {
         if let Some(mut io) = self.io.take() {
             io.step(self, ctrl, dt);
             self.io = Some(io);
+        } else {
+            // (No map logic to hear of lost and dissolved cubes.)
+            self.lost.clear();
+            for f in &mut self.fizzlers {
+                f.dissolved.clear();
+            }
         }
         let ctrl = &*ctrl;
         self.update_signals(dt);
@@ -2581,7 +2612,8 @@ impl Sim {
             }
             let pb = p.aabb();
             // Grills vaporise it; goo and the void lose it.
-            if self.fizzlers.iter().any(|f| f.on && f.b.overlaps(&pb)) {
+            if let Some(f) = self.fizzlers.iter_mut().find(|f| f.on && f.b.overlaps(&pb)) {
+                f.dissolved.push(p.id);
                 p.fizzle = Some(0.0);
                 self.events.push(SimEvent::CubeFizzled { at: p.pos });
                 if held {
@@ -2589,6 +2621,7 @@ impl Sim {
                 }
             } else if self.goo.iter().any(|g| geom::contains(g, p.pos)) || p.pos.y < self.level.kill_y {
                 p.alive = false;
+                self.lost.push(p.id);
                 if held {
                     self.held = None;
                 }

@@ -498,7 +498,12 @@ impl Play {
 
     /// Pick up the cube nearest `near` (walking up to it first).
     pub fn pick_up(&mut self, near: Vec3) -> usize {
-        let i = self.sim.props.iter().enumerate().filter(|(_, p)| p.alive).min_by(|a, b| a.1.pos.distance(near).total_cmp(&b.1.pos.distance(near))).map(|(i, _)| i).expect("no cube");
+        let nearest = |p: &Play| p.sim.props.iter().enumerate().filter(|(_, c)| c.alive && c.fizzle.is_none()).min_by(|a, b| a.1.pos.distance(near).total_cmp(&b.1.pos.distance(near))).map(|(i, _)| i);
+        // (One waiting in a dropper's tube: the map drops it when it's ready.)
+        if nearest(self).is_some_and(|i| self.sim.in_dropper(i)) {
+            self.wait_for(30.0, "the cube to drop", |p| nearest(p).is_some_and(|i| !p.sim.in_dropper(i) && p.sim.props[i].vel.length() < 0.1));
+        }
+        let i = nearest(self).expect("no cube");
         let at = self.sim.props[i].pos;
         self.go(Vec3::new(at.x, at.y - crate::sim::CUBE_HALF, at.z), 1.1);
         let at = self.sim.props[i].pos;
@@ -702,6 +707,8 @@ fn solve_testchmb_a_00() {
     p.go(q.center + q.normal * 1.2 - Vec3::Y * (q.center.y - p.c.feet.y), 0.6);
     p.through(c, 1.0);
     p.assert_alive("leaving the vault");
+    // Into the room: the dropper drops the cube.
+    p.go(Vec3::new(20.0, 3.25, 13.8), 0.6);
     p.pick_up(Vec3::new(23.0, 4.0, 13.0));
     p.cube_on_button(Vec3::new(23.58, 3.56, 13.0));
     // Through the doors it opened, to the lift: it takes her up.
@@ -1728,7 +1735,9 @@ fn solve_testchmb_a_11() {
 #[test]
 fn solve_testchmb_a_13() {
     let Some(mut p) = Play::load("testchmb_a_13") else { return };
+    // Out of the elevator: GLaDOS's welcome, and the cube drops as she finishes.
     p.wait(3.0);
+    p.go(Vec3::new(-3.25, 0.0, -64.5), 0.5);
     p.pick_up(Vec3::new(-4.92, 0.45, -52.06));
     let set_up = |p: &mut Play, stand: Vec3| {
         p.go(stand, 0.25);

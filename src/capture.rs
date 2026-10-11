@@ -539,6 +539,21 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Chamber 09's dropper (testchmb_a_05, #54/#55): shut on the next cube once it's
+        // dropped the first; the first into the grill, and it opens, drops the next and shuts.
+        "dropper" => {
+            let map = aperture::levels::all().len() + 5;
+            let look = |v: &mut Vec<Act>, name: &'static str| v.extend([Teleport(Vec3::new(-0.8, 0.0, 9.0)), Launch(Vec3::ZERO), Look(0.0, 32.0), Wait(2), Shot(name)]);
+            let mut v = vec![Map(map), Wait(600)];
+            look(&mut v, "dropper_a_shut");
+            v.extend([PlaceCube(Vec3::new(-3.6, 1.0, -1.63)), Wait(150)]);
+            look(&mut v, "dropper_b_open");
+            v.push(Wait(30));
+            look(&mut v, "dropper_c_dropping");
+            v.push(Wait(240));
+            look(&mut v, "dropper_d_shut_again");
+            v
+        }
         // Chamber 06's catcher (testchmb_a_03, in the floor where its maker builds it): empty
         // and open, then a pellet sent in: it closes on the pellet, which stays glowing in it
         // (#23).

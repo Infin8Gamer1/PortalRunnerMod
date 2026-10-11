@@ -93,7 +93,7 @@ pub enum Kind {
     /// outputs it fires as it goes (start, n: `OnTriggerN`); with none known, a short wait.
     Scene { lines: Vec<(f32, String)>, length: f32, triggers: Vec<(f32, u32)> },
     /// Spawns a cube here (env_entity_maker, point_template).
-    Maker { cubes: Vec<(Vec3, CubeKind)> },
+    Maker { cubes: Vec<(Vec3, CubeKind, usize)> },
     /// A train's path point (`node` on mover `mover`).
     PathNode { mover: usize, node: usize },
     /// Fires its outputs as the map starts.
@@ -130,6 +130,8 @@ pub struct Ent {
 struct Pending {
     /// What set it off, for `!activator` (the train passing a path point).
     activator: Option<usize>,
+    /// Or the cube (id) that did (into a trigger).
+    cube: Option<u32>,
     at: f32,
     target: String,
     input: String,
@@ -171,6 +173,14 @@ pub struct Io {
     pub closed_nodes: Vec<(usize, usize)>,
     /// What a rocket going off hurts (fires its OnTakeDamage): entity, centre and radius.
     pub damageable: Vec<(usize, Vec3, f32)>,
+    /// Cube droppers' covers (entity) and the hatch (mover) each holds shut: open, it's gone.
+    pub hatches: HashMap<usize, usize>,
+    /// Each grill's (fizzler's) entity: it fires OnDissolve as it takes a cube.
+    pub cleansers: Vec<usize>,
+    /// The entity each cube the map puts down is (in order), and each cube's (by id): its
+    /// outputs are the cube's (OnOutOfWorld, as it's lost).
+    pub cube_ents: Vec<usize>,
+    owners: HashMap<u32, usize>,
     /// Which preset portal (entity) is open in each colour.
     open: [Option<usize>; 2],
     rng: u32,
@@ -216,9 +226,18 @@ impl Io {
                 o.times -= 1;
             }
             let param = if o.param.is_empty() { value.unwrap_or("").to_string() } else { o.param.clone() };
-            sends.push(Pending { activator, at: now + o.delay, target: o.target.clone(), input: o.input.clone(), param, caller: e });
+            sends.push(Pending { activator, cube: None, at: now + o.delay, target: o.target.clone(), input: o.input.clone(), param, caller: e });
         }
         self.queue.extend(sends);
+    }
+
+    /// Fire, set off by cube `id` (for its outputs' `!activator`).
+    fn fire_cube(&mut self, e: usize, event: &str, id: u32) {
+        let n = self.queue.len();
+        self.fire(e, event, None);
+        for p in &mut self.queue[n..] {
+            p.cube = Some(id);
+        }
     }
 
     /// One frame of logic (from [`Sim::step`]).
@@ -236,6 +255,11 @@ impl Io {
         sim.player_yaw = ctrl.yaw;
         if !self.started {
             self.started = true;
+            for (k, p) in sim.props.iter().enumerate() {
+                if let Some(&e) = self.cube_ents.get(k) {
+                    self.owners.insert(p.id, e);
+                }
+            }
             for &(s, on) in &self.initial {
                 if let Some(v) = sim.io_signals.get_mut(s) {
                     *v = on;
@@ -306,7 +330,7 @@ impl Io {
                             let last = sim.movers[index].def.path.len() - 1;
                             self.fire(e, if node == last { "OnFullyOpen" } else { "OnFullyClosed" }, None);
                             if let Some(wait) = sim.movers[index].def.reset.filter(|_| node == last) {
-                                self.queue.push(Pending { activator: None, at: self.time + wait, target: "!self".into(), input: "Close".into(), param: String::new(), caller: e });
+                                self.queue.push(Pending { activator: None, cube: None, at: self.time + wait, target: "!self".into(), input: "Close".into(), param: String::new(), caller: e });
                             }
                         }
                         _ => {}
@@ -343,6 +367,22 @@ impl Io {
                         self.fire(e, "OnEndTouchAll", None);
                     }
                 }
+            }
+        }
+
+        // Cubes lost (in goo, out of the world): the map hears of it from the cube.
+        for id in std::mem::take(&mut sim.lost) {
+            if let Some(&e) = self.owners.get(&id) {
+                self.fire_cube(e, "OnOutOfWorld", id);
+            }
+        }
+
+        // Grills that have taken cubes.
+        for k in 0..self.cleansers.len() {
+            let e = self.cleansers[k];
+            for _ in std::mem::take(&mut sim.fizzlers[k].dissolved) {
+                self.fire(e, "OnDissolve", None);
+                self.fire(e, "OnDissolveBox", None);
             }
         }
 
@@ -416,6 +456,8 @@ impl Io {
             let player_now = players && b.overlaps(&me);
             let cubes_now: Vec<u32> = if takes_cubes { cubes.iter().filter(|(_, c)| b.overlaps(c)).map(|(id, _)| *id).collect() } else { Vec::new() };
             let entered = (player_now && !player_in) || cubes_now.iter().any(|id| !cubes_in.contains(id));
+            // (A cube coming in is its `!activator`.)
+            let new_cube = cubes_now.iter().find(|id| !cubes_in.contains(id)).copied().filter(|_| !(player_now && !player_in));
             let left = (!player_now && player_in) || cubes_in.iter().any(|id| !cubes_now.contains(id));
             let was_any = player_in || !cubes_in.is_empty();
             let any = player_now || !cubes_now.is_empty();
@@ -424,8 +466,16 @@ impl Io {
                 *cubes_in = cubes_now;
             }
             if entered {
-                self.fire(e, "OnStartTouch", None);
-                self.fire(e, "OnTrigger", None);
+                match new_cube {
+                    Some(id) => {
+                        self.fire_cube(e, "OnStartTouch", id);
+                        self.fire_cube(e, "OnTrigger", id);
+                    }
+                    None => {
+                        self.fire(e, "OnStartTouch", None);
+                        self.fire(e, "OnTrigger", None);
+                    }
+                }
                 if !was_any {
                     self.fire(e, "OnStartTouchAll", None);
                 }
@@ -481,6 +531,18 @@ impl Io {
                 break;
             }
             for p in due {
+                // A cube that set it off, killed (one lost, or into a trigger that takes it).
+                if let (Some(id), "!activator") = (p.cube, p.target.as_str()) {
+                    if p.input.eq_ignore_ascii_case("kill") {
+                        if let Some(k) = sim.props.iter().position(|c| c.id == id && c.alive) {
+                            sim.props[k].alive = false;
+                            if sim.held == Some(k) {
+                                sim.held = None;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let targets: Vec<usize> = match p.target.as_str() {
                     "!self" | "!caller" => vec![p.caller],
                     "!activator" => p.activator.into_iter().collect(),
@@ -560,6 +622,7 @@ impl Io {
             self.ents[e].alive = false;
             match self.ents[e].kind {
                 Kind::Mover { index, .. } => sim.movers[index].present = false,
+                Kind::Animated if self.hatches.contains_key(&e) => sim.movers[self.hatches[&e]].present = false,
                 // A launcher that's gone fires no more.
                 Kind::Launcher { sig, .. } => {
                     if let Some(v) = sim.io_signals.get_mut(sig) {
@@ -761,12 +824,12 @@ impl Io {
                 "start" => {
                     self.fire(e, "OnStart", None);
                     let length = if length > 0.0 { length } else { SCENE_SECONDS };
-                    self.queue.push(Pending { activator: None, at: now + length, target: "!self".into(), input: "__done".into(), param: String::new(), caller: e });
+                    self.queue.push(Pending { activator: None, cube: None, at: now + length, target: "!self".into(), input: "__done".into(), param: String::new(), caller: e });
                     for (at, sound) in lines {
-                        self.queue.push(Pending { activator: None, at: now + at, target: "!self".into(), input: "__say".into(), param: sound, caller: e });
+                        self.queue.push(Pending { activator: None, cube: None, at: now + at, target: "!self".into(), input: "__say".into(), param: sound, caller: e });
                     }
                     for (at, n) in triggers {
-                        self.queue.push(Pending { activator: None, at: now + at, target: "!self".into(), input: "__trigger".into(), param: n.to_string(), caller: e });
+                        self.queue.push(Pending { activator: None, cube: None, at: now + at, target: "!self".into(), input: "__trigger".into(), param: n.to_string(), caller: e });
                     }
                 }
                 "__trigger" => self.fire(e, &format!("OnTrigger{}", param.trim()), None),
@@ -783,10 +846,11 @@ impl Io {
                 _ => {}
             },
             Kind::Maker { cubes } if i == "forcespawn" => {
-                for (at, kind) in cubes {
+                for (at, kind, from) in cubes {
                     // Not on top of a cube that's still there.
                     if !sim.props.iter().any(|p| p.alive && p.pos.distance(at) < 0.5) {
-                        sim.spawn_prop(kind, at, None);
+                        let id = sim.spawn_prop(kind, at, None);
+                        self.owners.insert(id, from);
                         sim.events.push(SimEvent::CubeDropped { at });
                     }
                 }
@@ -862,6 +926,9 @@ impl Io {
                 }
             }
             Kind::Animated if i == "setanimation" => {
+                if let Some(&m) = self.hatches.get(&e) {
+                    sim.movers[m].present = !param.trim().eq_ignore_ascii_case("open");
+                }
                 self.animation_count += 1;
                 self.animations.insert(e, (param.trim().to_ascii_lowercase(), self.animation_count));
             }

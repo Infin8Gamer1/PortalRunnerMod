@@ -13,7 +13,7 @@ use glam::Vec3;
 use faith_move::Aabb;
 
 use crate::io;
-use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MoverDef, SourceLight, Solid, Swing};
+use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MoverDef, SourceLight, Solid, Swing, NO_MODEL};
 use crate::portal::{Portal, PortalColor};
 
 /// A Source entity: its keys in order (a key can repeat: outputs).
@@ -240,13 +240,15 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     // its kind.
     // (Every entity of a member's name is in the template: Chamber 13's maker makes two cubes,
     // both named "box".)
-    let template_cube = |template: &str| -> Option<(Vec<(Vec3, CubeKind)>, Vec3)> {
+    // (Each cube with the entity it's made from: its outputs are the cube's.)
+    let template_cube = |template: &str| -> Option<(Vec<(Vec3, CubeKind, usize)>, Vec3)> {
         let t = named.get(&template.to_ascii_lowercase())?;
         let members: Vec<String> = t.iter().filter(|(k, _)| k.to_ascii_lowercase().starts_with("template")).map(|(_, v)| v.to_ascii_lowercase()).collect();
-        let cubes: Vec<(Vec3, CubeKind)> = ents
+        let cubes: Vec<(Vec3, CubeKind, usize)> = ents
             .iter()
-            .filter(|c| is_metal_box(c) && key(c, "targetname").is_some_and(|n| members.contains(&n.to_ascii_lowercase())))
-            .filter_map(|c| Some((origin(c)?, cube_kind(c))))
+            .enumerate()
+            .filter(|(_, c)| is_metal_box(c) && key(c, "targetname").is_some_and(|n| members.contains(&n.to_ascii_lowercase())))
+            .filter_map(|(k, c)| Some((origin(c)?, cube_kind(c), k)))
             .collect();
         let first = cubes.first()?.0;
         Some((cubes, origin(t).unwrap_or(first)))
@@ -275,6 +277,12 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut io_ents: Vec<io::Ent> = Vec::new();
     let mut initial = Vec::new();
     let mut movers = 0usize;
+    // Cube droppers' covers (entity) and the hatch (mover) each holds shut.
+    let mut hatches: HashMap<usize, usize> = HashMap::new();
+    // Each grill's (fizzler's) entity.
+    let mut cleansers: Vec<usize> = Vec::new();
+    // Each cube the map puts down's entity.
+    let mut cube_ents: Vec<usize> = Vec::new();
     let mut buttons: Vec<Aabb> = Vec::new();
     // Train paths: each path node's (mover, node).
     let mut path_nodes: HashMap<String, (usize, usize)> = HashMap::new();
@@ -298,6 +306,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             _ if is_metal_box(e) && !templated.contains(&name.to_ascii_lowercase()) => {
                 if let Some(at) = origin(e) {
                     l.items.push(Item::Cube { at: at + Vec3::Y * 0.02, kind: cube_kind(e) });
+                    cube_ents.push(io_ents.len());
                 }
             }
             // A gun on a pedestal (the map hears when it's picked up) is to be picked up; the
@@ -458,6 +467,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 if let Some(b) = mb {
                     let s = sig();
                     l.items.push(Item::Fizzler { b, inputs: Inputs::on(s) });
+                    cleansers.push(io_ents.len());
                     initial.push((s, !start_disabled));
                     kind = io::Kind::Switch { sig: s };
                     l.hidden_models.extend(model);
@@ -559,7 +569,19 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     armed: false,
                 }
             }
-            "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
+            "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => {
+                kind = io::Kind::Animated;
+                // A cube dropper's cover: shut, it holds the next cube in the tube (a slab
+                // across the tube's foot, where Portal's model closes); open, the cube drops.
+                if key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/box_dropper_cover.mdl")) {
+                    if let Some(o) = origin(e) {
+                        let b = Aabb::new(o - Vec3::new(0.6, 0.1, 0.6), o + Vec3::new(0.6, 0.0, 0.6));
+                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new() }));
+                        hatches.insert(io_ents.len(), movers);
+                        movers += 1;
+                    }
+                }
+            }
             "env_sprite" if !name.is_empty() => kind = io::Kind::Sprite,
             "env_texturetoggle" => kind = io::Kind::TextureToggle { target: key(e, "target").unwrap_or("").to_ascii_lowercase() },
             "material_modify_control" if key(e, "materialVar").is_some_and(|v| v.eq_ignore_ascii_case("$frame")) => {
@@ -571,7 +593,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 if let (Some(maker), Some((made, template))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
                     let turn = glam::Quat::from_rotation_y(angles(e, "angles").1.to_radians());
                     let mut cubes = Vec::new();
-                    for (cube, k) in made {
+                    for (cube, k, from) in made {
                         let at = maker + turn * (cube - template);
                         // (Where that grazes a wall, a dropper's chute, Source's physics slides off
                         // it and boxes catch on it: in from the wall, towards the maker, till it's
@@ -584,7 +606,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         if let Some(d) = dropper {
                             at = Vec3::new(d.x, at.y, d.z);
                         }
-                        cubes.push((at, k));
+                        cubes.push((at, k, from));
                     }
                     kind = io::Kind::Maker { cubes };
                 }
@@ -727,6 +749,9 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     logic.hidden = hidden;
     logic.damageable = damageable;
     logic.closed_nodes = closed_nodes;
+    logic.hatches = hatches;
+    logic.cleansers = cleansers;
+    logic.cube_ents = cube_ents;
     // Doors she opens by using them (Use Opens; Toggle to shut them again too).
     logic.usable = ents
         .iter()
