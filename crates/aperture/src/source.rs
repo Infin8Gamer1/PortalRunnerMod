@@ -534,11 +534,11 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         speed: (num(e, "minspeed", 275.0) + num(e, "maxspeed", 275.0)) * 0.5 * 0.0254,
                         after_portal: num(e, "MinLifeAfterPortal", 6.0),
                         reload: (respawn >= 0.0 && num(e, "ballcount", 1.0) > 0.0).then_some(respawn),
-                        body: true,
+                        model: None,
                     };
                     // Its model: usually just behind it. Chamber 15's is set in the wall in front
-                    // of it, firing into its own alcove: the wall stands for its body there (a box
-                    // behind it would hang in the room, in the way of shots into the alcove).
+                    // of it (it fires into a plate there, which sends the pellet back out): the
+                    // wall stands for its body (a box behind it would hang in the pellet's way).
                     let dir = angle_vectors(p, y, r).0;
                     let model = ents
                         .iter()
@@ -546,7 +546,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                         .filter_map(origin)
                         .filter(|o| o.distance(at) < 2.0)
                         .min_by(|a, b| a.distance(at).total_cmp(&b.distance(at)));
-                    let launch = Launch { body: model.is_none_or(|o| (o - at).dot(dir) <= 0.0), ..launch };
+                    let launch = Launch { model: model.filter(|o| (*o - at).dot(dir) > 0.0), ..launch };
                     let life = if life < 0.0 { f32::INFINITY } else { life };
                     l.items.push(Item::PelletLauncher { at, dir, inputs: Inputs::on(s), life, launch });
                     initial.push((s, !start_disabled));

@@ -553,7 +553,8 @@ pub struct Mask {
 impl Mask {
     /// The portal gun's shot: through emancipation grills, as in Portal (they stop her and her
     /// cubes, not the shot).
-    pub const SHOT: Mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
+    /// (Portal shots stop at emancipation grills: no portal through one.)
+    pub const SHOT: Mask = Mask { doors: true, bridges: true, props: true, fizzlers: true, portals: true, grates: false, glass: true, skip_prop: None };
     pub const LASER: Mask = Mask { doors: true, bridges: false, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
     pub const BRIDGE: Mask = Mask { doors: true, bridges: false, props: false, fizzlers: false, portals: true, grates: true, glass: true, skip_prop: None };
     pub const GEL: Mask = Mask { doors: true, bridges: false, props: true, fizzlers: false, portals: true, grates: false, glass: true, skip_prop: None };
@@ -816,7 +817,7 @@ impl Sim {
                     held: false,
                 }),
                 Item::PelletLauncher { at, dir, inputs, life, launch } => {
-                    if launch.body {
+                    if launch.model.is_none() {
                         statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
                     }
                     // (Ready to fire as soon as it's on.)
@@ -1403,6 +1404,13 @@ impl Sim {
         if !Self::outline_samples(p).all(|q| self.portalable_at(q, n) && !self.blocks_portal_at(q + n * 0.03)) {
             return false;
         }
+        // Not over a pellet launcher set into the wall (its model's in the way).
+        if self.launchers.iter().filter_map(|l| l.launch.model).any(|m| {
+            let l = p.to_local(m);
+            l.z.abs() < 0.6 && l.x.abs() < p.half.x + 0.35 && l.y.abs() < p.half.y + 0.35
+        }) {
+            return false;
+        }
         // Clear in front (no wall sticking out over it, no closed door). A light bridge
         // running into the wall is fine: that's how you send one through a portal.
         let front = collide::local_box(p, Vec3::new(-p.half.x + 0.05, -p.half.y + 0.05, 0.02), Vec3::new(p.half.x - 0.05, p.half.y - 0.05, 0.3));
@@ -1777,7 +1785,7 @@ impl Sim {
         }
         // (Her reach stops at grating and clip, as her hand would: a switch's own brush can be
         // clip.)
-        let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask { grates: true, ..Mask::SHOT }, 1);
+        let (legs, hit) = self.trace(aim.eye, aim.dir, USE_REACH, Mask { grates: true, fizzlers: false, ..Mask::SHOT }, 1);
         match hit.map(|h| h.what) {
             Some(HitWhat::Prop(i)) if self.props[i].fizzle.is_none() => {
                 self.held = Some(i);
@@ -2284,11 +2292,19 @@ impl Sim {
                 l.queued = false;
                 let id = self.next_pellet;
                 self.next_pellet += 1;
-                let at = l.at + l.dir * 0.3;
                 l.pellet = Some(id);
                 l.since_shot = 0.0;
+                let (from, dir, speed) = (l.at, l.dir, l.launch.speed);
+                // It starts a little way out; but something right in front of it sends it back
+                // off that (Chamber 15's launcher fires into a plate set just there, which sends
+                // its pellet back out across the room).
+                let mask = Mask { doors: true, bridges: true, props: false, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
+                let (at, vel) = match self.raycast(from, dir, 0.3 + PELLET_RADIUS, mask) {
+                    Some(h) => (from, (dir - 2.0 * dir.dot(h.normal) * h.normal) * speed),
+                    None => (from + dir * 0.3, dir * speed),
+                };
                 self.pellets.retain(|p| p.alive);
-                self.pellets.push(Pellet { id, pos: at, vel: l.dir * l.launch.speed, age: 0.0, life: l.life, after_portal: l.launch.after_portal, alive: true });
+                self.pellets.push(Pellet { id, pos: at, vel, age: 0.0, life: self.launchers[i].life, after_portal: self.launchers[i].launch.after_portal, alive: true });
                 self.events.push(SimEvent::PelletLaunched { at });
             }
         }

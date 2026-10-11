@@ -2009,3 +2009,16 @@ fn a_turret_shoots_her_through_a_portal() {
     assert!(ev.contains(&SimEvent::PlayerDied), "it didn't shoot her through the portals");
     assert!(aimed, "its guns didn't turn onto her");
 }
+
+/// Portal shots stop at an emancipation grill: no portal on a wall behind one (#61).
+#[test]
+fn portals_cant_be_shot_through_a_grill() {
+    let mut l = flat();
+    l.solid(Mat::White, [-3.0, 0.0, -8.3], [3.0, 3.0, -8.0]);
+    l.spawn([0.0, 0.0, 0.0], 0.0);
+    let (mut sim, c) = start(l.clone());
+    assert!(sim.fire(PortalColor::Blue, crate::sim::Aim::of(&c)), "no portal on the bare wall");
+    l.fizzler([-3.0, 0.0, -4.05], [3.0, 3.0, -3.95], Inputs::always());
+    let (mut sim, c) = start(l);
+    assert!(!sim.fire(PortalColor::Blue, crate::sim::Aim::of(&c)) && sim.portals[0].is_none(), "a portal went through the grill");
+}

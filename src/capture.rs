@@ -547,15 +547,31 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
-        // Chamber 15's section 2 (testchmb_a_10, #61): the pellet trapped in its alcove, then
-        // orange shot onto the wall it bounces off and blue on the ceiling over the receptacle,
-        // as the play harness does: out it comes, down into the receptacle.
+        // Chamber 15's section 2 (testchmb_a_10, #61), as Portal's walkthrough (and the play
+        // harness) has it: the pellet out across the room off the plate in front of its
+        // launcher; orange over the lift, blue where it bounces, and it comes back through the
+        // grill on a new line; past the grill, blue where it bounces on the far wall and orange
+        // on the ceiling over the receptacle, and down into the receptacle it goes.
         "pellet15" => {
             let map = aperture::levels::all().len() + 10;
-            let mut v = vec![Map(map), Wait(120), Teleport(Vec3::new(48.3, -9.75, -1.0)), Launch(Vec3::ZERO), Look(-7.72, 16.3), Wait(60), Shot("pellet15_a_trapped"), Fire(PortalColor::Orange), Wait(10)];
-            v.extend([Teleport(Vec3::new(57.5, -9.75, -1.0)), Launch(Vec3::ZERO), Look(-7.0, 34.2), Wait(10), Fire(PortalColor::Blue), Wait(30), Shot("pellet15_b_portals")]);
-            for k in 0..6 {
-                v.extend([Wait(60), Shot(Box::leak(format!("pellet15_c{k}").into_boxed_str()))]);
+            let mut v = vec![Map(map), Wait(120), Teleport(Vec3::new(54.0, -9.75, 2.0)), Launch(Vec3::ZERO), Look(-15.0, 22.0), Wait(45), Shot("pellet15_a_out_across")];
+            v.extend([
+                Portal(PortalColor::Orange, Vec3::new(58.06, -5.06, 6.5), Vec3::NEG_Z, Vec3::Y),
+                Portal(PortalColor::Blue, Vec3::new(50.54, -5.02, 6.5), Vec3::NEG_Z, Vec3::Y),
+                Look(165.0, 15.0),
+                Wait(40),
+                Shot("pellet15_b_portals"),
+                Wait(150),
+                Teleport(Vec3::new(59.5, -9.75, -5.0)),
+                Launch(Vec3::ZERO),
+                Portal(PortalColor::Blue, Vec3::new(58.06, -5.03, -12.8), Vec3::Z, Vec3::Y),
+                Portal(PortalColor::Orange, Vec3::new(58.37, -3.25, -8.06), Vec3::NEG_Y, Vec3::NEG_Z),
+                Look(20.0, 10.0),
+                Wait(20),
+                Shot("pellet15_c_far_side"),
+            ]);
+            for k in 0..4 {
+                v.extend([Wait(45), Shot(Box::leak(format!("pellet15_d{k}").into_boxed_str()))]);
             }
             v
         }

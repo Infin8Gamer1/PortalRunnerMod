@@ -1188,9 +1188,10 @@ fn solve_testchmb_a_04() {
 }
 
 /// Chamber 09 (testchmb_a_05): the cube can't go through the grill. With the cube, blue low on
-/// the east wall and up through it to the fixed orange's alcove; from there blue down on the
-/// far room's floor (shots go through grills), back into orange with the cube and out past the
-/// grill, the cube on the button, and out of the doors it opens.
+/// the east wall and up through it to the fixed orange's raised alcove; from there blue on the
+/// button room's far wall, through the square opening in the dividing wall (not through the
+/// grill: portal shots stop at grills), back into orange with the cube and out past the grill,
+/// the cube on the button, and out of the doors it opens.
 #[test]
 fn solve_testchmb_a_05() {
     let Some(mut p) = Play::load("testchmb_a_05") else { return };
@@ -1203,7 +1204,7 @@ fn solve_testchmb_a_05() {
     let low = p.sim.portals[0].unwrap().center;
     p.enter(PortalColor::Blue, low, Some(orange));
     eprintln!("in orange's alcove at {} holding {:?}", p.c.feet, p.sim.held);
-    p.shoot(PortalColor::Blue, Vec3::new(-10.0, 0.2, -3.0));
+    p.shoot(PortalColor::Blue, Vec3::new(-15.25, 3.01, -6.5));
     let far = p.sim.portals[0].unwrap().center;
     eprintln!("blue at {far}");
     p.enter(PortalColor::Orange, orange, Some(far));
@@ -1619,9 +1620,9 @@ fn tilted_faces_take_portals() {
 }
 
 /// Chamber 15 (testchmb_a_10), as Portal's walkthrough has it. Section 1: flung over the glass
-/// from the panel jutting from the back wall (twice through, to pick up speed). Section 2: orange
-/// where the trapped pellet bounces in its alcove, blue on the ceiling over the receptacle (both
-/// shot through the grill); the lift it lowers takes her up to section 3.
+/// from the panel jutting from the back wall (twice through, to pick up speed). Section 2: the
+/// pellet sent back through the grill by her portals, then (past the grill) into the receptacle
+/// out of a ceiling portal; the lift it lowers takes her up to section 3.
 #[test]
 fn solve_testchmb_a_10() {
     let Some(mut p) = Play::load("testchmb_a_10") else { return };
@@ -1636,10 +1637,20 @@ fn solve_testchmb_a_10() {
     p.wait_for(5.0, "her to land past the glass", |p| p.c.state == State::Ground && p.c.feet.z < 22.0);
     p.assert_alive("flung over the glass");
     eprintln!("over the glass at {}", p.c.feet);
-    p.go(Vec3::new(48.3, -9.75, -1.0), 0.4);
-    p.shoot(PortalColor::Orange, Vec3::new(49.9, -4.6, -12.8));
-    p.go(Vec3::new(57.5, -9.75, -1.0), 0.4);
-    p.shoot(PortalColor::Blue, Vec3::new(58.37, -3.25, -8.06));
+    // Section 2: the launcher fires into a plate in front of it, which sends its pellet back
+    // across the room, through the grill, to the end wall. Orange on the panels over the lift,
+    // blue on that wall where the pellet bounces: it comes back out of orange along another
+    // line, through the grill to the far side's end wall, and back.
+    p.go(Vec3::new(54.0, -9.75, 0.0), 0.4);
+    p.shoot(PortalColor::Orange, Vec3::new(58.06, -5.06, 6.5));
+    p.shoot(PortalColor::Blue, Vec3::new(50.54, -5.02, 6.5));
+    p.wait_for(15.0, "the pellet out of orange", |p| p.sim.pellets.iter().any(|q| q.alive && (q.pos.x - 58.06).abs() < 0.2 && q.pos.z > -2.0 && q.vel.z < 0.0));
+    // Through the grill (her portals go; the pellet bounces on along its new line), blue on
+    // the far wall where it bounces, orange on the ceiling over the receptacle.
+    p.go(Vec3::new(59.5, -9.75, -5.0), 0.5);
+    assert!(p.sim.portals.iter().all(Option::is_none), "the grill didn't clear her portals");
+    p.shoot(PortalColor::Blue, Vec3::new(58.06, -5.03, -12.8));
+    p.shoot(PortalColor::Orange, Vec3::new(58.37, -3.25, -8.06));
     let lift = p.mover("lift_a_rm8");
     p.wait_for(20.0, "the pellet in the receptacle (the lift to come down)", |p| p.sim.movers[lift].goal.is_some() || p.sim.movers[lift].node != 0);
     p.wait_for(10.0, "the lift to come down", |p| p.sim.movers[lift].goal.is_none());
@@ -1906,22 +1917,27 @@ fn chamber_00_clock_runs() {
 
 
 
-/// Chamber 15's trapped pellet (#61): its launcher is set into its alcove's wall, firing out
-/// against a plug and back. A portal shot at it from the room (across the grill, from where she
-/// stands in section 2) opens on the wall over the pellet's way, so it can be let out.
+/// Chamber 15's section-2 pellet (#61): its launcher fires into a plate set just in front of
+/// it, which sends the pellet back out across the room (not trapped between the plate and the
+/// launcher's wall); and no portal goes over the launcher, set in its wall.
 #[test]
-fn chamber_15_trapped_pellet_takes_a_portal_from_the_room() {
+fn chamber_15_pellet_comes_out_of_its_launcher() {
     let Some(mut p) = Play::load("testchmb_a_10") else { return };
-    let pellet = Vec3::new(50.54, -4.99, -12.8);
-    for (x, z) in [(48.0, -0.5), (51.0, 2.5), (49.5, -5.0)] {
-        let fy = p.floors(x, z, -11.0, -8.0)[0];
-        p.c.feet = Vec3::new(x, fy, z);
-        p.c.vel = Vec3::ZERO;
-        p.sim.portals = [None, None];
-        p.look_at(pellet);
-        let eye = p.c.view().eye;
-        assert!(p.sim.fire(PortalColor::Orange, Aim { eye, dir: (pellet - eye).normalize(), yaw: p.c.yaw }), "no portal from ({x}, {z})");
-        let o = p.sim.portals[1].unwrap();
-        assert!(o.normal.z > 0.9 && o.in_oval(Vec3::new(pellet.x, pellet.y, o.center.z)), "from ({x}, {z}) it's at {} (not over the pellet)", o.center);
+    p.c.feet = Vec3::new(70.0, -9.3, 27.0);
+    let mut far = f32::MIN;
+    for _ in 0..240 {
+        p.step(&Input::default());
+        far = p.sim.pellets.iter().filter(|q| q.alive && (q.pos.x - 50.54).abs() < 0.1).map(|q| q.pos.z).fold(far, f32::max);
     }
+    assert!(far > 5.0, "the pellet didn't come out across the room (furthest z {far})");
+    // From the far side, aimed at the launcher's wall right over it.
+    p.c.feet = Vec3::new(51.0, -9.75, -7.0);
+    p.c.vel = Vec3::ZERO;
+    let at = Vec3::new(50.54, -4.99, -12.8);
+    p.look_at(at);
+    let eye = p.c.view().eye;
+    p.sim.portals = [None, None];
+    p.sim.fire(PortalColor::Orange, Aim { eye, dir: (at - eye).normalize(), yaw: p.c.yaw });
+    assert!(p.sim.portals[1].is_none_or(|o| !o.in_rect(Vec3::new(at.x, at.y, o.center.z), -0.2)), "a portal went over the launcher: {:?}", p.sim.portals[1]);
 }
+

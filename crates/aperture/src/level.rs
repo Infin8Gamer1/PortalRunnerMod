@@ -263,14 +263,15 @@ pub struct Launch {
     /// After its pellet's gone, it fires again this much later; `None`: only when told to
     /// (Portal's LaunchBall).
     pub reload: Option<f32>,
-    /// Its body is a box behind it (false: the map's launcher model is in front of where it
-    /// fires from, set into the wall, which stands for it).
-    pub body: bool,
+    /// Where the map's launcher model is, when it's set into a wall in front of where it fires
+    /// from (Chamber 15's): the wall stands for its body, and portals don't go over it. `None`:
+    /// its body is a box just behind it.
+    pub model: Option<Vec3>,
 }
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { speed: 7.0, after_portal: 6.0, reload: Some(1.5), body: true }
+        Launch { speed: 7.0, after_portal: 6.0, reload: Some(1.5), model: None }
     }
 }
 
