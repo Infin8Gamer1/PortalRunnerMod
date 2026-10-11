@@ -165,6 +165,8 @@ const MAX_LIGHTS: usize = 96;
 /// Dimmer than this, a light is not also drawn as a bulb. The elevator shafts' lights
 /// (about 40-60) are those bulbs: a dot of light in an otherwise dark car.
 const BULB_MIN_BRIGHTNESS: f32 = 80.0;
+/// How brightly an elevator's cabin lamp glows.
+const CABIN_GLOW: f32 = 25.0;
 
 struct Group {
     /// The brush model it's part of (0: the world).
@@ -374,6 +376,7 @@ pub fn sync(
         let f: Vec<f32> = v.split_whitespace().filter_map(|x| x.parse().ok()).collect();
         Vec3::new(f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(0.0), f.get(2).copied().unwrap_or(0.0))
     };
+    let mut cabin_lamp: Option<(Handle<Mesh>, Handle<StandardMaterial>)> = None;
     for line in text.lines() {
         let f: Vec<&str> = line.split('|').collect();
         if f.len() < 6 {
@@ -396,14 +399,23 @@ pub fn sync(
             Visibility::default(),
             Transform::from_translation(at).with_rotation(turn),
         ));
-        // The shaft lights stay where they are, so the car goes dark as it leaves them.
-        // A light on the car rides with it (`move_models` moves this prop).
+        // The shaft lights stay where they are, so the car goes dark as it leaves them, and
+        // its doors shut them out. A light on the car rides with it (`move_models` moves this
+        // prop): a lamp under its roof (the model's origin is its floor's middle, its roof 3.6 m
+        // up). Ray tracing lights by what glows, so the lamp glows; the ordinary path has the
+        // point light too.
         if f[1].contains("round_elevator_body") {
+            let lamp = cabin_lamp.get_or_insert_with(|| {
+                let warm = LinearRgba::rgb(1.0, 0.93, 0.82) * CABIN_GLOW;
+                (meshes.add(Cylinder::new(0.42, 0.03)), materials.add(StandardMaterial { base_color: Color::WHITE, emissive: warm, ..default() }))
+            });
+            let lamp = lamp.clone();
             spawned.with_children(|c| {
                 c.spawn((
                     PointLight { intensity: 80_000.0, color: Color::srgb(1.0, 0.95, 0.88), range: 4.5, radius: 0.0, shadow_maps_enabled: false, ..default() },
                     Transform::from_xyz(0.0, 1.45, 0.0),
                 ));
+                c.spawn((Mesh3d(lamp.0), MeshMaterial3d(lamp.1), Transform::from_xyz(0.0, 3.3, 0.0), NotShadowCaster));
             });
         }
     }

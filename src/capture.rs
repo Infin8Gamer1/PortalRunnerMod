@@ -489,6 +489,20 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Inside Chamber 00's exit elevator (testchmb_a_00), doors open, closing, and on the
+        // ride up (#34): the cabin should stay lit.
+        "elevator" => {
+            let map = aperture::levels::all().len();
+            let mut v = vec![Map(map), Wait(100), Teleport(Vec3::new(6.5, 15.1, 9.75)), Look(90.0, -5.0), Wait(30), Shot("elevator_a_in")];
+            for k in 0..6 {
+                v.extend([Wait(150), Shot(Box::leak(format!("elevator_b{k}").into_boxed_str()))]);
+                if k == 2 {
+                    // Its roof, and the lamp under it.
+                    v.extend([Look(-90.0, 55.0), Wait(3), Shot("elevator_c_up"), Look(90.0, -5.0)]);
+                }
+            }
+            v
+        }
         // High energy pellets and the platform they power (#23, #22): Chamber 06, its pellet
         // sent through portals into the catcher.
         "pellets" => vec![
