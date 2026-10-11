@@ -242,6 +242,42 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
     for p in &bsp.static_props {
         add("static", &p.model, p.skin, p.origin, p.angles, "", "", None);
     }
+    // Its glow sprites (env_sprite: a catcher's halo and ring, the lamps' glows): `sprite|
+    // <material>|x y z|<size> <r> <g> <b> <alpha> <rendermode> <on>|parent|name`, their textures
+    // written once. Size is Source's (units across: texture width times scale). One's on from
+    // the start if it says so, or if nothing could turn it on (it's unnamed). The escapes'
+    // near-black sphere silhouettes are left out.
+    let tex_dir = path.parent().and_then(|m| m.parent()).map(|o| o.join("textures").join("map")).unwrap_or_default();
+    let mut sprites = String::new();
+    for e in ents {
+        if bsp::key(e, "classname") != Some("env_sprite") {
+            continue;
+        }
+        let (Some(model), Some(o)) = (bsp::key(e, "model"), bsp::vec3_key(e, "origin")) else { continue };
+        let name = model.to_ascii_lowercase().replace('\\', "/");
+        let name = name.trim_start_matches("materials/").trim_end_matches(".vmt").trim_end_matches(".spr").to_string();
+        if name.contains("sphere_silhouette") {
+            continue;
+        }
+        let mat = material(&name, read, None, &tex_dir);
+        if !mat.textured {
+            continue;
+        }
+        let vmt = read(&format!("materials/{name}.vmt")).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        let width = crate::vmt_base_texture(&vmt).and_then(|b| read(&format!("materials/{b}.vtf"))).and_then(|v| v.get(16..18).map(|w| u16::from_le_bytes([w[0], w[1]]))).unwrap_or(64);
+        let scale = bsp::key(e, "scale").and_then(|v| v.trim().parse::<f32>().ok()).filter(|s| *s > 0.0).unwrap_or(1.0);
+        let color: Vec<f32> = bsp::key(e, "rendercolor").unwrap_or("255 255 255").split_whitespace().filter_map(|c| c.parse().ok()).collect();
+        let alpha = bsp::key(e, "renderamt").and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(255.0);
+        let mode = bsp::key(e, "rendermode").and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+        let target = bsp::key(e, "targetname").unwrap_or("");
+        let on = target.is_empty() || bsp::key(e, "spawnflags").and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0) & 1 != 0;
+        let o = attachment_at(e).unwrap_or(o);
+        let c = |k: usize| color.get(k).copied().unwrap_or(255.0);
+        sprites.push_str(&format!(
+            "sprite|{name}|{} {} {}|{} {} {} {} {} {} {}|{}|{target}\n",
+            o.x, o.y, o.z, width as f32 * scale, c(0), c(1), c(2), alpha, mode, u8::from(on), bsp::key(e, "parentname").unwrap_or("")
+        ));
+    }
     for e in ents {
         let class = bsp::key(e, "classname").unwrap_or("");
         if !matches!(class, "prop_dynamic" | "prop_dynamic_override" | "prop_physics" | "prop_physics_override" | "prop_physics_multiplayer") {
@@ -255,6 +291,7 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
         let default_anim = bsp::key(e, "DefaultAnim").filter(|d| !d.trim().is_empty());
         add(kind, model, skin, o, a, bsp::key(e, "parentname").unwrap_or(""), bsp::key(e, "targetname").unwrap_or(""), default_anim);
     }
+    text.push_str(&sprites);
     std::fs::write(path, text).map_err(|e| e.to_string())?;
     Ok(used)
 }

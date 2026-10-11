@@ -97,6 +97,8 @@ pub enum Kind {
     ChangeLevel { map: String, landmark: String },
     /// A model that animates (prop_dynamic): see [`Io::animations`] and [`Io::skins`].
     Animated,
+    /// A glow sprite (env_sprite), shown or hidden: see [`Io::hidden`].
+    Sprite,
     /// Picks which frame of its brush's texture shows (env_texturetoggle: a door's state
     /// panel, X or check): see [`Io::frames`].
     TextureToggle { target: String },
@@ -136,8 +138,8 @@ pub struct Io {
     /// one's started (so the host can tell a replay).
     pub animations: HashMap<usize, (String, u32)>,
     animation_count: u32,
-    /// Animated props (entities) that aren't shown: they start disabled, or the logic has
-    /// disabled them (a catcher's ball, until it's caught).
+    /// Animated props and sprites (entities) that aren't shown: they start disabled (or off), or
+    /// the logic has disabled (hidden) them: a catcher's ball and its halo, until it's caught.
     pub hidden: std::collections::HashSet<usize>,
     /// Each animated prop's (entity's) skin, where the logic has changed it.
     pub skins: HashMap<usize, u32>,
@@ -627,6 +629,18 @@ impl Io {
                     self.hidden.insert(e);
                 }
             }
+            Kind::Sprite => match i.as_str() {
+                "showsprite" => {
+                    self.hidden.remove(&e);
+                }
+                "hidesprite" => {
+                    self.hidden.insert(e);
+                }
+                "togglesprite" if !self.hidden.remove(&e) => {
+                    self.hidden.insert(e);
+                }
+                _ => {}
+            },
             Kind::Animated if i == "skin" => {
                 self.skins.insert(e, num(param).max(0.0) as u32);
             }

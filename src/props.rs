@@ -63,6 +63,7 @@ pub struct PropModels {
     plate_launch: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; PLATE_CLIPS])>,
     /// A pellet launcher's mouth: open, then close.
     launcher_fire: Option<(Handle<AnimationGraph>, [AnimationNodeIndex; 2])>,
+    catcher_close: Option<(Handle<AnimationGraph>, AnimationNodeIndex)>,
 }
 
 impl PropModels {
@@ -90,6 +91,8 @@ pub enum PropKind {
     Turret(usize),
     /// A high energy pellet launcher (its mouth plays when it fires).
     PelletLauncher(usize),
+    /// A high energy pellet catcher (it closes when it's caught one).
+    PelletCatcher(usize),
     DoorUpper(usize),
     DoorLower(usize),
     /// Portal's round door (both leaves, `door_left` and `door_right`, which slide apart).
@@ -133,7 +136,12 @@ pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<Asse
         let (graph, nodes) = AnimationGraph::from_clips(clips);
         (graphs.add(graph), [nodes[0], nodes[1]])
     });
-    commands.insert_resource(PropModels { scenes, plate_launch, launcher_fire });
+    // pellet_catcher.glb writes idle, close, closed: it closes when it catches.
+    let catcher_close = extracted.model("pellet_catcher").map(|path| {
+        let (graph, node) = AnimationGraph::from_clip(assets.load(GltfAssetLabel::Animation(1).from_asset(path)));
+        (graphs.add(graph), node)
+    });
+    commands.insert_resource(PropModels { scenes, plate_launch, launcher_fire, catcher_close });
 }
 
 fn spawn_model(commands: &mut Commands, scene: Handle<WorldAsset>, tf: Transform, kind: PropKind) -> Entity {
@@ -263,14 +271,12 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
                 let tf = Transform::from_translation(l.at - l.dir * 1.09 * s).with_rotation(basis(right, up, -l.dir)).with_scale(Vec3::splat(s));
                 spawn_model(commands, launcher.clone(), tf, PropKind::PelletLauncher(i));
             }
-            // A catcher's opening is its model's +Y (its lid's there; its arms reach 1.27 m down
-            // to the wall): facing out of its wall, the arms' ends on it (0.9 m behind the
-            // lens, where the sim's box ends), the lens in its cup.
-            for c in &sim.pellet_catchers {
-                let (right, _) = frame_for(c.facing);
-                let turn = Quat::from_mat3(&Mat3::from_cols(right.normalize(), c.facing.normalize(), right.normalize().cross(c.facing.normalize())));
-                let tf = Transform::from_translation(c.at - c.facing * (0.9 - 1.27 * s)).with_rotation(turn).with_scale(Vec3::splat(s));
-                spawn_model(commands, catcher.clone(), tf, PropKind::Static);
+            // A catcher's opening is its model's front (-Z) once its idle stands it up, as Portal's
+            // maps place it: facing out of its wall, the lens in its cup.
+            for (i, c) in sim.pellet_catchers.iter().enumerate() {
+                let (right, up) = frame_for(c.facing);
+                let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, -c.facing)).with_scale(Vec3::splat(s));
+                spawn_model(commands, catcher.clone(), tf, PropKind::PelletCatcher(i));
             }
         }
     }
@@ -492,7 +498,12 @@ pub fn launcher_mouth(since: f32, open: f32, close: f32) -> (bool, f32) {
 #[derive(Component)]
 pub struct LauncherPlayer(usize);
 
-/// Give each pellet launcher's animation player its open and close clips.
+/// A pellet catcher's animation player, and which catcher it's for.
+#[derive(Component)]
+pub struct CatcherPlayer(usize);
+
+/// Give each pellet launcher's animation player its open and close clips, and each catcher's
+/// its close.
 pub fn tag_launcher_players(
     mut commands: Commands,
     added: Query<Entity, Added<AnimationPlayer>>,
@@ -500,16 +511,46 @@ pub fn tag_launcher_players(
     roots: Query<&PropKind>,
     models: Res<PropModels>,
 ) {
-    let Some((graph, _)) = &models.launcher_fire else { return };
     for e in &added {
         let mut cur = e;
         for _ in 0..8 {
             let Ok(p) = parents.get(cur) else { break };
             cur = p.parent();
-            if let Ok(PropKind::PelletLauncher(i)) = roots.get(cur) {
-                commands.entity(e).insert((AnimationGraphHandle(graph.clone()), LauncherPlayer(*i)));
-                break;
+            match (roots.get(cur), &models.launcher_fire, &models.catcher_close) {
+                (Ok(PropKind::PelletLauncher(i)), Some((graph, _)), _) => {
+                    commands.entity(e).insert((AnimationGraphHandle(graph.clone()), LauncherPlayer(*i)));
+                    break;
+                }
+                (Ok(PropKind::PelletCatcher(i)), _, Some((graph, _))) => {
+                    commands.entity(e).insert((AnimationGraphHandle(graph.clone()), CatcherPlayer(*i)));
+                    break;
+                }
+                _ => {}
             }
+        }
+    }
+}
+
+/// A catcher stays open till it's caught a pellet, then closes on it (once, held shut).
+pub fn animate_catchers(game: Res<Game>, models: Res<PropModels>, mut players: Query<(&CatcherPlayer, &mut AnimationPlayer)>) {
+    let Some((_, node)) = &models.catcher_close else { return };
+    for (cp, mut player) in &mut players {
+        let lit = game.sim.pellet_catchers.get(cp.0).is_some_and(|c| c.lit);
+        if !player.is_playing_animation(*node) {
+            player.start(*node).pause();
+        }
+        let Some(active) = player.animation_mut(*node) else { continue };
+        match (lit, active.is_paused()) {
+            (true, true) => {
+                active.resume();
+            }
+            (false, false) => {
+                active.pause().seek_to(0.0);
+            }
+            (false, true) if active.seek_time() != 0.0 => {
+                active.seek_to(0.0);
+            }
+            _ => {}
         }
     }
 }

@@ -382,6 +382,8 @@ const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
     ("turret", &[("@idle", "idle")]),
     // Rest pose is `@idle_closed` (see `convert_model`): the bind pose isn't the closed mouth.
     ("pellet_launcher", &[("@idle_closed", "idle_closed"), ("@open", "open"), ("@close", "close"), ("@idle_open", "idle_open")]),
+    // Open at rest; it closes on the pellet it's caught.
+    ("pellet_catcher", &[("@idle", "idle"), ("@close", "close"), ("@closed", "closed")]),
 ];
 
 fn main() {
@@ -862,10 +864,20 @@ fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_path
         }
     }
     let flag = |k: &str| vmt_value(&text, k).is_some_and(|v| v.trim() == "1");
+    // An additive material (a lamp's glow cards, a pellet's): glTF has no adding, so it's
+    // blended by how bright it is (its black is clear) and glows. Drawn opaque, it was a grey
+    // blade out of every cage light.
+    let additive = flag("$additive");
     let mut texture_png = None;
     if let Some(base) = vmt_base_texture(&text) {
         if let Some(vtf) = read(&format!("materials/{base}.vtf")) {
-            if let Ok(img) = decode_vtf(&vtf) {
+            if let Ok(mut img) = decode_vtf(&vtf) {
+                if additive {
+                    for p in img.pixels_mut() {
+                        let bright = p[0].max(p[1]).max(p[2]) as u32;
+                        p[3] = (bright * p[3] as u32 / 255) as u8;
+                    }
+                }
                 let mut png = Vec::new();
                 if image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {
                     texture_png = Some(png);
@@ -873,7 +885,8 @@ fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_path
             }
         }
     }
-    glb::Material { texture_png, blend: flag("$translucent"), mask: flag("$alphatest"), ..Default::default() }
+    let emissive_png = texture_png.clone().filter(|_| additive);
+    glb::Material { texture_png, blend: flag("$translucent") || additive, mask: flag("$alphatest"), emissive_png, emissive_strength: 1.0, ..Default::default() }
 }
 
 /// A VMT key's value (case-insensitive, quoted or not), anywhere in the file.

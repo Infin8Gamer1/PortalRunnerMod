@@ -377,9 +377,46 @@ pub fn sync(
         Vec3::new(f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(0.0), f.get(2).copied().unwrap_or(0.0))
     };
     let mut cabin_lamp: Option<(Handle<Mesh>, Handle<StandardMaterial>)> = None;
+    let mut sprite_quad: Option<Handle<Mesh>> = None;
+    let sprites: HashMap<&str, usize> = game
+        .sim
+        .io
+        .iter()
+        .flat_map(|io| io.ents.iter().enumerate())
+        .filter_map(|(i, e)| (e.kind == aperture::io::Kind::Sprite).then_some((e.name.as_str(), i)))
+        .collect();
     for line in text.lines() {
         let f: Vec<&str> = line.split('|').collect();
         if f.len() < 6 {
+            continue;
+        }
+        // A glow sprite: a quad facing the camera, glowing additively in its colour.
+        if f[0] == "sprite" {
+            let v: Vec<f32> = f[3].split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            let Some(tex) = extracted.texture(&format!("map/{}", f[1])) else { continue };
+            let (size, rgb, alpha) = (v.first().copied().unwrap_or(64.0) * 0.0254, Vec3::new(v.get(1).copied().unwrap_or(255.0), v.get(2).copied().unwrap_or(255.0), v.get(3).copied().unwrap_or(255.0)) / 255.0, v.get(4).copied().unwrap_or(255.0) / 255.0);
+            let mover = movers.get(f[4]).copied();
+            let at = aperture::source::to_ours(floats(f[2])) + mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
+            let mat = materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(rgb.x * alpha * SPRITE_GLOW, rgb.y * alpha * SPRITE_GLOW, rgb.z * alpha * SPRITE_GLOW),
+                base_color_texture: Some(images.add(tex)),
+                alpha_mode: AlphaMode::Add,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            });
+            let ent = sprites.get(f[5]).map(|&e| (e, Handle::default()));
+            commands.spawn((
+                ChamberGeom,
+                MapProp { base: at, turn: Quat::IDENTITY, mover, animated: ent, model: f[1].to_string(), skin: 0 },
+                MapSprite,
+                Mesh3d(sprite_quad.get_or_insert_with(|| meshes.add(Rectangle::new(1.0, 1.0))).clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(at).with_scale(Vec3::splat(size)),
+                Visibility::default(),
+                NotShadowCaster,
+            ));
             continue;
         }
         let Some(path) = extracted.model(f[1]) else { continue };
@@ -467,9 +504,9 @@ pub fn sync(
 
 /// Brush models (and props parented to them) follow their movers: doors slide, elevators
 /// ride, walls come and go.
-pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform), Without<MapModel>>) {
+pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform, Has<MapSprite>), Without<MapModel>>) {
     let movers = &game.sim.movers;
-    for (p, mut tf) in &mut props {
+    for (p, mut tf, sprite) in &mut props {
         let Some(mv) = p.mover.and_then(|m| movers.get(m)) else { continue };
         let (at, turn) = match mv.def.swing {
             Some(sw) => {
@@ -478,6 +515,8 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
             }
             None => (p.base + mv.offset(), p.turn),
         };
+        // (A sprite turns to the camera, not with what it rides.)
+        let turn = if sprite { tf.rotation } else { turn };
         if tf.translation != at || tf.rotation != turn {
             tf.translation = at;
             tf.rotation = turn;
@@ -500,6 +539,24 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
         let want = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
+        }
+    }
+}
+
+/// One of a map's glow sprites (env_sprite): it turns to face the camera.
+#[derive(Component)]
+pub struct MapSprite;
+
+/// How bright a sprite glows over its colour (additive, so the tonemap lifts it to a glow).
+const SPRITE_GLOW: f32 = 1.5;
+
+/// Sprites face the camera.
+pub fn face_sprites(camera: Query<&GlobalTransform, With<crate::PlayerCamera>>, mut sprites: Query<&mut Transform, With<MapSprite>>) {
+    let Ok(cam) = camera.single() else { return };
+    let turn = cam.compute_transform().rotation;
+    for mut tf in &mut sprites {
+        if tf.rotation != turn {
+            tf.rotation = turn;
         }
     }
 }

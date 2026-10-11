@@ -587,6 +587,12 @@ fn script(name: &str) -> Vec<Act> {
             Look(0.0, -15.0),
             Wait(200),
             Shot("pellet_c_platform"),
+            // The catcher, closed on what it caught.
+            Teleport(Vec3::new(-6.5, 0.2, -36.0)),
+            Launch(Vec3::ZERO),
+            Look(90.0, 5.0),
+            Wait(2),
+            Shot("pellet_d_catcher"),
         ],
         "plate" => vec![
             Map(0),

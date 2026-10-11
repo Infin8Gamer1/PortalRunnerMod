@@ -457,6 +457,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 }
             }
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
+            "env_sprite" if !name.is_empty() => kind = io::Kind::Sprite,
             "env_texturetoggle" => kind = io::Kind::TextureToggle { target: key(e, "target").unwrap_or("").to_ascii_lowercase() },
             // The maker puts the template where it is (turned as it's turned): the cube keeps
             // its place relative to the template, so it sits on the floor as the map's had it.
@@ -544,8 +545,19 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         }
     }
     let signals = l.signal_count().max(next_sig);
-    // Props that start disabled aren't shown till they're enabled.
-    let hidden = ents.iter().zip(&io_ents).enumerate().filter(|(_, (e, ent))| ent.kind == io::Kind::Animated && key(e, "StartDisabled") == Some("1")).map(|(k, _)| k).collect();
+    // Props that start disabled, and sprites that start off, aren't shown till they're turned on.
+    let hidden = ents
+        .iter()
+        .zip(&io_ents)
+        .enumerate()
+        .filter(|(_, (e, ent))| match ent.kind {
+            io::Kind::Animated => key(e, "StartDisabled") == Some("1"),
+            // (A named sprite is off unless it starts on.)
+            io::Kind::Sprite => flags(e) & 1 == 0,
+            _ => false,
+        })
+        .map(|(k, _)| k)
+        .collect();
     let mut logic = io::Io::new(io_ents, initial, signals);
     logic.hidden = hidden;
     l.io = Some(logic);
