@@ -57,12 +57,15 @@ impl Game {
 
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         let path = path.to_ascii_lowercase().replace('\\', "/");
+        // (An empty loose file is a placeholder some installs have: the archives have the data.)
         for l in &self.loose {
             if let Ok(b) = std::fs::read(l.join(&path)) {
-                return Some(b);
+                if !b.is_empty() {
+                    return Some(b);
+                }
             }
         }
-        self.vpks.iter().find_map(|v| v.read(&path))
+        self.vpks.iter().find_map(|v| v.read(&path)).filter(|b| !b.is_empty())
     }
 }
 
@@ -680,10 +683,14 @@ fn main() {
                         let stem = Path::new(wave).file_stem().and_then(|s| s.to_str()).unwrap_or("line");
                         let ours = format!("vo_{stem}");
                         let file = out.join("sounds").join(format!("{ours}.wav"));
-                        if !file.exists() {
+                        // (Written again if an earlier run left it empty.)
+                        if std::fs::metadata(&file).map_or(true, |m| m.len() == 0) {
                             match read_any(&format!("sound/{wave}")) {
                                 Some(bytes) => std::fs::write(&file, bytes).expect("write sound"),
-                                None => continue,
+                                None => {
+                                    let _ = std::fs::remove_file(&file);
+                                    continue;
+                                }
                             }
                         }
                         said.push(format!("{start}:{ours}"));

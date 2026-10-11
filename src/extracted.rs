@@ -133,6 +133,16 @@ impl Extracted {
     }
 }
 
+/// Whether a sound file's bytes look like what its extension says (a RIFF wave; an MP3 with
+/// its tag or a frame header).
+fn playable(ext: &str, bytes: &[u8]) -> bool {
+    match ext {
+        "wav" => bytes.len() > 44 && bytes.starts_with(b"RIFF"),
+        "mp3" => bytes.starts_with(b"ID3") || (bytes.len() > 4 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0),
+        _ => false,
+    }
+}
+
 pub fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     let root = find_root();
     let mut sounds = HashMap::new();
@@ -149,6 +159,12 @@ pub fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
                     }
                     let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else { continue };
                     if let Ok(bytes) = std::fs::read(&p) {
+                        // Only what can be decoded: the decoder panics on anything else (an
+                        // empty file left by an old extract, say).
+                        if !playable(ext, &bytes) {
+                            warn!("{}: not a sound, skipped (run `cargo run --release -p portal_extract` again)", p.display());
+                            continue;
+                        }
                         let db = wav_rms_db(&bytes);
                         let h = sources.add(AudioSource { bytes: Arc::from(bytes.into_boxed_slice()) });
                         if let Some(db) = db {
@@ -196,5 +212,9 @@ mod tests {
         // Quiet sounds are never boosted.
         assert_eq!(normalising_gain(db), 1.0);
         assert_eq!(wav_rms_db(b"not a wav"), None);
+        // Empty or foreign files aren't loaded (the decoder would panic on them).
+        assert!(playable("wav", &loud));
+        assert!(!playable("wav", b""));
+        assert!(!playable("mp3", b""));
     }
 }
