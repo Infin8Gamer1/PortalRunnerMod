@@ -203,7 +203,7 @@ pub type UsedModel = (String, i32, Vec<String>);
 /// yaw roll|parent|name`, Source space), and say which models they use.
 fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<UsedModel>, String> {
     // Props the logic puts on an attachment of the prop they're parented to (a catcher's ball
-    // on `ball_attachment`): they're written where that is.
+    // on `ball_attachment`): they're written where that is (#52).
     let mut on_attachment: HashMap<String, String> = HashMap::new();
     for e in ents {
         for (k, v) in e {
@@ -217,7 +217,10 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
         let name = on_attachment.get(&bsp::key(e, "targetname")?.to_ascii_lowercase())?;
         let parent_name = bsp::key(e, "parentname")?;
         let parent = ents.iter().find(|p| bsp::key(p, "targetname").is_some_and(|n| n.eq_ignore_ascii_case(parent_name)))?;
-        let local = crate::attachment_point(&read(&bsp::key(parent, "model")?.to_ascii_lowercase())?, name)?;
+        // (Posed as the catcher closes on it: the ball only shows once it's caught one. The
+        // bind pose leaves out the model's turn upright, so it's only the last resort.)
+        let mdl = read(&bsp::key(parent, "model")?.to_ascii_lowercase())?;
+        let local = ["closed", "close", "idle"].iter().find_map(|a| crate::attachment_point_posed(&mdl, name, a)).or_else(|| crate::attachment_point(&mdl, name))?;
         let a = bsp::vec3_key(parent, "angles").unwrap_or(Vec3::ZERO);
         let turn = glam::Quat::from_rotation_z(a.y.to_radians()) * glam::Quat::from_rotation_y(a.x.to_radians()) * glam::Quat::from_rotation_x(a.z.to_radians());
         Some(bsp::vec3_key(parent, "origin")? + turn * local)

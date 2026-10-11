@@ -454,6 +454,9 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--attachment") {
         let (Some(path), Some(name)) = (args.get(i + 1), args.get(i + 2)) else { return };
         println!("{path} {name}: {:?}", read_any(path).and_then(|m| attachment_point(&m, name)));
+        if let Some(anim) = args.get(i + 3) {
+            println!("  posed as {anim}: {:?}", read_any(path).and_then(|m| attachment_point_posed(&m, name, anim)));
+        }
         return;
     }
     // `--inspect <mdl path>...`: describe models (parts, bones, size) instead of extracting.
@@ -938,6 +941,22 @@ pub fn attachment_point(mdl: &[u8], name: &str) -> Option<glam::Vec3> {
     let to_bone = glam::Affine3A::from_cols_array(&[m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2], m[0][3], m[1][3], m[2][3]]);
     let l: [[f32; 4]; 3] = bytemuck::cast(a.local);
     Some(to_bone.inverse().transform_point3(glam::Vec3::new(l[0][3], l[1][3], l[2][3])))
+}
+
+/// The same, posed as animation `anim` leaves it (its last frame): a catcher's ball sits where
+/// the closed catcher holds it. None if there's no such animation.
+pub fn attachment_point_posed(mdl_bytes: &[u8], name: &str, anim: &str) -> Option<glam::Vec3> {
+    let mdl = vmdl::Mdl::read(mdl_bytes).ok()?;
+    let a = mdl.attachments.iter().find(|a| a.name.eq_ignore_ascii_case(name))?;
+    let bone = usize::try_from(a.local_bone).ok()?;
+    let bones: Vec<&vmdl::mdl::Bone> = mdl.bones.iter().collect();
+    let parents: Vec<i32> = bones.iter().map(|b| b.parent).collect();
+    let anims = anim::read(mdl_bytes, &bones).ok()?;
+    let posed = anims.iter().find(|x| x.name.trim_start_matches('@').eq_ignore_ascii_case(anim))?;
+    let world = posed.world(posed.frames.len() - 1, &parents);
+    let l: [[f32; 4]; 3] = bytemuck::cast(a.local);
+    let local = glam::Affine3A::from_cols_array(&[l[0][0], l[1][0], l[2][0], l[0][1], l[1][1], l[2][1], l[0][2], l[1][2], l[2][2], l[0][3], l[1][3], l[2][3]]);
+    Some((*world.get(bone)? * local).translation.into())
 }
 
 /// Each bone's pose-to-bone matrix: from the model's bind pose into the bone's own space.
