@@ -502,6 +502,8 @@ fn script(name: &str) -> Vec<Act> {
             for k in 0..8 {
                 v.extend([Shot(Box::leak(format!("pedestal_{k}").into_boxed_str())), Wait(40)]);
             }
+            // Up to it: hers. Then a shot of her own.
+            v.extend([Teleport(Vec3::new(-3.5, -3.25, -1.9)), Look(0.0, -12.0), Wait(20), Shot("pedestal_taken"), Look(90.0, 0.0), Wait(5), Fire(PortalColor::Blue), Wait(20), Shot("pedestal_fired")]);
             v
         }
         // Inside Chamber 00's exit elevator (testchmb_a_00), doors open, closing, and on the

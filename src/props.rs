@@ -47,6 +47,7 @@ pub const NAMES: &[&str] = &[
     "pellet_launcher",
     "pellet_catcher",
     "turret",
+    "portalgun_world",
     "door_upper",
     "door_lower",
     "door_frame",
@@ -89,6 +90,8 @@ pub enum PropKind {
     Catcher(usize, bool),
     /// A sentry turret (standing, or falling over).
     Turret(usize),
+    /// A portal gun on a pedestal, till she takes it.
+    GunPickup(usize),
     /// A high energy pellet launcher (its mouth plays when it fires).
     PelletLauncher(usize),
     /// A high energy pellet catcher (it closes when it's caught one).
@@ -278,6 +281,12 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
                 let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, -c.facing)).with_scale(Vec3::splat(s));
                 spawn_model(commands, catcher.clone(), tf, PropKind::PelletCatcher(i));
             }
+        }
+    }
+    if let Some(scene) = models.get("portalgun_world") {
+        for i in 0..sim.gun_pickups.len() {
+            let (at, turn) = sim.gun_pose(i);
+            spawn_model(commands, scene.clone(), Transform::from_translation(at).with_rotation(turn), PropKind::GunPickup(i));
         }
     }
     if let Some(scene) = models.get("turret") {
@@ -706,6 +715,18 @@ pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, m
             if let Some(t) = sim.turrets.get(i) {
                 let tilt = if t.fall_dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_axis_angle(Vec3::Y.cross(t.fall_dir).normalize(), t.fallen * std::f32::consts::FRAC_PI_2) };
                 tf.rotation = tilt * Quat::from_rotation_y(t.yaw);
+            }
+            continue;
+        }
+        // A pedestal's gun turns as its pedestal does, and is gone once she's taken it.
+        if let PropKind::GunPickup(i) = *kind {
+            if i < sim.gun_pickups.len() {
+                let (at, turn) = sim.gun_pose(i);
+                (tf.translation, tf.rotation) = (at, turn);
+                let want = if sim.gun_pickups[i].taken { Visibility::Hidden } else { Visibility::Inherited };
+                if *vis != want {
+                    *vis = want;
+                }
             }
             continue;
         }

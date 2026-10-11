@@ -217,6 +217,17 @@ pub struct PelletCatcher {
     pub lit: bool,
 }
 
+/// A portal gun waiting to be picked up (Portal's pedestal guns): where it is, turned how,
+/// relative to the mover it rides (as that mover is at the start of its path or swing).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GunPickup {
+    pub at: Vec3,
+    pub turn: Quat,
+    pub gun: Gun,
+    pub mover: Option<usize>,
+    pub taken: bool,
+}
+
 /// A brush entity on the move (see [`MoverDef`](crate::level::MoverDef)).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mover {
@@ -507,6 +518,7 @@ pub struct Sim {
     pub doors: Vec<Door>,
     pub movers: Vec<Mover>,
     pub turrets: Vec<Turret>,
+    pub gun_pickups: Vec<GunPickup>,
     /// How hurt Faith is (turrets' fire): at 1 she's dead.
     pub hurt: f32,
     pub launchers: Vec<PelletLauncher>,
@@ -577,6 +589,7 @@ impl Sim {
             doors: Vec::new(),
             movers: Vec::new(),
             turrets: Vec::new(),
+            gun_pickups: Vec::new(),
             hurt: 0.0,
             launchers: Vec::new(),
             pellets: Vec::new(),
@@ -681,6 +694,7 @@ impl Sim {
                     sim.gel.fill(c, geom::snap_axis(normal), u, v, half, paint);
                 }
                 Item::Goo { b } => sim.goo.push(b),
+                Item::GunPickup { at, turn, gun, mover } => sim.gun_pickups.push(GunPickup { at, turn, gun, mover, taken: false }),
                 Item::Turret { at, yaw } => sim.turrets.push(Turret {
                     at,
                     yaw,
@@ -951,9 +965,51 @@ impl Sim {
             PortalColor::Blue => self.gun.blue,
             PortalColor::Orange => self.gun.orange,
         };
-        if !allowed {
-            return false;
+        allowed && self.shoot(color, aim)
+    }
+
+    /// Where pickup gun `i` is and how it's turned now (riding its mover).
+    pub fn gun_pose(&self, i: usize) -> (Vec3, Quat) {
+        let g = &self.gun_pickups[i];
+        match g.mover.and_then(|m| self.movers.get(m)) {
+            Some(m) => match m.def.swing {
+                Some(sw) => {
+                    let r = sw.rotation(m.at.x);
+                    (m.carried + sw.pivot + r * (g.at - sw.pivot), r * g.turn)
+                }
+                None => (g.at + m.offset(), g.turn),
+            },
+            None => (g.at, g.turn),
         }
+    }
+
+    /// Put pickup gun `i` on mover `mover` (or on nothing), staying where it is now.
+    pub fn reparent_gun(&mut self, i: usize, mover: Option<usize>) {
+        let (at, turn) = self.gun_pose(i);
+        let (at, turn) = match mover.and_then(|m| self.movers.get(m)) {
+            Some(m) => match m.def.swing {
+                Some(sw) => {
+                    let r = sw.rotation(m.at.x).inverse();
+                    (sw.pivot + r * (at - m.carried - sw.pivot), r * turn)
+                }
+                None => (at - m.offset(), turn),
+            },
+            None => (at, turn),
+        };
+        let g = &mut self.gun_pickups[i];
+        (g.at, g.turn, g.mover) = (at, turn, mover);
+    }
+
+    /// A shot from a gun that isn't hers (a pedestal's): along its barrel, whatever she can
+    /// fire. Returns whether a portal opened.
+    pub fn fire_pickup_gun(&mut self, i: usize, color: PortalColor) -> bool {
+        // (Portal's world model's barrel, its claws, is along its +Z here.)
+        let (at, turn) = self.gun_pose(i);
+        let dir = (turn * Vec3::Z).normalize_or_zero();
+        self.shoot(color, Aim { eye: at + dir * 0.3, dir, yaw: 0.0 })
+    }
+
+    fn shoot(&mut self, color: PortalColor, aim: Aim) -> bool {
         let (legs, hit) = self.trace(aim.eye, aim.dir, 200.0, Mask::SHOT, 4);
         let from = legs.last().map(|l| l.0).unwrap_or(aim.eye);
         let Some(h) = hit else {

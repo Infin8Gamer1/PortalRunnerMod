@@ -66,6 +66,14 @@ pub fn to_ours(p: Vec3) -> Vec3 {
     Vec3::new(-p.y, p.z, -p.x) * 0.0254
 }
 
+/// Source's angles (pitch, yaw, roll; degrees) as a turn in our space (what's ahead along
+/// Source's +X is ahead along our -Z).
+pub fn source_turn(pitch: f32, yaw: f32, roll: f32) -> glam::Quat {
+    let r = glam::Quat::from_rotation_z(yaw.to_radians()) * glam::Quat::from_rotation_y(pitch.to_radians()) * glam::Quat::from_rotation_x(roll.to_radians());
+    let to_ours = glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
+    to_ours * r * to_ours.inverse()
+}
+
 /// A direction from Source's pitch and yaw (degrees).
 pub fn direction(pitch: f32, yaw: f32) -> Vec3 {
     let (p, y) = (pitch.to_radians(), yaw.to_radians());
@@ -233,6 +241,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     // Train paths: each path node's (mover, node).
     let mut path_nodes: HashMap<String, (usize, usize)> = HashMap::new();
     let mut spawned = false;
+    let mut spawn_gun = Gun::NONE;
 
     for e in &ents {
         let class = key(e, "classname").unwrap_or("");
@@ -253,8 +262,22 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     l.items.push(Item::Cube { at: at + Vec3::Y * 0.02, kind: cube_kind(e) });
                 }
             }
+            // A gun on a pedestal (the map hears when it's picked up) is to be picked up; the
+            // rest are left by the start so a map played by itself hands her what she'd have
+            // by then.
             "weapon_portalgun" => {
-                l.gun = Gun { blue: key(e, "CanFirePortal1") != Some("0"), orange: key(e, "CanFirePortal2") == Some("1") };
+                let gun = Gun { blue: key(e, "CanFirePortal1") != Some("0"), orange: key(e, "CanFirePortal2") == Some("1") };
+                if e.iter().any(|(k, _)| k.eq_ignore_ascii_case("OnPlayerPickup")) {
+                    if let Some(at) = origin(e) {
+                        let (p, y, r) = angles(e, "angles");
+                        let index = l.items.iter().filter(|i| matches!(i, Item::GunPickup { .. })).count();
+                        l.items.push(Item::GunPickup { at, turn: source_turn(p, y, r), gun, mover: None });
+                        kind = io::Kind::GunPickup { index };
+                    }
+                } else {
+                    spawn_gun.blue |= gun.blue;
+                    spawn_gun.orange |= gun.orange;
+                }
             }
             "func_noportal_volume" => {
                 if let Some(b) = mb {
@@ -536,6 +559,14 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         }
         k += 1;
     }
+    // A pickup gun parented to a mover rides it.
+    for (e, ent) in ents.iter().zip(&io_ents) {
+        let io::Kind::GunPickup { index } = ent.kind else { continue };
+        let Some(&mover) = key(e, "parentname").and_then(|p| mover_named.get(&p.to_ascii_lowercase())) else { continue };
+        if let Some(Item::GunPickup { mover: m, .. }) = l.items.iter_mut().filter(|i| matches!(i, Item::GunPickup { .. })).nth(index) {
+            *m = Some(mover);
+        }
+    }
     // Path nodes know their train.
     for ent in &mut io_ents {
         if ent.class == "path_track" {
@@ -562,10 +593,9 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     logic.hidden = hidden;
     l.io = Some(logic);
 
-    // Without a gun in the map, Portal's chambers before you find it: none.
-    if !ents.iter().any(|e| key(e, "classname") == Some("weapon_portalgun")) {
-        l.gun = Gun::NONE;
-    }
+    // The gun she starts with: what the map leaves by the start (none: Portal's chambers
+    // before you find it, and Chamber 02, where it's on a pedestal).
+    l.gun = spawn_gun;
     if !spawned {
         l.spawn([0.0, 0.0, 0.0], 0.0);
     }

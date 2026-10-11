@@ -180,6 +180,9 @@ pub enum Item {
     /// pellet that lives `life` seconds (infinite: for good), and a new one each time the last
     /// is gone, as `launch` says.
     PelletLauncher { at: Vec3, dir: Vec3, inputs: Inputs, life: f32, launch: Launch },
+    /// A portal gun to pick up (on a pedestal), turned `turn`, riding mover `mover` (turning as
+    /// it turns): touching it adds its colours to hers.
+    GunPickup { at: Vec3, turn: glam::Quat, gun: Gun, mover: Option<usize> },
     /// A sentry turret standing at `at`, facing `yaw` (faith_move's: 0 looks down -Z).
     Turret { at: Vec3, yaw: f32 },
     /// A pellet catcher: its lens at `at`, facing `facing`; on for good once a pellet's in.

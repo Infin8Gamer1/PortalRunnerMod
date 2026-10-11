@@ -276,6 +276,8 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("pellet_catcher", "portal", "models/props/combine_ball_catcher.mdl", 0, 0.0),
     // A sentry turret (Portal's).
     ("turret", "portal", "models/props/turret_01.mdl", 0, 0.0),
+    // The portal gun lying on a pedestal (Portal's world model).
+    ("portalgun_world", "portal", "models/weapons/w_portalgun.mdl", 0, 0.0),
     ("door_upper", "portal2", "models/props/vert_door/vert_door_upper.mdl", 0, 0.0),
     ("door_lower", "portal2", "models/props/vert_door/vert_door_lower.mdl", 0, 0.0),
     ("door_frame", "portal2", "models/props/vert_door/vert_door_frame.mdl", 0, 0.0),

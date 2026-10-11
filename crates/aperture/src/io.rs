@@ -18,6 +18,9 @@ use crate::level::{CubeKind, Sig};
 use crate::portal::{Portal, PortalColor};
 use crate::sim::{MapTransition, Sim, SimEvent};
 
+/// She picks up a gun her middle comes this close to.
+const GUN_REACH: f32 = 1.5;
+
 /// How long a GLaDOS scene is taken to run (its lines aren't played).
 const SCENE_SECONDS: f32 = 3.0;
 
@@ -99,6 +102,8 @@ pub enum Kind {
     Animated,
     /// A glow sprite (env_sprite), shown or hidden: see [`Io::hidden`].
     Sprite,
+    /// A portal gun to pick up: the sim's pickup `index`.
+    GunPickup { index: usize },
     /// Picks which frame of its brush's texture shows (env_texturetoggle: a door's state
     /// panel, X or check): see [`Io::frames`].
     TextureToggle { target: String },
@@ -282,6 +287,22 @@ impl Io {
                         self.fire(e, "OnEndTouchAll", None);
                     }
                 }
+            }
+        }
+
+        // A pickup gun she's come to: hers (its colours), and the map hears of it.
+        for e in 0..self.ents.len() {
+            let Kind::GunPickup { index } = self.ents[e].kind else { continue };
+            if sim.gun_pickups[index].taken {
+                continue;
+            }
+            let (at, _) = sim.gun_pose(index);
+            if at.distance(ctrl.feet + Vec3::Y * 0.9) < GUN_REACH {
+                let g = &mut sim.gun_pickups[index];
+                g.taken = true;
+                sim.gun.blue |= g.gun.blue;
+                sim.gun.orange |= g.gun.orange;
+                self.fire(e, "OnPlayerPickup", None);
             }
         }
 
@@ -631,6 +652,23 @@ impl Io {
                     self.hidden.insert(e);
                 }
             }
+            Kind::GunPickup { index } => match i.as_str() {
+                "fireportal1" => {
+                    sim.fire_pickup_gun(index, PortalColor::Blue);
+                }
+                "fireportal2" => {
+                    sim.fire_pickup_gun(index, PortalColor::Orange);
+                }
+                "setparent" => {
+                    let mover = self.by_name.get(&param.trim().to_ascii_lowercase()).into_iter().flatten().find_map(|&t| match self.ents[t].kind {
+                        Kind::Mover { index, .. } => Some(index),
+                        _ => None,
+                    });
+                    sim.reparent_gun(index, mover);
+                }
+                "clearparent" => sim.reparent_gun(index, None),
+                _ => {}
+            },
             Kind::Sprite => match i.as_str() {
                 "showsprite" => {
                     self.hidden.remove(&e);

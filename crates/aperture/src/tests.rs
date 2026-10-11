@@ -1564,3 +1564,40 @@ fn movers_push_but_dont_crush() {
     assert!(c.feet.x < 2.5 - 0.29, "pushed into the wall: {}", c.feet);
     assert!(sim.movers[0].at.x < 4.0 - 0.1, "it crushed through her: {}", sim.movers[0].at);
 }
+
+/// Portal's pedestal guns (#43): Chamber 02's turns and fires blue portals onto the walls till
+/// she takes it, which gives her the gun; Chamber 11's adds orange to the blue she has.
+#[test]
+fn portals_pedestal_guns() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |m: &str, ext: &str| std::fs::read_to_string(dir.join(format!("{m}.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("testchmb_a_01", "solids"), text("testchmb_a_01", "ents")) else { return };
+    let level = crate::source::level("testchmb_a_01", "02", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    assert_eq!(sim.gun, crate::level::Gun::NONE, "she has a gun before she's found it");
+    assert_eq!(sim.gun_pickups.len(), 1);
+    c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+    // (It fires once as the map starts, then each time it's turned, every seven seconds or so.)
+    let ev = run(&mut sim, &mut c, 14.0, |_, _| Input::default());
+    let shots: Vec<(Vec3, bool)> = ev.iter().filter_map(|e| if let SimEvent::Shot { color: PortalColor::Blue, to, opened, .. } = e { Some((*to, *opened)) } else { None }).collect();
+    assert!(shots.len() >= 2 && shots.iter().any(|s| s.1), "the pedestal didn't fire portals as it turned: {shots:?}");
+    assert!(shots.windows(2).any(|w| w[0].0.distance(w[1].0) > 1.0), "it fired the same way each time: {shots:?}");
+    // To the gun: hers.
+    // Up to the pedestal (on the floor beside it): hers.
+    let (at, _) = sim.gun_pose(0);
+    c.feet = Vec3::new(at.x + 0.6, -3.25, at.z);
+    c.vel = Vec3::ZERO;
+    run(&mut sim, &mut c, 0.3, |_, _| Input::default());
+    assert!(sim.gun_pickups[0].taken && sim.gun.blue && !sim.gun.orange, "picking it up: {:?} (gun at {at}, she's at {})", sim.gun, c.feet);
+
+    let (Ok(solids), Ok(ents)) = (text("testchmb_a_07", "solids"), text("testchmb_a_07", "ents")) else { return };
+    let level = crate::source::level("testchmb_a_07", "11", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    assert!(sim.gun.blue && !sim.gun.orange, "Chamber 11 starts with blue: {:?}", sim.gun);
+    let (at, _) = sim.gun_pose(0);
+    c.feet = at - Vec3::Y * 0.9;
+    run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+    assert!(sim.gun.blue && sim.gun.orange, "the pedestal's orange: {:?}", sim.gun);
+}
+
+
