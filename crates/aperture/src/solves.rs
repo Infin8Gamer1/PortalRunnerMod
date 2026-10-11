@@ -833,3 +833,45 @@ fn solve_testchmb_a_03() {
     p.ride_exit("testchmb_a_04");
     p.assert_alive("in Chamber 07");
 }
+
+/// Chamber 08 (testchmb_a_04): the launcher's pellet bounces up and down the room's west
+/// side. Blue where it hits the far wall sends it out of the fixed orange across the room;
+/// while it's away, blue moved to the west wall level with the catcher, and back off the
+/// east wall it goes into orange and out of blue into the catcher. The cart it starts carries
+/// her over the pit to the exit.
+#[test]
+fn solve_testchmb_a_04() {
+    let Some(mut p) = Play::load("testchmb_a_04") else { return };
+    let orange = Vec3::new(-9.65, 1.43, 1.64);
+    p.go(Vec3::new(-3.25, 0.0, 9.96), 0.5);
+    p.wait_portal(PortalColor::Orange, orange, 10.0);
+    p.go(Vec3::new(-4.0, 0.0, 10.5), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(-8.08, 1.56, -13.3));
+    eprintln!("blue at {:?}", p.sim.portals[0].map(|q| (q.center, q.normal)));
+    // (Across the room from the orange's ledge, which hides the west wall from the way in.)
+    p.go(Vec3::new(2.5, 0.0, 8.6), 0.4);
+    p.wait_for(20.0, "the pellet out of orange", |p| p.sim.pellets.iter().any(|x| x.alive && x.vel.x > 1.0));
+    p.shoot(PortalColor::Blue, Vec3::new(-9.75, 1.22, -7.67));
+    eprintln!("blue at {:?}", p.sim.portals[0].map(|q| (q.center, q.normal)));
+    let cart = p.mover("rail_cart_lvl5");
+    p.wait_for(20.0, "the cart to set off", |p| p.sim.movers[cart].goal.is_some());
+    eprintln!("caught at {}", p.time);
+    // To orange's ledge: blue on the wall at the end of the way in, and through.
+    let wall = Vec3::new(3.2, 1.42, 8.6);
+    p.go(Vec3::new(-1.0, 0.0, 8.6), 0.4);
+    p.shoot(PortalColor::Blue, wall);
+    let wall = p.sim.portals[0].unwrap().center;
+    p.enter(PortalColor::Blue, wall, Some(orange));
+    eprintln!("on orange's ledge at {}", p.c.feet);
+    // Blue on the ceiling over where the cart waits at its start (the ceiling past that takes
+    // no portals); into orange while it's there, down onto it, and ride it to the exit.
+    p.shoot(PortalColor::Blue, Vec3::new(1.52, 6.5, -1.83));
+    p.wait_for(60.0, "the cart back at its start", |p| p.sim.movers[cart].node == 0 && p.sim.movers[cart].goal.is_none());
+    p.through(PortalColor::Orange, 1.0);
+    p.wait(1.5);
+    eprintln!("on the cart at {} (cart at {})", p.c.feet, p.sim.movers[cart].at);
+    p.assert_alive("dropping onto the cart");
+    p.wait_for(30.0, "the cart at the exit", |p| p.sim.movers[cart].node == 1 && p.sim.movers[cart].goal.is_none());
+    p.ride_exit("testchmb_a_05");
+    p.assert_alive("in Chamber 08");
+}
