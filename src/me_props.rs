@@ -20,8 +20,17 @@ use crate::Game;
 const LADDER: (&str, &str) = ("P_Generic", "S_SteelLadder_01b");
 const LADDER_STEP: f32 = 2.56;
 
-/// Marks what stands in for a Mirror's Edge prop (its index in the level's `me_props`), or
-/// for a ladder (`usize::MAX`), hidden once the real thing is drawn.
+/// A zipline's cable and a swing pole's pipe: round, in the steel of Mirror's Edge's
+/// ladders (the game has no meshes of its own for them: they're its levels' geometry).
+const CABLE_RADIUS: f32 = 0.012;
+const PIPE_RADIUS: f32 = 0.03;
+
+/// Stands in for the ziplines and swing poles (see [`StandIn`]).
+pub const LINES: usize = usize::MAX - 1;
+
+/// Marks what stands in for a Mirror's Edge prop (its index in the level's `me_props`), for a
+/// ladder (`usize::MAX`), or for a zipline or swing pole ([`LINES`]), hidden once the real
+/// thing is drawn.
 #[derive(Component)]
 pub struct StandIn(pub usize);
 
@@ -37,6 +46,7 @@ pub struct MePropCache {
     level: u64,
     drawn: Vec<bool>,
     ladders: bool,
+    lines: bool,
 }
 
 pub fn setup(world: &mut World) {
@@ -151,6 +161,27 @@ pub fn spawn_for_level(
                 cache.drawn[k] = true;
             }
         }
+        // Ziplines and swing poles: round steel, the ladder's.
+        cache.lines = false;
+        let lines: Vec<(Vec3, Vec3, f32)> = level
+            .fixtures
+            .iter()
+            .filter_map(|f| match *f {
+                Fixture::ZipLine { a, b } => Some((a, b, CABLE_RADIUS)),
+                Fixture::SwingPole { a, b } => Some((a, b, PIPE_RADIUS)),
+                _ => None,
+            })
+            .collect();
+        if !lines.is_empty() {
+            if let Some(steel) = get(LADDER, cache, &mut pkgs, &mut meshes, &mut materials, &mut images).and_then(|p| p.first().map(|(_, m)| m.clone())) {
+                cache.lines = true;
+                for (a, b, r) in lines {
+                    let len = a.distance(b);
+                    let rot = Quat::from_rotation_arc(Vec3::Y, (b - a) / len);
+                    commands.spawn((ChamberGeom, Mesh3d(meshes.add(Cylinder::new(r, len).mesh().resolution(12))), MeshMaterial3d(steel.clone()), Transform::from_translation((a + b) * 0.5).with_rotation(rot)));
+                }
+            }
+        }
         // The steel ladder, a piece at a time, up each ladder (drainpipes keep their pipe).
         cache.ladders = false;
         let ladders: Vec<_> = level.fixtures.iter().filter_map(|f| if let Fixture::Ladder(l) = f { Some(*l) } else { None }).filter(|l| !l.pipe).collect();
@@ -171,7 +202,11 @@ pub fn spawn_for_level(
         }
     }
     for (s, mut v) in &mut stand_ins {
-        let hide = if s.0 == usize::MAX { cache.ladders } else { cache.drawn.get(s.0).copied().unwrap_or(false) };
+        let hide = match s.0 {
+            usize::MAX => cache.ladders,
+            LINES => cache.lines,
+            k => cache.drawn.get(k).copied().unwrap_or(false),
+        };
         if hide && *v != Visibility::Hidden {
             *v = Visibility::Hidden;
         }
