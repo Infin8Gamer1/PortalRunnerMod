@@ -61,8 +61,8 @@ pub struct Settings {
     pub bloom: f32,
     /// Screen-space ambient occlusion (not with MSAA): 1 on, 0 off.
     pub ssao: f32,
-    /// NVIDIA DLSS (`graphics::DLSS_MODES`; 0 off). Only in builds with the `dlss` feature, on
-    /// a GPU that has it.
+    /// NVIDIA DLSS (`graphics::DLSS_MODES`; 0 off). Only in builds with the `dlss` feature (the
+    /// default), on a GPU that has it; elsewhere the anti-aliasing setting applies.
     pub dlss: f32,
 }
 
@@ -124,7 +124,8 @@ impl Default for Settings {
             ray_tracing: 1.0,
             bloom: 0.3,
             ssao: 1.0,
-            dlss: 0.0,
+            // Quality, where there's DLSS.
+            dlss: 2.0,
         }
     }
 }

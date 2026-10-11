@@ -21,8 +21,10 @@ half = "2"
 
 # Fast-ish dev builds: optimize dependencies, keep our code debuggable.
 [features]
-# NVIDIA DLSS (RTX GPUs, Vulkan): needs NVIDIA's DLSS SDK at build time (DLSS_SDK=<its folder>;
-# see https://github.com/bevyengine/dlss_wgpu). Settings > Graphics > DLSS then works.
+# NVIDIA DLSS (RTX GPUs, Vulkan), on by default: needs NVIDIA's DLSS SDK at build time
+# (DLSS_SDK=<its folder>; see https://github.com/bevyengine/dlss_wgpu). Without the SDK, build
+# with `--no-default-features`. On a GPU without DLSS the game falls back either way.
+default = ["dlss"]
 dlss = ["bevy/dlss"]
 # The Mirror's Edge prologue map, drawn and playable from your install (FAITH_MAP=prologue).
 # Not part of the public source.

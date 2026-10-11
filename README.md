@@ -22,6 +22,9 @@ cargo run --release -p portal_extract   # once: Portal/Portal 2 sounds, textures
 cargo run --release
 ```
 
+(That builds in NVIDIA's DLSS, which needs its SDK: see **DLSS** below. Without it, add
+`--no-default-features`.)
+
 The extractor finds the games in the usual Steam folders (Linux and Windows); otherwise pass
 `--portal <dir>` and `--portal2 <dir>`. Run it again after pulling changes that add models: the
 puzzle pieces (buttons, cube sockets, pedestal buttons, cubes, droppers, faith plates, chamber
@@ -41,9 +44,10 @@ Portal 2's.) `--inspect <model.mdl>...` describes models (parts, bones, size,
 animations) instead of extracting. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
-**DLSS** (NVIDIA RTX, Vulkan) is a build option, since it needs NVIDIA's DLSS SDK, which you
-download yourself under NVIDIA's licence. It must be version 310.5.3 (what Bevy 0.19's DLSS is
-built against); its libraries are in Git LFS:
+**DLSS** (NVIDIA RTX, Vulkan) is built in by default, and it needs NVIDIA's DLSS SDK to build,
+which you download yourself under NVIDIA's licence. (Without it, build with
+`cargo run --release --no-default-features`: the game is the same, without DLSS.) It must be
+version 310.5.3 (what Bevy 0.19's DLSS is built against); its libraries are in Git LFS:
 
 ```
 git clone --branch v310.5.3 --depth 1 https://github.com/NVIDIA/DLSS.git
@@ -57,11 +61,12 @@ set then, the game uses the path it was built with. Set both in your shell profi
 
 ```
 export DLSS_SDK=$HOME/Documents/Git/DLSS VULKAN_SDK=/usr
-cargo run --release --features dlss
+cargo run --release
 ```
 
-Settings > Graphics > DLSS then offers DLAA, Quality, Balanced, Performance and Ultra
-performance, in place of the anti-aliasing setting (the portal views render at its lower
+On a GPU that has it, DLSS is on from the start (Quality). Settings > Graphics > DLSS offers
+DLAA, Quality, Balanced, Performance and Ultra performance, or off, in place of the
+anti-aliasing setting (the portal views render at its lower
 resolution too). With ray-traced lighting it's **DLSS Ray Reconstruction**, which denoises the
 traced light as it upscales (no grain, even moving fast), and the setting says so. The log
 says which DLSS features the GPU has. Without the feature, or on a GPU without DLSS, the
