@@ -1601,3 +1601,28 @@ fn portals_pedestal_guns() {
 }
 
 
+
+/// Cubes slide off what they overhang (#45): down a ramp of slices (as an angled brush is
+/// collided), and off a ledge they're more than half over; one on flat ground stays put.
+#[test]
+fn cubes_slide_off_slopes_and_edges() {
+    let mut l = flat();
+    // A ramp along +X, 4 m long and 1 m high, in 3 cm steps.
+    for k in 0..34 {
+        let x0 = 2.0 + k as f32 * 0.12;
+        l.solid(Mat::Black, [x0, 0.0, -3.0], [x0 + 0.12, 1.0 - k as f32 * 0.03, -1.0]);
+    }
+    // A ledge 1 m high, ending at x -2.
+    l.solid(Mat::Black, [-6.0, 0.0, 2.0], [-2.0, 1.0, 4.0]);
+    let (mut sim, mut c) = start(l);
+    c.feet = Vec3::new(-20.0, 0.0, -20.0);
+    sim.spawn_prop(CubeKind::Storage, Vec3::new(2.4, 1.6, -2.0), None);
+    sim.spawn_prop(CubeKind::Storage, Vec3::new(-2.0 + 0.1, 1.6, 3.0), None);
+    sim.spawn_prop(CubeKind::Storage, Vec3::new(-10.0, 0.6, 3.0), None);
+    run(&mut sim, &mut c, 5.0, |_, _| Input::default());
+    let at: Vec<Vec3> = sim.props.iter().map(|p| p.pos).collect();
+    assert!(at[0].x > 5.0 && at[0].y < 0.6, "didn't slide down the ramp: {}", at[0]);
+    assert!(at[1].y < 0.6, "stayed on the ledge it was over: {}", at[1]);
+    assert!((at[2] - Vec3::new(-10.0, 0.45, 3.0)).length() < 0.05, "moved on flat ground: {}", at[2]);
+}
+

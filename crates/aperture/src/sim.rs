@@ -2129,6 +2129,19 @@ impl Sim {
             // On the ground: friction (none to speak of on propulsion gel).
             let below = world.sweep(half, p.pos, Vec3::NEG_Y * 0.03);
             p.grounded = below.is_some();
+            // Nothing under its middle (resting on a slope's steps, or more than half over an
+            // edge): it slides off the way it overhangs, faster than friction holds it.
+            if p.grounded && !held {
+                let foot = |x: f32, z: f32| world.overlaps(&Aabb::from_center_size(Vec3::new(p.pos.x + x, p.pos.y - CUBE_HALF - 0.04, p.pos.z + z), Vec3::new(0.06, 0.06, 0.06)));
+                if !foot(0.0, 0.0) {
+                    let k = CUBE_HALF * 0.8;
+                    let held_by: Vec<Vec3> = [(k, k), (k, -k), (-k, k), (-k, -k), (k, 0.0), (-k, 0.0), (0.0, k), (0.0, -k)].into_iter().filter(|&(x, z)| foot(x, z)).map(|(x, z)| Vec3::new(x, 0.0, z)).collect();
+                    if !held_by.is_empty() {
+                        let away = -(held_by.iter().sum::<Vec3>() / held_by.len() as f32).normalize_or_zero();
+                        p.vel += away * (CUBE_GROUND_DECEL + CUBE_SLIDE) * dt;
+                    }
+                }
+            }
             if p.grounded && !held {
                 let slick = world.gel(p.pos - Vec3::Y * CUBE_HALF, Vec3::Y) == faith_move::Gel::Speed;
                 // `cube_plate_velocity` aims short by the slide this decel produces.
@@ -2409,6 +2422,8 @@ fn bridge_seg(a: Vec3, b: Vec3, dir: Vec3, up: Vec3) -> BridgeSeg {
 /// How fast a cube's horizontal speed falls once it is on an ordinary floor (m/s²).
 /// Speed gel uses a much smaller number; see `update_props`.
 const CUBE_GROUND_DECEL: f32 = 14.0;
+/// Overhanging (on a slope, or an edge), a cube slides off at this (m/s², past friction).
+const CUBE_SLIDE: f32 = 4.0;
 
 /// The launch velocity that carries something from `from` to land on `to`, peaking `apex`
 /// metres above the higher of the two, under `g`.
