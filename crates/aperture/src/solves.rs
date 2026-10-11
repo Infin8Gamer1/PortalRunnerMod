@@ -1433,8 +1433,7 @@ fn tilted_faces_take_portals() {
 /// Chamber 15 (testchmb_a_10), as Portal's walkthrough has it. Section 1's fling over the glass
 /// is a lethal fall under Mirror's Edge's rules (#57), so she starts past it. Section 2: orange
 /// where the trapped pellet bounces in its alcove, blue on the ceiling over the receptacle (both
-/// shot through the grill); the lift it lowers takes her up to section 3. Sections 3-5 aren't
-/// played yet.
+/// shot through the grill); the lift it lowers takes her up to section 3.
 #[test]
 fn solve_testchmb_a_10() {
     let Some(mut p) = Play::load("testchmb_a_10") else { return };
@@ -1455,5 +1454,6 @@ fn solve_testchmb_a_10() {
     p.wait_for(15.0, "the lift to stop", |p| p.sim.movers[lift].goal.is_none());
     eprintln!("up the lift at {}", p.c.feet);
     p.assert_alive("up to section 3");
-    // PROBE-START
+    // (Section 3 and on aren't played yet: its flings over the glass, as Portal's walkthrough
+    // has them, don't carry Faith far enough (#57).)
 }

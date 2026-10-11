@@ -2095,9 +2095,18 @@ impl Sim {
                                 p.age = p.age.min(p.life - p.after_portal);
                             }
                             _ => {
-                                p.vel -= 2.0 * p.vel.dot(hit.normal) * hit.normal;
-                                p.pos = hit.point + hit.normal * 0.01;
-                                self.events.push(SimEvent::PelletBounced { at: hit.point, normal: hit.normal });
+                                // (Off a tilted face, at its true angle: its boxes only step along
+                                // it. Chamber 15's angled panels turn pellets aside.)
+                                let (point, normal) = match hit.what {
+                                    HitWhat::Static(_) => match self.slope_hit(p.pos, d, hit.t) {
+                                        Some((k, at)) => (at, self.level.slopes[k].normal),
+                                        None => (hit.point, hit.normal),
+                                    },
+                                    _ => (hit.point, hit.normal),
+                                };
+                                p.vel -= 2.0 * p.vel.dot(normal) * normal;
+                                p.pos = point + normal * 0.01;
+                                self.events.push(SimEvent::PelletBounced { at: point, normal });
                             }
                         }
                     }
