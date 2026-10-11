@@ -1001,7 +1001,9 @@ fn solve_testchmb_a_05() {
 /// Chamber 10 (testchmb_a_06): Portal's first flings. Area A: through the fixed orange behind
 /// the corridor's end wall, at a run, onto the platform beyond. Area B: from the ledge over the
 /// pit, blue on its floor below, and a jump in: flung out of the orange high on the wall
-/// behind, over the pit.
+/// behind, over the pit. Area C: pillars slide out over the pit (orange on its floor); blue on
+/// the lower one's end, down into orange and out onto the first ledge; the upper one slides
+/// further, blue on its end, and down again from the ledge: out up to the exit.
 #[test]
 fn solve_testchmb_a_06() {
     let Some(mut p) = Play::load("testchmb_a_06") else { return };
@@ -1036,8 +1038,34 @@ fn solve_testchmb_a_06() {
     p.wait(0.5);
     eprintln!("flung to {}", p.c.feet);
     p.assert_alive("flung over the pit");
-    // Area C (the receding panels, flung out of the pit's floor orange twice to the exit) isn't
-    // played yet.
+    // Area C: in, the pillars slide out over the pit (orange opens on its floor). Blue on the
+    // lower pillar's end; down into orange, out over the pit onto the first ledge.
+    p.go(Vec3::new(-3.25, 3.25, -8.0), 0.5);
+    p.wait(8.0);
+    p.go(Vec3::new(-3.25, 3.25, -12.5), 0.5);
+    p.shoot(PortalColor::Blue, Vec3::new(-3.25, 11.4, -8.13));
+    // (Off the edge at a walk: run, and she overshoots the portal's middle and is pulled back
+    // the other way, which comes out of blue as a fall.)
+    p.entry_speed = 0.35;
+    p.through(PortalColor::Orange, 1.0);
+    p.entry_speed = 0.6;
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("on the first ledge at {}", p.c.feet);
+    p.assert_alive("flung onto the first ledge");
+    // Landing, the upper pillar slides further out: blue on its end, and down into orange
+    // again, out up to the exit.
+    let top = p.mover("fling_pillar3_door_bottom_a2");
+    p.wait_for(10.0, "the upper pillar to slide out", |p| p.sim.movers[top].node == 0 && p.sim.movers[top].goal.is_none());
+    p.shoot(PortalColor::Blue, Vec3::new(-3.35, 14.42, -10.16));
+    // (At a run this time, from the ledge's side: past the portal's middle, she's pulled back
+    // towards it, which comes out of blue as a lift.)
+    p.entry_speed = 1.0;
+    p.through(PortalColor::Orange, 1.0);
+    p.entry_speed = 0.6;
+    p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
+    eprintln!("at the exit at {}", p.c.feet);
+    p.assert_alive("flung to the exit");
+    p.ride_exit("testchmb_a_07");
 }
 
 impl Play {

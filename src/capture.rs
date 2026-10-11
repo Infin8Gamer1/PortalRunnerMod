@@ -603,6 +603,26 @@ fn script(name: &str) -> Vec<Act> {
             v.extend([Wait(60), Look(90.0, 0.0), Wait(5), Shot("fling14_c_shelf")]);
             v
         }
+        // Chamber 10's last room (testchmb_a_06, #21): in, the pillars slide out over the pit
+        // and orange opens on its floor; blue on the lower pillar's end; dropped into orange,
+        // out over the pit onto the first ledge.
+        "fling10" => {
+            let map = aperture::levels::all().len() + 6;
+            let mut v = vec![Map(map), Wait(200), TurretsOff, Teleport(Vec3::new(-3.25, 3.4, -6.0)), Launch(Vec3::ZERO), Wait(30), Teleport(Vec3::new(-3.25, 3.4, -12.5)), Look(0.0, 25.0), Wait(420), Shot("fling10_a_pillars")];
+            v.extend([
+                Portal(PortalColor::Blue, Vec3::new(-3.25, 11.4, -8.128), Vec3::NEG_Z, Vec3::Y),
+                Wait(10),
+                Shot("fling10_b_portal"),
+                Teleport(Vec3::new(-3.24, 2.0, -15.0)),
+                Launch(Vec3::new(0.0, -6.0, 0.0)),
+                Look(0.0, -70.0),
+            ]);
+            for k in 0..16 {
+                v.extend([Wait(5), Shot(Box::leak(format!("fling10_c{k:02}").into_boxed_str()))]);
+            }
+            v.extend([Wait(60), Look(180.0, 10.0), Wait(5), Shot("fling10_d_ledge")]);
+            v
+        }
         // Chamber 12's wedge (testchmb_a_07, #21): up on the button's platform it swings out of
         // the wall and tips; blue on it, orange on the pit's floor; down into orange and flung
         // out of the wedge up to the exit's ledge.
