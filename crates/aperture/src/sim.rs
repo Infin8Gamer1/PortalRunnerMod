@@ -1084,6 +1084,8 @@ impl Sim {
         if self.funnel && linked && ctrl.state == faith_move::State::Air {
             self.funnel_into_portals(ctrl, dt);
         }
+        // (A portal that closed last frame can have left her in its wall.)
+        self.unstick_player(ctrl);
         let eye_before = ctrl.view().eye;
         // Turrets are what her melee hits.
         ctrl.targets = self
@@ -1129,6 +1131,8 @@ impl Sim {
                 }
             }
         }
+
+        self.unstick_player(ctrl);
 
         let feet = ctrl.feet;
         let body = ctrl.body();
@@ -1193,6 +1197,42 @@ impl Sim {
         if !self.complete && self.level.exit.is_some_and(|e| e.overlaps(&me)) {
             self.complete = true;
             self.events.push(SimEvent::LevelComplete);
+        }
+    }
+
+    /// Out of whatever she's ended up inside, the shortest way. A portal that closes or moves
+    /// while she's in its tunnel leaves her in its wall, and her walk passes through anything it
+    /// starts inside: left there, she'd walk on through the wall. (Moves that carry her along
+    /// a path of their own, a vault or a climb, are left to it.)
+    fn unstick_player(&mut self, ctrl: &mut Controller) {
+        use faith_move::State as S;
+        if !matches!(ctrl.state, S::Ground | S::Air | S::Slide { .. } | S::Roll { .. } | S::Stunned { .. } | S::WallRun { .. } | S::SoftLand { .. } | S::Stumble { .. }) {
+            return;
+        }
+        let body = ctrl.body();
+        let world = self.player_world();
+        let inside = |feet: Vec3| {
+            let b = body.aabb(feet);
+            !world.is_free(&Aabb::new(b.min + Vec3::splat(0.002), b.max - Vec3::splat(0.002)))
+        };
+        if !inside(ctrl.feet) {
+            return;
+        }
+        const D: f32 = std::f32::consts::FRAC_1_SQRT_2;
+        const DIRS: [Vec3; 10] = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z, Vec3::new(D, 0.0, D), Vec3::new(D, 0.0, -D), Vec3::new(-D, 0.0, D), Vec3::new(-D, 0.0, -D), Vec3::Y, Vec3::NEG_Y];
+        let mut d = 0.01;
+        while d <= 1.3 {
+            if let Some(to) = DIRS.iter().map(|&dir| ctrl.feet + dir * d).find(|&p| !inside(p)) {
+                let push = to - ctrl.feet;
+                ctrl.feet = to;
+                // What carried her in stops.
+                let into = ctrl.vel.dot(push.normalize_or_zero());
+                if into < 0.0 {
+                    ctrl.vel -= push.normalize_or_zero() * into;
+                }
+                return;
+            }
+            d *= 1.25;
         }
     }
 

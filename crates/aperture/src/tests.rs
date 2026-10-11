@@ -1239,3 +1239,89 @@ fn portals_stairs_walk() {
     }
 }
 
+/// Faith doesn't pass into walls (#26): in each of Portal's maps, she walks into its walls
+/// head-on and at shallow angles, and never ends up more than grazing one.
+#[test]
+fn portals_maps_walls_stop_her() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let Ok(read) = std::fs::read_dir(&dir) else { return };
+    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
+    names.sort();
+    let mut bad = Vec::new();
+    let (mut tried_all, mut runs) = (0, 0);
+    for name in &names {
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
+        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let (sim0, _) = start(level.clone());
+        let statics: Vec<faith_move::Aabb> = sim0.statics.iter().map(|s| s.b).collect();
+        let free = |b: &faith_move::Aabb| !statics.iter().any(|s| s.overlaps(b));
+        let mut tried = 0;
+        for w in &statics {
+            let size = w.size();
+            if size.y < 2.0 || tried >= 60 {
+                continue;
+            }
+            for n in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z] {
+                let wide = if n.x != 0.0 { size.z } else { size.x };
+                if wide < 1.5 {
+                    continue;
+                }
+                let face = w.center() + n * (if n.x != 0.0 { size.x } else { size.z }) * 0.5;
+                // Standing on a floor in front of it, at its foot.
+                let at = Vec3::new(face.x, w.min.y, face.z) + n * 0.9;
+                let Some(floor) = statics.iter().filter(|s| s.min.x < at.x && s.max.x > at.x && s.min.z < at.z && s.max.z > at.z && (s.max.y - at.y).abs() < 0.3).map(|s| s.max.y).reduce(f32::max) else { continue };
+                let feet = Vec3::new(at.x, floor + 0.01, at.z);
+                let body = faith_move::Aabb::new(feet + Vec3::new(-0.45, 0.0, -0.45), feet + Vec3::new(0.45, 1.9, 0.45));
+                if !free(&body) {
+                    continue;
+                }
+                tried += 1;
+                for deg in [0.0f32, 20.0, -20.0, 45.0, -45.0, 70.0, -70.0, 82.0, -82.0] {
+                    let mut l = level.clone();
+                    let d = Quat::from_rotation_y(deg.to_radians()) * -n;
+                    let yaw = (-d.x).atan2(-d.z);
+                    l.checkpoints[0].spawn = feet;
+                    l.checkpoints[0].yaw = yaw;
+                    let (mut sim, mut c) = start(l);
+                    c.yaw = yaw;
+                    runs += 1;
+                    // (A portal closing in the sim's step leaves her in its wall until her
+                    // next one: inside two frames running counts.)
+                    let mut inside = None;
+                    let mut was_inside = false;
+                    run(&mut sim, &mut c, 1.2, |sim, c| {
+                        if inside.is_none() {
+                            let b = c.body().aabb(c.feet);
+                            // How deep she is in what she's inside (a vault's path can graze a
+                            // corner; passing into a wall goes deep).
+                            let w = sim.player_world();
+                            let mut hit = Vec::new();
+                            w.still.query(&b, &mut hit);
+                            // (Vaulting, she goes over what's under her waist.)
+                            if matches!(c.state, State::Vault(_)) {
+                                hit.retain(|s| s.max.y > c.feet.y + 0.9);
+                            }
+                            let depth = |s: &faith_move::Aabb| (0..3).map(|a| s.max[a].min(b.max[a]) - s.min[a].max(b.min[a])).fold(f32::MAX, f32::min);
+                            if let Some(s) = hit.iter().copied().max_by(|x, y| depth(x).total_cmp(&depth(y))).filter(|s| depth(s) > 0.1) {
+                                if was_inside {
+                                    inside = Some((c.feet, s, c.state.name()));
+                                }
+                                was_inside = true;
+                            } else {
+                                was_inside = false;
+                            }
+                        }
+                        forward()
+                    });
+                    if let Some((f, s, st)) = inside {
+                        bad.push(format!("{name}: from {feet} yaw {:.0} ({deg}° off) inside {:?}-{:?} at {f} ({st})", yaw.to_degrees(), s.min, s.max));
+                    }
+                }
+            }
+        }
+        tried_all += tried;
+    }
+    assert!(bad.is_empty(), "{} of {runs} runs ({tried_all} walls):\n{}", bad.len(), bad.join("\n"));
+}
+
+

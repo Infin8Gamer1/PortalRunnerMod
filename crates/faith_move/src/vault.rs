@@ -10,7 +10,7 @@
 use glam::Vec3;
 
 use crate::tuning::Tuning;
-use crate::world::{column_top, tops_below, trace_wall, Body, World};
+use crate::world::{tops_below, trace_wall, Body, World};
 
 /// Unreal units to metres.
 const fn uu(v: f32) -> f32 {
@@ -160,7 +160,13 @@ pub fn plan(world: &dyn World, tu: &Tuning, body: Body, feet: Vec3, vel: Vec3, f
         return None;
     }
     let inside = hit.at - n * 0.02;
-    let top = column_top(world, inside, feet.y + y, feet.y + uu(192.0) + 0.05);
+    // Its top, with room over it: a wall taller than any vault has none in reach, and isn't
+    // a ledge at the height the trace hit it (everything after starts inside it, and so
+    // would see nothing in the way).
+    let top = *tops_below(world, inside, 0.01, feet.y + uu(192.0) + 0.05, feet.y + y).first()?;
+    if !world.is_free(&crate::world::Aabb::new(Vec3::new(inside.x - 0.01, top + 0.01, inside.z - 0.01), Vec3::new(inside.x + 0.01, top + 0.3, inside.z + 0.01))) {
+        return None;
+    }
     let height = (top - feet.y) * 100.0;
     if !(0.0..=192.0).contains(&height) {
         return None;
@@ -230,7 +236,8 @@ pub fn plan(world: &dyn World, tu: &Tuning, body: Body, feet: Vec3, vel: Vec3, f
     let above = Vec3::new(end.x, lip.y, end.z);
     let across = above - lip;
     let down = Vec3::new(end.x, end.y + 0.02, end.z) + Vec3::Y * crouch_half.y - above;
-    if world.sweep(crouch_half, lip, across).is_some() || (down.y < -0.01 && world.sweep(crouch_half, above, down).is_some()) {
+    // (A sweep passes through what it starts inside: the lip itself must be clear.)
+    if !world.is_free(&crate::world::Aabb::new(lip - crouch_half, lip + crouch_half)) || world.sweep(crouch_half, lip, across).is_some() || (down.y < -0.01 && world.sweep(crouch_half, above, down).is_some()) {
         return None;
     }
 
