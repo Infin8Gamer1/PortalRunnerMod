@@ -92,11 +92,13 @@ impl Play {
     pub fn step(&mut self, input: &Input) {
         // (As the game does: what she did between frames, using a switch, is in this frame's
         // events for the logic.)
+        let before = self.c.feet;
         self.sim.step_player(&mut self.c, input, DT);
         self.sim.step(DT, &mut self.c);
         for e in &self.sim.events {
             if *e == SimEvent::PlayerDied {
                 self.deaths += 1;
+                eprintln!("(died at {before}: pellets {:?}, the held cube {:?})", self.sim.pellets.iter().filter(|q| q.alive).map(|q| q.pos).collect::<Vec<_>>(), self.sim.held.map(|h| self.sim.props[h].pos));
             }
         }
         self.events.extend(self.sim.events.iter().copied());
@@ -149,6 +151,14 @@ impl Play {
         // And turrets, standing or knocked over.
         out.extend(self.sim.turrets.iter().map(|t| t.aabb()).filter(|t| t.overlaps(b)));
         out.into_iter()
+    }
+
+    /// Whether the cell at `c` is open from her height `y` all the way down to the floor at
+    /// `ny` she'd drop to (no wall over its foot, no floor between).
+    fn open_down(&self, c: Vec2, ny: f32, y: f32) -> bool {
+        let hw = self.c.body().half_width - 0.02;
+        let col = Aabb::new(Vec3::new(c.x - hw, ny + 0.3, c.y - hw), Vec3::new(c.x + hw, y + self.c.body().height - 0.05, c.y + hw));
+        self.near(&col).next().is_none()
     }
 
     /// Whether she fits standing with her feet here.
@@ -245,6 +255,11 @@ impl Play {
                 // drop to (not too far).
                 let next = fl.iter().copied().filter(|f| *f <= y + STEP && *f >= y - DROP).fold(None, |a: Option<f32>, f| Some(a.map_or(f, |a| a.max(f))));
                 let Some(ny) = next else { continue };
+                // Down off an edge: open at her own height too (not through a wall whose foot
+                // has a floor beyond it).
+                if ny < y - 0.3 && !self.open_down(centre(i, k), ny, y) {
+                    continue;
+                }
                 // Diagonals only where both sides are open too.
                 if di != 0 && dk != 0 {
                     let side = |i: i32, k: i32| {
@@ -307,7 +322,8 @@ impl Play {
                             return None;
                         }
                         if let Some(ny) = self.floors(c.x, c.y, y - below, y + above).into_iter().reduce(f32::max) {
-                            return Some((i, k, ny, len));
+                            // (Down onto it: nothing in the way, a floor between.)
+                            return (ny >= y - 0.3 || self.open_down(c, ny, y)).then_some((i, k, ny, len));
                         }
                     }
                     None
@@ -876,6 +892,34 @@ impl Play {
         for (c, n) in seen {
             eprintln!("portal from {}: {c:.2?} facing {n:.2?}", self.c.feet);
         }
+    }
+
+    /// Debugging: every floor she can walk to from here (as the path-finder's search with no
+    /// goal), as `x z y` lines written to `path`.
+    #[allow(dead_code)]
+    pub fn dump_reach(&self, path: &str) {
+        let cell = |p: f32| (p / CELL).floor() as i32;
+        let centre = |i: i32| (i as f32 + 0.5) * CELL;
+        let mut seen: HashMap<(i32, i32), f32> = HashMap::new();
+        let mut q = std::collections::VecDeque::new();
+        let at = self.c.feet;
+        let Some(&y0) = self.floors(centre(cell(at.x)), centre(cell(at.z)), at.y - 1.0, at.y + 0.3).first() else { return };
+        q.push_back((cell(at.x), cell(at.z), y0));
+        seen.insert((cell(at.x), cell(at.z)), y0);
+        while let Some((i, k, y)) = q.pop_front() {
+            for (di, dk) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (a, b) = (i + di, k + dk);
+                if seen.contains_key(&(a, b)) || seen.len() > 400_000 {
+                    continue;
+                }
+                if let Some(ny) = self.floors(centre(a), centre(b), y - DROP, y + STEP).into_iter().reduce(f32::max) {
+                    seen.insert((a, b), ny);
+                    q.push_back((a, b, ny));
+                }
+            }
+        }
+        let text: String = seen.iter().map(|((i, k), y)| format!("{} {} {}\n", centre(*i), centre(*k), y)).collect();
+        let _ = std::fs::write(path, text);
     }
 
     /// Debugging: which cells she can reach from where she is (the path-finder's search with
@@ -1728,10 +1772,11 @@ fn solve_testchmb_a_11() {
     p.ride_exit("testchmb_a_13");
 }
 
-/// Chamber 17 (testchmb_a_13), the companion cube's chamber: so far, up the ledges with the
-/// cube (she vaults them; from below, it's held up over each and let go onto it, and she climbs
-/// after it). The rest (the pellet hallways, the three catchers and lifts, the buttons and the
-/// incinerator) isn't played yet.
+/// Chamber 17 (testchmb_a_13), the companion cube's chamber, as Portal's walkthrough has it: so
+/// far, up the ledges with the cube (she vaults them; from below, it's held up over each and
+/// let go onto it, and she climbs after it), through the pellet hallways behind it, and the
+/// first catcher's pellet bounced off it. The rest (the other two catchers, the lifts, the
+/// button and the incinerator) isn't played yet.
 #[test]
 fn solve_testchmb_a_13() {
     let Some(mut p) = Play::load("testchmb_a_13") else { return };
@@ -1756,6 +1801,41 @@ fn solve_testchmb_a_13() {
     p.go(Vec3::new(-15.5, 3.25, -44.0), 0.5);
     p.pick_up(p.sim.props[0].pos);
     p.assert_alive("up the ledges with the cube");
+    // The pellet hallways, the cube held low in front (a pellet bounces off it): along the
+    // first to its far end, up and back along the second, down the ramp and through the door
+    // to the ledge over the lifts' room, and down into it.
+    p.c.pitch = -0.2;
+    p.wait(0.5);
+    for w in [Vec3::new(17.9, 2.2, -40.4), Vec3::new(18.4, 1.9, -38.6), Vec3::new(11.4, 4.9, -38.6), Vec3::new(10.1, 4.9, -37.9), Vec3::new(-12.6, 0.0, -27.9), Vec3::new(-11.9, -6.5, -25.4)] {
+        p.go(w, 0.4);
+        assert_eq!(p.sim.held, Some(0), "lost the cube on the way to {w} (at {})", p.c.feet);
+    }
+    p.assert_alive("through the pellet hallways");
+    // The first catcher: in launcher 3's room (in straight through its doorway, south of the
+    // pellet's line), the cube held turned 45° in the pellet's way; it glances off into the
+    // catcher on the wall beside, and the first lift rises.
+    p.go(Vec3::new(2.75, -6.5, -26.0), 0.3);
+    p.go(Vec3::new(2.74, -6.5, -19.6), 0.3);
+    p.c.yaw = -3.0 * std::f32::consts::FRAC_PI_4;
+    p.c.pitch = -0.1;
+    p.wait(0.6);
+    let want = Vec3::new(4.15, 0.0, -17.85);
+    for _ in 0..5 {
+        let cube = p.sim.props[0].pos;
+        let off = Vec2::new(cube.x - want.x, cube.z - want.z);
+        if off.length() < 0.1 {
+            break;
+        }
+        let spot = p.c.feet - Vec3::new(off.x, 0.0, off.y);
+        p.nudge(spot);
+        p.wait(0.4);
+    }
+    let lift1 = p.mover("lift1_rm5");
+    p.wait_for(10.0, "the first catcher to take the pellet (the first lift to rise)", |p| p.sim.movers[lift1].goal.is_some());
+    p.assert_alive("catching the first pellet");
+    assert_eq!(p.sim.held, Some(0));
+    // (The second and third catchers, the lifts, the button and the incinerator aren't played
+    // yet.)
 }
 
 /// Chamber 00's clock runs its hundredths and thousandths (#48), not just its seconds.
@@ -1776,3 +1856,4 @@ fn chamber_00_clock_runs() {
     assert!(a[1].is_some() && (a[1] != b[1] || b[1] != c[1]), "the thousandths don't run: {a:?} {b:?} {c:?}");
     assert!(a[0] != c[0] || b[0] != c[0], "the hundredths don't run: {a:?} {b:?} {c:?}");
 }
+

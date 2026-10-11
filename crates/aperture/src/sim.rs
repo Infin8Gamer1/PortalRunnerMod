@@ -1038,8 +1038,11 @@ impl Sim {
                 if !p.alive || Some(i) == mask.skip_prop {
                     continue;
                 }
-                if let Some((t, n)) = ray_aabb(o, d, &p.aabb()) {
-                    consider(t, n, HitWhat::Prop(i));
+                // (Hit as it's turned: a cube set down at 45° sends a pellet off sideways.)
+                let inv = p.rot.inverse();
+                let local = Aabb::from_center_size(Vec3::ZERO, Vec3::splat(CUBE_HALF * 2.0));
+                if let Some((t, n)) = ray_aabb(inv * (o - p.pos), inv * d, &local) {
+                    consider(t, p.rot * n, HitWhat::Prop(i));
                 }
             }
         }
