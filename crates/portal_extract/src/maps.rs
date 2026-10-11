@@ -387,6 +387,37 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             });
             let g = &mut groups[gi].1;
             let base = g.pos.len() as u32;
+            // A displacement: its grid, textured as its flat face is, each triangle wound to
+            // face the way the face does, normals from the grid.
+            if let Some((grid, side)) = bsp.disp_grid(f) {
+                let q: Vec<Vec3> = grid.iter().map(|(p, _)| ours(*p + origin)).collect();
+                let mut nrm = vec![Vec3::ZERO; q.len()];
+                let mut tris = Vec::new();
+                for i in 0..side - 1 {
+                    for j in 0..side - 1 {
+                        let (a, b, c, d) = (i * side + j, (i + 1) * side + j, (i + 1) * side + j + 1, i * side + j + 1);
+                        for t in [[a, b, c], [a, c, d]] {
+                            let w = (q[t[1]] - q[t[0]]).cross(q[t[2]] - q[t[0]]);
+                            let t = if w.dot(n) < 0.0 { [t[0], t[2], t[1]] } else { t };
+                            let w = w.length() * if w.dot(n) < 0.0 { -1.0 } else { 1.0 };
+                            let face_n = (q[t[1]] - q[t[0]]).cross(q[t[2]] - q[t[0]]).normalize_or_zero() * w.abs();
+                            for k in t {
+                                nrm[k] += face_n;
+                            }
+                            tris.extend(t.map(|k| base + k as u32));
+                        }
+                    }
+                }
+                for (k, (_, flat)) in grid.iter().enumerate() {
+                    let u = (ti.s[0] * flat.x + ti.s[1] * flat.y + ti.s[2] * flat.z + ti.s[3]) / w;
+                    let v = (ti.t[0] * flat.x + ti.t[1] * flat.y + ti.t[2] * flat.z + ti.t[3]) / h;
+                    g.pos.push(q[k].to_array());
+                    g.nrm.push(nrm[k].normalize_or(n).to_array());
+                    g.uv.push([u, v]);
+                }
+                g.idx.extend(tris);
+                continue;
+            }
             for p in &pts {
                 let u = (ti.s[0] * p.x + ti.s[1] * p.y + ti.s[2] * p.z + ti.s[3]) / w;
                 let v = (ti.t[0] * p.x + ti.t[1] * p.y + ti.t[2] * p.z + ti.t[3]) / h;
@@ -407,6 +438,29 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
         let (a, z) = (ours(model.mins + origin), ours(model.maxs + origin));
         let (a, z) = (a.min(z), a.max(z));
         solids.push_str(&format!("bounds {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));
+    }
+    // A floor displacement stands on its brush: a box a grid cell, up to the cell's highest
+    // corner, so the walk follows its mounds (steps no taller than the slope's).
+    for f in &bsp.faces[bsp.models[0].first_face..bsp.models[0].first_face + bsp.models[0].num_faces] {
+        let Some((grid, side)) = bsp.disp_grid(f) else { continue };
+        let q: Vec<(Vec3, Vec3)> = grid.iter().map(|(p, flat)| (ours(*p), ours(*flat))).collect();
+        let up = (q[side].1 - q[0].1).cross(q[1].1 - q[0].1).normalize_or_zero();
+        if up.y.abs() < 0.7 {
+            continue;
+        }
+        let kind = if material_of(f.texinfo, &mut materials).is_some_and(|m| materials[m].portalable) { "white" } else { "black" };
+        for i in 0..side - 1 {
+            for j in 0..side - 1 {
+                let cell = [q[i * side + j], q[(i + 1) * side + j], q[(i + 1) * side + j + 1], q[i * side + j + 1]];
+                let lo = cell.iter().fold(Vec3::splat(f32::MAX), |m, (p, flat)| m.min(*p).min(*flat));
+                let hi = cell.iter().fold(Vec3::splat(f32::MIN), |m, (p, _)| m.max(*p));
+                if hi.y - lo.y < 0.01 {
+                    continue;
+                }
+                solids.push_str(&format!("{kind} 0 {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z));
+                nboxes += 1;
+            }
+        }
     }
     for mi in 0..bsp.models.len() {
         let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };

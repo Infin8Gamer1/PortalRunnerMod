@@ -31,6 +31,8 @@ const BRUSHSIDES: usize = 19;
 const TEXDATA_STRING_DATA: usize = 43;
 const TEXDATA_STRING_TABLE: usize = 44;
 const OVERLAYS: usize = 45;
+const DISPINFO: usize = 26;
+const DISP_VERTS: usize = 33;
 
 pub const CONTENTS_SOLID: i32 = 0x1;
 pub const CONTENTS_WINDOW: i32 = 0x2;
@@ -76,6 +78,17 @@ pub struct Face {
     pub first_edge: usize,
     pub num_edges: usize,
     pub texinfo: i32,
+    /// Its displacement (an index into `disps`), if it's one.
+    pub disp: Option<usize>,
+}
+
+/// A displacement: a grid of (2^power + 1)^2 points over its face, each pushed out along its
+/// own direction (a dirt floor's mounds). Source space.
+pub struct Disp {
+    pub start: Vec3,
+    pub power: u32,
+    /// Each point's push: direction times distance.
+    pub offsets: Vec<Vec3>,
 }
 
 pub struct Model {
@@ -126,6 +139,7 @@ pub struct Bsp {
     pub brushes: Vec<Brush>,
     pub sides: Vec<BrushSide>,
     pub overlays: Vec<Overlay>,
+    pub disps: Vec<Disp>,
 }
 
 /// An overlay (info_overlay: a decal laid on faces; Portal's indicator light strips and painted
@@ -230,7 +244,7 @@ impl Bsp {
         let faces = (0..n)
             .map(|i| {
                 let a = i * 56;
-                Face { first_edge: i32_at(b, a + 4) as usize, num_edges: i16_at(b, a + 8) as usize, texinfo: i16_at(b, a + 10) as i32 }
+                Face { first_edge: i32_at(b, a + 4) as usize, num_edges: i16_at(b, a + 8) as usize, texinfo: i16_at(b, a + 10) as i32, disp: usize::try_from(i16_at(b, a + 12)).ok() }
             })
             .collect();
         let (b, n) = recs(MODELS, 48)?;
@@ -287,7 +301,27 @@ impl Bsp {
                 }
             })
             .collect();
-        Ok(Bsp { entities, static_props, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides, overlays })
+        // Displacements (ddispinfo_t, 176 bytes; dDispVert, 20: direction, distance, alpha).
+        let (verts, _) = recs(DISP_VERTS, 20)?;
+        let (b, n) = recs(DISPINFO, 176)?;
+        let disps = (0..n)
+            .map(|i| {
+                let a = i * 176;
+                let (first, power) = (i32_at(b, a + 12).max(0) as usize, i32_at(b, a + 20).clamp(0, 4) as u32);
+                let side = (1usize << power) + 1;
+                let offsets = (0..side * side)
+                    .map(|k| {
+                        let at = (first + k) * 20;
+                        if at + 16 > verts.len() {
+                            return Vec3::ZERO;
+                        }
+                        Vec3::new(f32_at(verts, at), f32_at(verts, at + 4), f32_at(verts, at + 8)) * f32_at(verts, at + 12)
+                    })
+                    .collect();
+                Disp { start: Vec3::new(f32_at(b, a), f32_at(b, a + 4), f32_at(b, a + 8)), power, offsets }
+            })
+            .collect();
+        Ok(Bsp { entities, static_props, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides, overlays, disps })
     }
 
     /// A texinfo's texture name, as the map has it (lower case, forward slashes).
@@ -295,6 +329,29 @@ impl Bsp {
         let ti = self.texinfo.get(usize::try_from(texinfo).ok()?)?;
         let td = self.texdata.get(usize::try_from(ti.texdata).ok()?)?;
         Some((td, ti))
+    }
+
+    /// A displacement face's grid: (points, side), rows from the corner nearest its start,
+    /// as Source builds it. Each point is (its place, the flat place under it).
+    pub fn disp_grid(&self, f: &Face) -> Option<(Vec<(Vec3, Vec3)>, usize)> {
+        let d = self.disps.get(f.disp?)?;
+        let pts = self.face_points(f);
+        if pts.len() != 4 {
+            return None;
+        }
+        let s = (0..4).min_by(|&a, &b| pts[a].distance(d.start).total_cmp(&pts[b].distance(d.start)))?;
+        let c: [Vec3; 4] = std::array::from_fn(|k| pts[(s + k) % 4]);
+        let side = (1usize << d.power) + 1;
+        let last = (side - 1) as f32;
+        let mut out = Vec::with_capacity(side * side);
+        for i in 0..side {
+            let (a, b) = (c[0] + (c[1] - c[0]) * (i as f32 / last), c[3] + (c[2] - c[3]) * (i as f32 / last));
+            for j in 0..side {
+                let flat = a + (b - a) * (j as f32 / last);
+                out.push((flat + d.offsets.get(i * side + j).copied().unwrap_or(Vec3::ZERO), flat));
+            }
+        }
+        Some((out, side))
     }
 
     /// A face's corners, in order.

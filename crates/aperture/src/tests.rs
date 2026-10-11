@@ -1511,3 +1511,20 @@ fn portals_catchers_take_pellets() {
     assert!(seen >= 8, "only {seen} catchers");
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// Chamber 19's dirt floor (testchmb_a_15, a displacement, #20): she stands on its mounds, not
+/// on the flat brush under them.
+#[test]
+fn portals_displacements_hold_her_up() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_15.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
+    let level = crate::source::level("testchmb_a_15", "19", &solids, &ents);
+    // The highest of the dirt's cells.
+    let top = level.solids.iter().filter(|s| s.b.min.x > -15.5 && s.b.max.x < -7.2 && s.b.min.z > 34.0 && s.b.max.z < 54.2 && s.b.min.y > -8.2 && s.b.size().x < 0.3).max_by(|a, b| a.b.max.y.total_cmp(&b.b.max.y)).expect("the dirt's cells").b;
+    assert!(top.max.y > -7.5, "no mounds: {top:?}");
+    let (mut sim, mut c) = start(level);
+    c.feet = Vec3::new(top.center().x, top.max.y + 1.0, top.center().z);
+    run(&mut sim, &mut c, 1.5, |_, _| Input::default());
+    assert!(c.feet.y > top.max.y - 0.35, "sank into the mound: feet {} on a top at {}", c.feet, top.max.y);
+}
