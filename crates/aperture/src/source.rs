@@ -489,6 +489,9 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 kind = io::Kind::ChangeLevel {
                     map: key(e, "map").unwrap_or("").to_ascii_lowercase(),
                     landmark: key(e, "landmark").unwrap_or("").to_ascii_lowercase(),
+                    // Walked into, unless it's flagged not to be (the escape's way on).
+                    touch: mb.filter(|_| flags(e) & 2 == 0),
+                    armed: false,
                 }
             }
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,

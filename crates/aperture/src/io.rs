@@ -98,8 +98,10 @@ pub enum Kind {
     PathNode { mover: usize, node: usize },
     /// Fires its outputs as the map starts.
     Auto,
-    /// Finishes the level and names the next map and the landmark the two maps share.
-    ChangeLevel { map: String, landmark: String },
+    /// Finishes the level and names the next map and the landmark the two maps share: told to
+    /// (ChangeLevel), or walked into (`touch`, once she's been outside it: not the one she
+    /// arrives in, which leads back).
+    ChangeLevel { map: String, landmark: String, touch: Option<Aabb>, armed: bool },
     /// A model that animates (prop_dynamic): see [`Io::animations`] and [`Io::skins`].
     Animated,
     /// A glow sprite (env_sprite), shown or hidden: see [`Io::hidden`].
@@ -315,6 +317,16 @@ impl Io {
 
         // Triggers.
         let me = ctrl.body().aabb(ctrl.feet);
+        for e in 0..self.ents.len() {
+            let Kind::ChangeLevel { touch: Some(b), armed, .. } = self.ents[e].kind else { continue };
+            let inside = b.overlaps(&me);
+            if inside && armed && self.ents[e].alive {
+                self.input(sim, e, "ChangeLevel", "", e);
+            }
+            if let Kind::ChangeLevel { armed, .. } = &mut self.ents[e].kind {
+                *armed |= !inside;
+            }
+        }
         let cubes: Vec<(u32, Aabb)> = sim.props.iter().filter(|p| p.alive && p.fizzle.is_none()).map(|p| (p.id, p.aabb())).collect();
         for e in 0..self.ents.len() {
             if !self.ents[e].alive {
@@ -755,7 +767,7 @@ impl Io {
                 self.animation_count += 1;
                 self.animations.insert(e, (param.trim().to_ascii_lowercase(), self.animation_count));
             }
-            Kind::ChangeLevel { map, landmark } if i == "changelevel" => {
+            Kind::ChangeLevel { map, landmark, .. } if i == "changelevel" => {
                 if !sim.complete {
                     sim.complete = true;
                     let offset = sim.level.landmarks.iter().find(|(n, _)| n.eq_ignore_ascii_case(&landmark)).map(|(_, p)| sim.player_feet - *p).unwrap_or(Vec3::ZERO);

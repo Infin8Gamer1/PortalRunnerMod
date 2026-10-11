@@ -563,6 +563,11 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // The escape's first way on (escape_00, #21): walked into, it takes her to escape_01.
+        "escape_exit" => {
+            let map = aperture::levels::all().len() + 15;
+            vec![Map(map), Wait(150), Shot("escape_exit_a_before"), Teleport(Vec3::new(-55.27, 14.7, -14.63)), Look(90.0, 0.0), Wait(20), Shot("escape_exit_b_after"), Wait(40), Shot("escape_exit_c_after")]
+        }
         // Holes in Portal's maps (#27): from a few of each map's lights, four ways round. Run
         // with PORTAL_DEBUG_VOID=1 and anything not drawn shows magenta. PORTAL_FIRST_MAP and
         // PORTAL_LAST_MAP pick the maps.

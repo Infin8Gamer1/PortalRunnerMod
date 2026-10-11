@@ -2,7 +2,7 @@
 
 use glam::{EulerRot, Quat, Vec2, Vec3};
 
-use faith_move::{Controller, Input, State};
+use faith_move::{Aabb, Controller, Input, State};
 
 use crate::level::{CubeKind, Inputs, Level, Mat, Paint};
 use crate::portal::{Portal, PortalColor};
@@ -1722,4 +1722,141 @@ fn portals_rocket_turrets() {
     let ev = run(&mut sim, &mut c, 1.5, |_, _| Input::default());
     assert!(ev.iter().any(|e| matches!(e, SimEvent::RocketExploded { target: Some(0), .. })), "missed GLaDOS");
     assert!(!sim.io_signals[rocket], "the turret's still on");
+}
+
+/// Every one of Portal's maps leads on to the next (#21): its exit elevator, ridden from its
+/// car, or the way out she walks into (the escape's), ends the map with the next one named.
+#[test]
+fn portals_maps_lead_on() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let order = [
+        "testchmb_a_00", "testchmb_a_01", "testchmb_a_02", "testchmb_a_03", "testchmb_a_04", "testchmb_a_05", "testchmb_a_06", "testchmb_a_07", "testchmb_a_08",
+        "testchmb_a_09", "testchmb_a_10", "testchmb_a_11", "testchmb_a_13", "testchmb_a_14", "testchmb_a_15", "escape_00", "escape_01", "escape_02",
+    ];
+    let mut bad = Vec::new();
+    let mut seen = 0;
+    for w in order.windows(2) {
+        let (name, next) = (w[0], w[1]);
+        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}")));
+        let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { continue };
+        seen += 1;
+        let level = crate::source::level(name, "map", &solids, &ents);
+        let (sim, _) = start(level.clone());
+        let io = sim.io.as_ref().unwrap();
+        let Some((k, touch)) = io.ents.iter().enumerate().find_map(|(k, e)| match &e.kind {
+            crate::io::Kind::ChangeLevel { map, touch, .. } if map == next => Some((k, *touch)),
+            _ => None,
+        }) else {
+            bad.push(format!("{name}: nothing leads to {next}"));
+            continue;
+        };
+        let (mut sim, mut c) = start(level);
+        let home = c.feet;
+        run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+        match touch {
+            Some(b) => {
+                // (From its top: escape_01's is a shaft she drops down.)
+                c.feet = Vec3::new(b.center().x, (b.max.y - 1.9).max(b.min.y + 0.05), b.center().z);
+                run(&mut sim, &mut c, 1.0, |_, _| Input::default());
+            }
+            None => {
+                // The exit elevator: the train whose path ends at the change.
+                let target = io.ents[k].name.clone();
+                let io = sim.io.as_ref().unwrap();
+                let train = io.ents.iter().find_map(|e| match e.kind {
+                    crate::io::Kind::PathNode { mover, .. } if e.outputs.iter().any(|o| o.target == target && o.input.eq_ignore_ascii_case("ChangeLevel")) => Some(mover),
+                    _ => None,
+                });
+                let Some(train) = train else {
+                    bad.push(format!("{name}: no exit elevator ends at {target}"));
+                    continue;
+                };
+                let floor_of = |sim: &Sim| sim.movers[train].boxes().find(|b| b.size().x > 3.0 && b.size().z > 3.0 && b.size().y < 0.3);
+                if floor_of(&sim).is_none() {
+                    bad.push(format!("{name}: the exit elevator has no floor"));
+                    continue;
+                }
+                // What she'd have passed through on her way there first: the triggers that
+                // (through scenes and relays) switch on the ones that start the ride.
+                let train_name = io.ents.iter().find(|e| matches!(e.kind, crate::io::Kind::Mover { index, .. } if index == train)).map(|e| e.name.clone()).unwrap_or_default();
+                let mut before = Vec::new();
+                let mut starters = Vec::new();
+                for (r, e) in io.ents.iter().enumerate() {
+                    if let crate::io::Kind::Trigger { b, .. } = e.kind
+                        && e.outputs.iter().any(|o| o.target == train_name && o.input.eq_ignore_ascii_case("StartForward"))
+                    {
+                        on_the_way(io, r, 0, &mut before);
+                        starters.push(b);
+                    }
+                }
+                for t in before {
+                    let crate::io::Kind::Trigger { b, .. } = sim.io.as_ref().unwrap().ents[t].kind else { continue };
+                    visit(&mut sim, &mut c, b, home, 5.0);
+                }
+                // The trigger in the car starts the ride; any others call it to her first (a
+                // car waiting up its shaft comes down to its stop).
+                let in_car = |sim: &Sim| {
+                    let car = floor_of(sim)?;
+                    let room = Aabb::new(car.min - Vec3::new(0.3, 0.5, 0.3), car.max + Vec3::new(0.3, 3.0, 0.3));
+                    Some((car, starters.iter().copied().find(|b| b.overlaps(&room))))
+                };
+                if in_car(&sim).is_some_and(|(_, ride)| ride.is_none()) {
+                    for &b in &starters {
+                        visit(&mut sim, &mut c, b, home, 20.0);
+                    }
+                }
+                let Some((car, ride)) = in_car(&sim) else { continue };
+                // In the car, where its trigger is (some cover only its back half).
+                let at = ride.map_or(car.center(), |b| b.center());
+                c.feet = Vec3::new(at.x, car.max.y + 0.05, at.z);
+                c.state = State::Ground;
+                run(&mut sim, &mut c, 60.0, |_, _| Input::default());
+            }
+        }
+        match &sim.transition {
+            Some(t) if t.map == next => {}
+            Some(t) => bad.push(format!("{name}: led to {} instead of {next}", t.map)),
+            None => bad.push(format!("{name}: never led on to {next} (feet {})", c.feet)),
+        }
+    }
+    if seen > 0 {
+        assert_eq!(seen, 17);
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// She walks into trigger `b` (onto the floor in it), then goes back to `home` while what it
+/// started plays out (anywhere off a floor she'd fall to her death).
+fn visit(sim: &mut Sim, c: &mut Controller, b: Aabb, home: Vec3, wait: f32) {
+    let top = Vec3::new(b.center().x, b.max.y - 0.1, b.center().z);
+    let floor = sim.raycast(top, Vec3::NEG_Y, b.size().y, crate::sim::Mask::SOLID).map_or(b.min.y, |h| h.point.y);
+    c.feet = Vec3::new(top.x, floor + 0.05, top.z);
+    c.state = State::Ground;
+    run(sim, c, 0.1, |_, _| Input::default());
+    c.feet = home;
+    c.state = State::Ground;
+    run(sim, c, wait, |_, _| Input::default());
+}
+
+/// The triggers she passes through that, through scenes and relays, switch on trigger `e`
+/// (none, if it starts on), earliest first.
+fn on_the_way(io: &crate::io::Io, e: usize, depth: usize, out: &mut Vec<usize>) {
+    use crate::io::Kind;
+    let on = match io.ents[e].kind {
+        Kind::Trigger { enabled, .. } => enabled,
+        _ => false,
+    };
+    if on || depth > 5 {
+        if depth > 0 && matches!(io.ents[e].kind, Kind::Trigger { players: true, .. }) && !out.contains(&e) {
+            out.push(e);
+        }
+        return;
+    }
+    let name = io.ents[e].name.to_ascii_lowercase();
+    let wakes = |i: &str| ["enable", "start", "trigger"].iter().any(|w| i.eq_ignore_ascii_case(w));
+    for (k, p) in io.ents.iter().enumerate() {
+        if k != e && !name.is_empty() && p.outputs.iter().any(|o| o.target == name && wakes(&o.input)) {
+            on_the_way(io, k, depth + 1, out);
+        }
+    }
 }
