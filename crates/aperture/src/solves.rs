@@ -1021,7 +1021,9 @@ impl Play {
 
 /// Chamber 11 (testchmb_a_07's first half): the turning gun puts orange in three places in
 /// turn. Blue in the corridor, out of orange behind the switch's platform, the switch (it opens
-/// the launcher room); ...
+/// the launcher room); blue on its back wall, in by orange; blue where the pellet hits, out of
+/// orange opposite the catcher; onto the scaffold by blue; the upgraded gun, the switch that
+/// rises, orange beyond the door it opens, blue where the scaffold stops; over on it and through.
 #[test]
 fn solve_testchmb_a_07() {
     let Some(mut p) = Play::load("testchmb_a_07") else { return };
@@ -1089,4 +1091,6 @@ fn solve_testchmb_a_07() {
     p.assert_alive("in Chamber 11");
     p.ride("07a_07b_elevator_body");
     eprintln!("up to Chamber 12 at {}", p.c.feet);
+    // Chamber 12 (the panels the pistons push out, flung off them and the tilted ones) isn't
+    // played yet.
 }
