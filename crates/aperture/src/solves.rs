@@ -1748,3 +1748,22 @@ fn solve_testchmb_a_13() {
     p.pick_up(p.sim.props[0].pos);
     p.assert_alive("up the ledges with the cube");
 }
+
+/// Chamber 00's clock runs its hundredths and thousandths (#48), not just its seconds.
+#[test]
+fn chamber_00_clock_runs() {
+    let Some(mut p) = Play::load("testchmb_a_00") else { return };
+    let model = |p: &Play, name: &str| p.mover(name);
+    let walls = [model(&p, "brush_clock_centiseconds_wall"), model(&p, "brush_clock_milliseconds_wall")].map(|m| p.sim.movers[m].def.model);
+    let frames = |p: &Play| walls.map(|m| p.sim.io.as_ref().unwrap().frames.get(&m).copied());
+    // (The map starts it about 7 s in.)
+    p.wait(8.0);
+    let a = frames(&p);
+    p.wait(0.05);
+    let b = frames(&p);
+    p.wait(0.33);
+    let c = frames(&p);
+    eprintln!("clock frames {a:?} {b:?} {c:?}");
+    assert!(a[1].is_some() && (a[1] != b[1] || b[1] != c[1]), "the thousandths don't run: {a:?} {b:?} {c:?}");
+    assert!(a[0] != c[0] || b[0] != c[0], "the hundredths don't run: {a:?} {b:?} {c:?}");
+}

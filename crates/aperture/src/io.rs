@@ -111,6 +111,9 @@ pub enum Kind {
     /// Picks which frame of its brush's texture shows (env_texturetoggle: a door's state
     /// panel, X or check): see [`Io::frames`].
     TextureToggle { target: String },
+    /// Runs its parent brush's texture frame (material_modify_control on `$frame`: Chamber
+    /// 00's clock's hundredths). `lerp`: from, to, over (seconds), looping, since when.
+    FrameLerp { parent: String, lerp: Option<(f32, f32, f32, bool, f32)> },
     Other,
 }
 
@@ -219,6 +222,15 @@ impl Io {
     }
 
     /// One frame of logic (from [`Sim::step`]).
+    /// Show frame `n` of the texture on the brushes named `name`.
+    fn set_frame(&mut self, sim: &Sim, name: &str, n: u32) {
+        for t in self.by_name.get(name).cloned().unwrap_or_default() {
+            if let Kind::Mover { index, .. } = self.ents[t].kind {
+                self.frames.insert(sim.movers[index].def.model, n);
+            }
+        }
+    }
+
     pub fn step(&mut self, sim: &mut Sim, ctrl: &Controller, dt: f32) {
         sim.player_feet = ctrl.feet;
         sim.player_yaw = ctrl.yaw;
@@ -444,6 +456,16 @@ impl Io {
                     }
                     self.fire(e, "OnTimer", None);
                 }
+            }
+        }
+
+        // Texture frames on the run.
+        for e in 0..self.ents.len() {
+            if let Kind::FrameLerp { ref parent, lerp: Some((from, to, over, looping, since)) } = self.ents[e].kind {
+                let t = (now - since) / over;
+                let t = if looping { t.fract() } else { t.min(1.0) };
+                let parent = parent.clone();
+                self.set_frame(sim, &parent, (from + (to - from) * t).floor().max(0.0) as u32);
             }
         }
 
@@ -807,6 +829,21 @@ impl Io {
             },
             Kind::Animated if i == "skin" => {
                 self.skins.insert(e, num(param).max(0.0) as u32);
+            }
+            Kind::FrameLerp { .. } if i == "startfloatlerp" => {
+                let v: Vec<f32> = param.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                if v.len() >= 3 {
+                    let lerp = Some((v[0], v[1], v[2].max(1e-3), v.get(3).is_some_and(|l| *l != 0.0), self.time));
+                    if let Kind::FrameLerp { lerp: l, .. } = &mut self.ents[e].kind {
+                        *l = lerp;
+                    }
+                }
+            }
+            Kind::FrameLerp { parent, .. } if i == "setmaterialvar" => {
+                if let Kind::FrameLerp { lerp, .. } = &mut self.ents[e].kind {
+                    *lerp = None;
+                }
+                self.set_frame(sim, &parent, num(param).max(0.0) as u32);
             }
             Kind::TextureToggle { target } if i == "settextureindex" || i == "incrementtextureindex" => {
                 // (Overlays go by name: a door's indicator strips.)

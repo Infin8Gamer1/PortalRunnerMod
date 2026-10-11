@@ -562,6 +562,9 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
             "env_sprite" if !name.is_empty() => kind = io::Kind::Sprite,
             "env_texturetoggle" => kind = io::Kind::TextureToggle { target: key(e, "target").unwrap_or("").to_ascii_lowercase() },
+            "material_modify_control" if key(e, "materialVar").is_some_and(|v| v.eq_ignore_ascii_case("$frame")) => {
+                kind = io::Kind::FrameLerp { parent: key(e, "parentname").unwrap_or("").to_ascii_lowercase(), lerp: None }
+            }
             // The maker puts the template where it is (turned as it's turned): the cube keeps
             // its place relative to the template, so it sits on the floor as the map's had it.
             "env_entity_maker" => {
