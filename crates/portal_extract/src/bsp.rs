@@ -30,6 +30,7 @@ const BRUSHES: usize = 18;
 const BRUSHSIDES: usize = 19;
 const TEXDATA_STRING_DATA: usize = 43;
 const TEXDATA_STRING_TABLE: usize = 44;
+const OVERLAYS: usize = 45;
 
 pub const CONTENTS_SOLID: i32 = 0x1;
 pub const CONTENTS_WINDOW: i32 = 0x2;
@@ -124,6 +125,31 @@ pub struct Bsp {
     pub leafbrushes: Vec<u16>,
     pub brushes: Vec<Brush>,
     pub sides: Vec<BrushSide>,
+    pub overlays: Vec<Overlay>,
+}
+
+/// An overlay (info_overlay: a decal laid on faces; Portal's indicator light strips and painted
+/// signs), as the compiled map has it: Source space.
+pub struct Overlay {
+    pub id: i32,
+    pub texinfo: i32,
+    /// Its texture's range across it: U from, to; V from, to.
+    pub u: [f32; 2],
+    pub v: [f32; 2],
+    /// Its corners: where they are, from `origin`, in its basis (U, V = normal x U).
+    pub corners: [Vec3; 4],
+    pub origin: Vec3,
+    pub normal: Vec3,
+    pub basis_u: Vec3,
+}
+
+impl Overlay {
+    /// Its corners in the map, with their texture coordinates.
+    pub fn quad(&self) -> [(Vec3, [f32; 2]); 4] {
+        let v = self.normal.cross(self.basis_u);
+        let at = |k: usize| self.origin + self.basis_u * self.corners[k].x + v * self.corners[k].y;
+        [(at(0), [self.u[0], self.v[0]]), (at(1), [self.u[0], self.v[1]]), (at(2), [self.u[1], self.v[1]]), (at(3), [self.u[1], self.v[0]])]
+    }
 }
 
 fn rd<T: Copy>(b: &[u8], at: usize, f: impl Fn([u8; 4]) -> T) -> T {
@@ -242,7 +268,26 @@ impl Bsp {
             })
             .collect();
         let static_props = static_props(lump(GAME_LUMP)?.0, d).unwrap_or_default();
-        Ok(Bsp { entities, static_props, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides })
+        // Overlays (doverlay_t, 352 bytes): the basis's U is kept in the corners' z.
+        let (b, n) = recs(OVERLAYS, 352)?;
+        let overlays = (0..n)
+            .map(|i| {
+                let a = i * 352;
+                let v3 = |at: usize| Vec3::new(f32_at(b, at), f32_at(b, at + 4), f32_at(b, at + 8));
+                let c: [Vec3; 4] = std::array::from_fn(|k| v3(a + 280 + 12 * k));
+                Overlay {
+                    id: i32_at(b, a),
+                    texinfo: i16_at(b, a + 4) as i32,
+                    u: [f32_at(b, a + 264), f32_at(b, a + 268)],
+                    v: [f32_at(b, a + 272), f32_at(b, a + 276)],
+                    corners: c,
+                    origin: v3(a + 328),
+                    normal: v3(a + 340),
+                    basis_u: Vec3::new(c[0].z, c[1].z, c[2].z),
+                }
+            })
+            .collect();
+        Ok(Bsp { entities, static_props, planes, texinfo, texdata, vertices, edges, surfedges, faces, models, nodes, leafs, leafbrushes, brushes, sides, overlays })
     }
 
     /// A texinfo's texture name, as the map has it (lower case, forward slashes).

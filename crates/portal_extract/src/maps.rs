@@ -35,11 +35,13 @@ pub struct MapMaterial {
     pub emissive: bool,
     /// Its texture was written.
     pub textured: bool,
+    /// A decal that darkens what it's on (DecalModulate: bullet holes, scorches).
+    pub modulate: bool,
 }
 
 impl MapMaterial {
     fn flags(&self) -> u8 {
-        (self.translucent as u8) | (self.alphatest as u8) << 1 | (self.emissive as u8) << 2 | (self.additive as u8) << 3 | (self.portalable as u8) << 4 | (self.textured as u8) << 5
+        (self.translucent as u8) | (self.alphatest as u8) << 1 | (self.emissive as u8) << 2 | (self.additive as u8) << 3 | (self.portalable as u8) << 4 | (self.textured as u8) << 5 | (self.modulate as u8) << 6
     }
 }
 
@@ -71,6 +73,7 @@ fn material(name: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&c
         additive: flag("$additive"),
         emissive: flag("$selfillum") || shader.starts_with("unlitgeneric") || name.starts_with("lights/"),
         textured: false,
+        modulate: shader.starts_with("decalmodulate"),
     };
     let png = tex_dir.join(format!("{name}.png"));
     let base = crate::vmt_base_texture(&text);
@@ -159,6 +162,38 @@ const OWN_MODELS: &[&str] = &["models/props/metal_box.mdl", "models/props/button
 pub fn prop_glb(model: &str, skin: i32) -> String {
     let stem = model.trim_start_matches("models/").trim_end_matches(".mdl");
     if skin > 0 { format!("map/{stem}_skin{skin}") } else { format!("map/{stem}") }
+}
+
+/// Write a map's overlays out (`maps/<name>.overlays`, a line each: `material|flags|name|
+/// x y z u v (each corner, ours, four times)|nx ny nz`), their materials' textures once. `name`
+/// is its info_overlay_accessor's, where the logic can switch its texture's frame (a door's
+/// indicator strip, blue to orange).
+fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, tex_dir: &Path) -> Result<(), String> {
+    let names: HashMap<i32, &str> = ents
+        .iter()
+        .filter(|e| bsp::key(e, "classname") == Some("info_overlay_accessor"))
+        .filter_map(|e| Some((bsp::key(e, "OverlayID")?.trim().parse().ok()?, bsp::key(e, "targetname")?)))
+        .collect();
+    let mut mats: HashMap<String, MapMaterial> = HashMap::new();
+    let mut text = String::new();
+    for o in &bsp.overlays {
+        let Some((td, _)) = bsp.texture(o.texinfo) else { continue };
+        if bsp::tool_texture(&td.name) {
+            continue;
+        }
+        let base = bsp::base_material(&td.name);
+        let m = mats.entry(base.clone()).or_insert_with(|| material(&base, read, remix, tex_dir));
+        if !m.textured {
+            continue;
+        }
+        let corners: Vec<String> = o.quad().iter().map(|(p, uv)| {
+            let q = ours(*p);
+            format!("{} {} {} {} {}", q.x, q.y, q.z, uv[0], uv[1])
+        }).collect();
+        let n = ours(o.normal).normalize_or_zero();
+        text.push_str(&format!("{base}|{}|{}|{}|{} {} {}\n", m.flags(), names.get(&o.id).copied().unwrap_or(""), corners.join(" "), n.x, n.y, n.z));
+    }
+    std::fs::write(path, text).map_err(|e| e.to_string())
 }
 
 /// A prop model the map uses: (model, skin, the animations the map plays on it).
@@ -436,6 +471,7 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     std::fs::write(map_dir.join(format!("{name}.solids")), solids).map_err(|e| e.to_string())?;
     std::fs::write(map_dir.join(format!("{name}.ents")), &bsp.entities).map_err(|e| e.to_string())?;
     let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")), read)?;
+    overlays(&bsp, &ents, &map_dir.join(format!("{name}.overlays")), read, remix, &tex_dir)?;
     Ok((groups.len(), nboxes, materials.len(), used))
 }
 

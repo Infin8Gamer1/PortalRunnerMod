@@ -80,16 +80,26 @@ pub struct MapModel(pub usize);
 /// first.
 #[derive(Component)]
 pub struct TextureFrames {
-    model: usize,
+    key: FrameKey,
     frames: Vec<Handle<Image>>,
     shown: u32,
+}
+
+/// What picks a switched texture's frame: a brush model's number, or (an overlay's) a name.
+enum FrameKey {
+    Model(usize),
+    Name(String),
 }
 
 /// Show the frame the logic picked on each switched texture.
 pub fn show_frames(game: Res<Game>, mut q: Query<(&mut TextureFrames, &MeshMaterial3d<StandardMaterial>)>, mut materials: ResMut<Assets<StandardMaterial>>) {
     let Some(io) = &game.sim.io else { return };
     for (mut f, mat) in &mut q {
-        let want = io.frames.get(&f.model).copied().unwrap_or(0) % f.frames.len() as u32;
+        let picked = match &f.key {
+            FrameKey::Model(m) => io.frames.get(m),
+            FrameKey::Name(n) => io.named_frames.get(n),
+        };
+        let want = picked.copied().unwrap_or(0) % f.frames.len() as u32;
         if want == f.shown {
             continue;
         }
@@ -150,6 +160,8 @@ pub struct Lamps(pub HashSet<AssetId<StandardMaterial>>);
 
 /// How bright a light panel glows (as the chambers' lamps do).
 const PANEL_GLOW: f32 = 6.0;
+/// How far an overlay sits off its surface (metres).
+const OVERLAY_LIFT: f32 = 0.003;
 /// How bright a lit sign glows: enough to read in a dim room, not so much its colours (a
 /// door's blue X, its orange check) burn out to white.
 const SIGN_GLOW: f32 = 0.25;
@@ -339,7 +351,7 @@ pub fn sync(
                 if lamps.0.contains(&handles[g.material].id()) {
                     lamps.0.insert(handle.id());
                 }
-                switched = first.map(|f| TextureFrames { model: g.model as usize, frames: std::iter::once(f).chain(frames).collect(), shown: 0 });
+                switched = first.map(|f| TextureFrames { key: FrameKey::Model(g.model as usize), frames: std::iter::once(f).chain(frames).collect(), shown: 0 });
             }
         }
         let mut e = commands.spawn((ChamberGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(handle), Transform::default()));
@@ -471,6 +483,51 @@ pub fn sync(
                 ));
                 c.spawn((Mesh3d(lamp.0), MeshMaterial3d(lamp.1), Transform::from_xyz(0.0, 3.3, 0.0), NotShadowCaster));
             });
+        }
+    }
+    // Its overlays (decals: indicator light strips, signs, stains), each a quad just off its
+    // surface. A named one has its own material, so its strip follows its own door.
+    let text = std::fs::read_to_string(root.join("maps").join(format!("{name}.overlays"))).unwrap_or_default();
+    let mut overlay_mats: HashMap<String, Handle<StandardMaterial>> = HashMap::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('|').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let (mat, flags, target) = (f[0], f[1].parse::<u8>().unwrap_or(0), f[2].to_ascii_lowercase());
+        let v: Vec<f32> = f[3].split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        let n = floats(f[4]);
+        if v.len() < 20 || n == Vec3::ZERO {
+            continue;
+        }
+        let lift = n * OVERLAY_LIFT;
+        let pos: Vec<[f32; 3]> = (0..4).map(|k| (Vec3::new(v[k * 5], v[k * 5 + 1], v[k * 5 + 2]) + lift).to_array()).collect();
+        let uv: Vec<[f32; 2]> = (0..4).map(|k| [v[k * 5 + 3], v[k * 5 + 4]]).collect();
+        // (Wound to face the way it faces.)
+        let (a, b, c) = (Vec3::from(pos[0]), Vec3::from(pos[1]), Vec3::from(pos[2]));
+        let idx = if (b - a).cross(c - a).dot(n) >= 0.0 { vec![0, 1, 2, 0, 2, 3] } else { vec![0, 2, 1, 0, 3, 2] };
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![n.to_array(); 4])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+            .with_inserted_indices(Indices::U32(idx));
+        let _ = mesh.generate_tangents();
+        let key = format!("{mat}|{target}");
+        let handle = overlay_mats
+            .entry(key)
+            .or_insert_with(|| {
+                let base = material(mat, flags, &extracted, &mut images, &mut materials, &m, &mut lamps);
+                let mut own = materials.get(&base).cloned().unwrap_or_default();
+                // A decal: blended over what it's on (or darkening it: DecalModulate), in front.
+                own.alpha_mode = if flags & 64 != 0 { AlphaMode::Multiply } else if flags & 1 != 0 { AlphaMode::Blend } else if flags & 2 != 0 { AlphaMode::Mask(0.5) } else { own.alpha_mode };
+                own.depth_bias = 1.0;
+                materials.add(own)
+            })
+            .clone();
+        let frames: Vec<Handle<Image>> = if target.is_empty() { Vec::new() } else { (1..64).map_while(|k| extracted.texture(&format!("map/{mat}_frame{k}"))).map(|t| images.add(t)).collect() };
+        let mut e = commands.spawn((ChamberGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(handle.clone()), Transform::default(), NotShadowCaster));
+        if let (false, Some(first)) = (frames.is_empty(), materials.get(&handle).and_then(|m| m.base_color_texture.clone())) {
+            e.insert(TextureFrames { key: FrameKey::Name(target.clone()), frames: std::iter::once(first).chain(frames).collect(), shown: 0 });
         }
     }
     // The map's lights, brightest first.

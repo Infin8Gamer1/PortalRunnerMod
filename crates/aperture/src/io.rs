@@ -145,6 +145,8 @@ pub struct Io {
     pub skins: HashMap<usize, u32>,
     /// The texture frame each brush model shows, where the logic has picked one.
     pub frames: HashMap<usize, u32>,
+    /// And by the name the logic switched (lower case), for what isn't a brush: overlays.
+    pub named_frames: HashMap<String, u32>,
     /// GLaDOS's lines as she says them: a count that goes up with each, and the sound.
     pub voice: Vec<(u32, String)>,
     /// Which preset portal (entity) is open in each colour.
@@ -645,6 +647,9 @@ impl Io {
                 self.skins.insert(e, num(param).max(0.0) as u32);
             }
             Kind::TextureToggle { target } if i == "settextureindex" || i == "incrementtextureindex" => {
+                // (Overlays go by name: a door's indicator strips.)
+                let n = if i == "settextureindex" { num(param).max(0.0) as u32 } else { self.named_frames.get(&target).map_or(1, |f| f + 1) };
+                self.named_frames.insert(target.clone(), n);
                 for t in self.by_name.get(&target).cloned().unwrap_or_default() {
                     let Kind::Mover { index, .. } = self.ents[t].kind else { continue };
                     let model = sim.movers[index].def.model;

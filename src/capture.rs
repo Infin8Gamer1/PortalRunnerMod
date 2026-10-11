@@ -470,9 +470,17 @@ fn script(name: &str) -> Vec<Act> {
                 Look(180.0, 18.0),
                 Wait(30),
                 Shot("signs_d_panel_x"),
+                // The indicator strip on the floor, from the button to the door (#44).
+                Look(180.0, -40.0),
+                Wait(5),
+                Shot("signs_d_strip_off"),
+                Look(180.0, 18.0),
                 PlaceCube(Vec3::new(23.58, 4.4, 13.0)),
                 Wait(150),
                 Shot("signs_e_panel_check"),
+                Look(180.0, -40.0),
+                Wait(5),
+                Shot("signs_e_strip_on"),
             ]
         }
         // A swinging door (#31): Chamber 18's (testchmb_a_14) pellet launcher turns its hatch
