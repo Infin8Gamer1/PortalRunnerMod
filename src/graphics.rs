@@ -13,6 +13,8 @@ use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::camera::{CameraMainTextureUsages, Exposure, Hdr};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
+use bevy::math::cubic_splines::LinearSpline;
+use bevy::post_process::auto_exposure::{AutoExposure, AutoExposureCompensationCurve, AutoExposurePlugin};
 use bevy::post_process::bloom::Bloom;
 use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy::light::DirectionalLightShadowMap;
@@ -101,6 +103,30 @@ impl Aa {
     }
 }
 
+/// Auto exposure: how far it may turn the picture down and up (stops), as Portal's maps let
+/// theirs (env_tonemap_controller: 0.75x to 1.5x). (These and the reference are exact in
+/// binary: Bevy's curve wants its segments' ends to meet exactly.)
+const AUTO_EXPOSURE_RANGE: (f32, f32) = (-0.4375, 0.5625);
+/// The view's brightness (log2 of its average luminance, metered as Bevy does) that's left
+/// as it is: a chamber as bright as Portal's first ones. Brighter is turned down, darker up.
+const AUTO_EXPOSURE_REFERENCE: f32 = -1.625;
+/// How fast it adjusts (stops a second).
+const AUTO_EXPOSURE_SPEED: f32 = 1.0;
+
+/// (PORTAL_AE_REF overrides the reference, for calibrating it.)
+fn auto_exposure_reference() -> f32 {
+    std::env::var("PORTAL_AE_REF").ok().and_then(|v| v.parse().ok()).unwrap_or(AUTO_EXPOSURE_REFERENCE)
+}
+
+/// The compensation for a metered brightness `l` (log2), as the curve Bevy's auto exposure
+/// takes: it aims for `curve(l) - l` stops, which is the way back to `reference`, held within
+/// `AUTO_EXPOSURE_RANGE`.
+fn exposure_curve(reference: f32) -> AutoExposureCompensationCurve {
+    let (down, up) = AUTO_EXPOSURE_RANGE;
+    let points = [Vec2::new(-8.0, -8.0 + up), Vec2::new(reference - up, reference), Vec2::new(reference - down, reference), Vec2::new(8.0, 8.0 + down)];
+    AutoExposureCompensationCurve::from_curve(LinearSpline::new(points)).expect("a valid exposure curve")
+}
+
 /// The overlay cameras drawn over the player's (the arms and the gun).
 #[derive(Component)]
 pub struct OverlayCamera;
@@ -109,7 +135,7 @@ pub struct GraphicsPlugin;
 
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
+        app.add_plugins(AutoExposurePlugin).add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
         #[cfg(feature = "dlss")]
         app.add_systems(
             PreUpdate,
@@ -149,6 +175,8 @@ fn apply(
     new_cameras: Query<(), Added<Camera>>,
     mut sun: Query<&mut DirectionalLight, With<Sun>>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
+    mut curves: ResMut<Assets<AutoExposureCompensationCurve>>,
+    mut curve: Local<Option<Handle<AutoExposureCompensationCurve>>>,
 ) {
     // ---- the window
     let novsync = std::env::var_os("PORTAL_NOVSYNC").is_some();
@@ -182,7 +210,8 @@ fn apply(
     let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
     let dlss = if dlss_on(&settings) { settings.dlss as i32 } else { 0 };
     let rr = ray_reconstruction(&settings);
-    let cams = (aa, sharpen, ev * 100000 + fx * 100 + dlss * 2 + rr as i32);
+    let auto = settings.auto_exposure > 0.5;
+    let cams = (aa, sharpen, ev * 100000 + fx * 100 + dlss * 2 + rr as i32 + (auto as i32) * 10_000_000);
     // DLSS does the anti-aliasing itself. Ray-traced lighting needs TAA: it's what smooths
     // the traced light's grain over frames (and it can't take MSAA).
     let rt = crate::raytrace::active();
@@ -204,7 +233,11 @@ fn apply(
             if !rt {
                 ec.remove::<(DepthPrepass, MotionVectorPrepass)>();
             }
-            ec.remove::<(Bloom, ScreenSpaceAmbientOcclusion, bevy::core_pipeline::prepass::NormalPrepass)>();
+            ec.remove::<(Bloom, ScreenSpaceAmbientOcclusion, bevy::core_pipeline::prepass::NormalPrepass, AutoExposure)>();
+            if auto {
+                let curve = curve.get_or_insert_with(|| curves.add(exposure_curve(auto_exposure_reference()))).clone();
+                ec.insert(AutoExposure { speed_brighten: AUTO_EXPOSURE_SPEED, speed_darken: AUTO_EXPOSURE_SPEED, compensation_curve: curve, ..default() });
+            }
             // HDR, tonemapped once here (the portal views arrive linear), with bloom.
             ec.insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface));
             if settings.bloom > 0.0 {
@@ -346,4 +379,16 @@ fn frame_cap(settings: Res<Settings>, mut last: Local<Option<Instant>>) {
         }
     }
     *last = Some(now);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_auto_exposure_curve_builds() {
+        exposure_curve(AUTO_EXPOSURE_REFERENCE);
+        exposure_curve(-6.0);
+        exposure_curve(5.0);
+    }
 }

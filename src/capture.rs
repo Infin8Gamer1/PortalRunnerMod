@@ -530,11 +530,19 @@ fn script(name: &str) -> Vec<Act> {
         "views" => {
             let map: usize = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len());
             let wait: u32 = std::env::var("PORTAL_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+            // (PORTAL_HOLD: frames held at each view before its shot, for the traced light to
+            // settle; PORTAL_SHOTS: shots of each, that many frames apart.)
+            let hold: u32 = std::env::var("PORTAL_HOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+            let shots: u32 = std::env::var("PORTAL_SHOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
             let mut v = vec![Map(map), Wait(wait)];
             for (k, p) in std::env::var("PORTAL_TP").unwrap_or_default().split(';').enumerate() {
                 let f: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 if f.len() == 5 {
-                    v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Launch(Vec3::ZERO), Look(f[3], f[4]), Wait(2), Shot(Box::leak(format!("view_{k}").into_boxed_str()))]);
+                    v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Launch(Vec3::ZERO), Look(f[3], f[4])]);
+                    for j in 0..shots {
+                        let name = if shots == 1 { format!("view_{k}") } else { format!("view_{k}_{j}") };
+                        v.extend([Wait(hold), Shot(Box::leak(name.into_boxed_str()))]);
+                    }
                 }
             }
             v

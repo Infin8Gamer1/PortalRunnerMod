@@ -61,6 +61,9 @@ pub struct Settings {
     pub bloom: f32,
     /// Screen-space ambient occlusion (not with MSAA): 1 on, 0 off.
     pub ssao: f32,
+    /// The view's exposure follows how bright it is, within the range Portal's maps allow
+    /// (as the eye adjusts): 1 on, 0 off.
+    pub auto_exposure: f32,
     /// NVIDIA DLSS (`graphics::DLSS_MODES`; 0 off). Only in builds with the `dlss` feature (the
     /// default), on a GPU that has it; elsewhere the anti-aliasing setting applies.
     pub dlss: f32,
@@ -129,6 +132,7 @@ impl Default for Settings {
             ray_tracing: 1.0,
             bloom: 0.3,
             ssao: 1.0,
+            auto_exposure: 1.0,
             // Quality, where there's DLSS.
             dlss: 2.0,
         }
@@ -241,7 +245,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 28] = [
+const ROWS: [Row; 29] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -400,6 +404,7 @@ const ROWS: [Row; 28] = [
         show: |v| crate::graphics::dlss_label(v),
     },
     Row { key: "ssao", page: Page::Graphics, label: "Ambient occlusion", min: 0.0, max: 1.0, step: 1.0, get: |s| s.ssao, put: |s, v| s.ssao = v, show: on_off },
+    Row { key: "auto_exposure", page: Page::Graphics, label: "Auto exposure", min: 0.0, max: 1.0, step: 1.0, get: |s| s.auto_exposure, put: |s, v| s.auto_exposure = v, show: on_off },
     Row { key: "fov_kick", page: Page::Display, label: "Speed FOV increase", min: 0.0, max: 1.5, step: 0.25, get: |s| s.fov_kick, put: |s, v| s.fov_kick = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
     Row { key: "speed_lines", page: Page::Display, label: "Speed lines", min: 0.0, max: 1.0, step: 1.0, get: |s| s.speed_lines, put: |s, v| s.speed_lines = v, show: on_off },
     Row {
@@ -475,6 +480,7 @@ mod tests {
             ray_tracing: 0.0,
             bloom: 0.8,
             ssao: 0.0,
+            auto_exposure: 0.0,
             dlss: 3.0,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
