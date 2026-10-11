@@ -1528,3 +1528,39 @@ fn portals_displacements_hold_her_up() {
     run(&mut sim, &mut c, 1.5, |_, _| Input::default());
     assert!(c.feet.y > top.max.y - 0.35, "sank into the mound: feet {} on a top at {}", c.feet, top.max.y);
 }
+
+/// A moving brush pushes Faith out of its way, and waits rather than crush her against a wall
+/// (#22).
+#[test]
+fn movers_push_but_dont_crush() {
+    let mut l = flat();
+    // A wall 2 m along +X from her, and a slab that slides 4 m along +X, starting just behind her.
+    l.solid(Mat::White, [2.5, 0.0, -2.0], [3.0, 3.0, 2.0]);
+    l.item(crate::level::Item::Mover(crate::level::MoverDef {
+        model: crate::level::NO_MODEL,
+        boxes: vec![crate::level::Solid { b: faith_move::Aabb::new(Vec3::new(-1.0, 0.0, -1.0), Vec3::new(-0.4, 2.5, 1.0)), mat: Mat::Black }],
+        path: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+        speed: 1.5,
+        start: 0,
+        present: true,
+        shift: Vec3::ZERO,
+        inputs: Some(Inputs::always()),
+        shuttle: false,
+        swing: None,
+        parent: None,
+        follows: false,
+        reset: None,
+    }));
+    let (mut sim, mut c) = start(l);
+    c.feet = Vec3::ZERO;
+    let mut overlapped = false;
+    run(&mut sim, &mut c, 4.0, |sim, c| {
+        let me = c.body().aabb(c.feet);
+        overlapped |= sim.movers[0].boxes().any(|b| b.overlaps(&me));
+        Input::default()
+    });
+    assert!(!overlapped, "the slab went into her");
+    assert!(c.feet.x > 1.5, "not pushed: {}", c.feet);
+    assert!(c.feet.x < 2.5 - 0.29, "pushed into the wall: {}", c.feet);
+    assert!(sim.movers[0].at.x < 4.0 - 0.1, "it crushed through her: {}", sim.movers[0].at);
+}

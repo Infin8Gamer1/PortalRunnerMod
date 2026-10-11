@@ -1777,17 +1777,42 @@ impl Sim {
                 }
             }
             let d = at - before;
-            // What's standing on it moves with it.
+            // What's standing on it moves with it, and what's in its way is pushed along, if
+            // there's room. Where there isn't, it waits (it doesn't crush her, or a cube).
             if d != Vec3::ZERO && self.movers[i].def.swing.is_none() {
                 let tops: Vec<Aabb> = self.movers[i].boxes().collect();
+                let moved: Vec<Aabb> = tops.iter().map(|b| b.translated(d)).collect();
                 let on_top = |b: &Aabb| tops.iter().any(|t| (b.min.y - t.max.y).abs() < STANDING && b.max.x > t.min.x && b.min.x < t.max.x && b.max.z > t.min.z && b.min.z < t.max.z);
-                if on_top(&ctrl.body().aabb(ctrl.feet)) {
+                let in_way = |b: &Aabb| moved.iter().any(|m| m.overlaps(b));
+                let others: Vec<Aabb> = self.movers.iter().enumerate().filter(|(k, _)| *k != i).flat_map(|(_, m)| m.boxes().collect::<Vec<_>>()).collect();
+                let room = |b: &Aabb| self.static_world.is_free(b) && !others.iter().any(|o| o.overlaps(b));
+                let me = ctrl.body().aabb(ctrl.feet);
+                let carry_me = on_top(&me) || in_way(&me);
+                let mut blocked = !on_top(&me) && in_way(&me) && !room(&me.translated(d));
+                let mut carried = Vec::new();
+                for (k, p) in self.props.iter().enumerate() {
+                    if !p.alive || Some(k) == self.held {
+                        continue;
+                    }
+                    let b = p.aabb();
+                    if on_top(&b) {
+                        carried.push(k);
+                    } else if in_way(&b) {
+                        if room(&b.translated(d)) {
+                            carried.push(k);
+                        } else {
+                            blocked = true;
+                        }
+                    }
+                }
+                if blocked {
+                    continue;
+                }
+                if carry_me {
                     ctrl.feet += d;
                 }
-                for p in self.props.iter_mut().filter(|p| p.alive) {
-                    if on_top(&p.aabb()) {
-                        p.pos += d;
-                    }
+                for k in carried {
+                    self.props[k].pos += d;
                 }
             }
             let m = &mut self.movers[i];
