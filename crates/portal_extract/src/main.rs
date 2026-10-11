@@ -164,6 +164,14 @@ const SOUNDS: &[(&str, &[&str])] = &[
     ("pellet_gone", &["sound/weapons/physcannon/energy_disintegrate4.wav"]),
     ("pellet_launch", &["sound/weapons/physcannon/energy_sing_flyby1.wav"]),
     ("pellet_caught", &["sound/weapons/physcannon/energy_sing_explosion2.wav"]),
+    // The escape's rocket turret (Portal's), and its rockets going off (Half-Life 2's).
+    ("rocket_locking", &["sound/weapons/rocket/rocket_locking_beep1.wav"]),
+    ("rocket_locked", &["sound/weapons/rocket/rocket_locked_beep1.wav"]),
+    ("rocket_fire", &["sound/weapons/rocket/rocket_fire1.wav"]),
+    ("rocket_fly", &["sound/weapons/rocket/rocket_fly_loop1.wav"]),
+    ("rocket_explode1", &["sound/weapons/explode3.wav"]),
+    ("rocket_explode2", &["sound/weapons/explode4.wav"]),
+    ("rocket_explode3", &["sound/weapons/explode5.wav"]),
     // The gun and portals (Portal).
     ("gun_blue", &["sound/weapons/portalgun/portalgun_shoot_blue1.wav"]),
     ("gun_orange", &["sound/weapons/portalgun/portalgun_shoot_red1.wav"]),
@@ -276,6 +284,9 @@ const MODELS: &[(&str, &str, &str, usize, f32)] = &[
     ("pellet_catcher", "portal", "models/props/combine_ball_catcher.mdl", 0, 0.0),
     // A sentry turret (Portal's).
     ("turret", "portal", "models/props/turret_01.mdl", 0, 0.0),
+    // The escape's rocket turret and its rocket (Portal's).
+    ("rocket_turret", "portal", "models/props_bts/rocket_sentry.mdl", 0, 0.0),
+    ("rocket", "portal", "models/props_bts/rocket.mdl", 0, 0.0),
     // The portal gun lying on a pedestal (Portal's world model).
     ("portalgun_world", "portal", "models/weapons/w_portalgun.mdl", 0, 0.0),
     ("door_upper", "portal2", "models/props/vert_door/vert_door_upper.mdl", 0, 0.0),

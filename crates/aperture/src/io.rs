@@ -16,7 +16,8 @@ use faith_move::{Aabb, Controller};
 
 use crate::level::{CubeKind, Sig};
 use crate::portal::{Portal, PortalColor};
-use crate::sim::{MapTransition, Sim, SimEvent};
+use crate::geom;
+use crate::sim::{MapTransition, Sim, SimEvent, ROCKET_BLAST};
 
 /// She picks up a gun her middle comes this close to.
 const GUN_REACH: f32 = 1.5;
@@ -71,9 +72,10 @@ pub enum Kind {
     Timer { enabled: bool, refire: f32, next: f32, random: Option<(f32, f32)> },
     Counter { value: f32, min: f32, max: f32 },
     Case { cases: Vec<String> },
-    /// Touched by Faith (`players`), cubes (`cubes`) or high energy pellets (`pellets`: Portal's
-    /// catchers, which take the pellet); once: then it's done.
-    Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, pellets: bool, player_in: bool, cubes_in: Vec<u32> },
+    /// Touched by Faith (`players`), cubes (`cubes`), high energy pellets (`pellets`: Portal's
+    /// catchers, which take the pellet) or rockets (`rockets`: flying in, or going off in it);
+    /// once: then it's done.
+    Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, pellets: bool, rockets: bool, player_in: bool, cubes_in: Vec<u32> },
     /// A floor button's moving top (a func_door in the map; the sim's button `button` stands in
     /// for it): it opens as the button goes down and closes as it comes up.
     ButtonDoor { button: usize, down: bool },
@@ -154,6 +156,8 @@ pub struct Io {
     pub named_frames: HashMap<String, u32>,
     /// GLaDOS's lines as she says them: a count that goes up with each, and the sound.
     pub voice: Vec<(u32, String)>,
+    /// What a rocket going off hurts (fires its OnTakeDamage): entity, centre and radius.
+    pub damageable: Vec<(usize, Vec3, f32)>,
     /// Which preset portal (entity) is open in each colour.
     open: [Option<usize>; 2],
     rng: u32,
@@ -242,6 +246,9 @@ impl Io {
                     self.fire(e, "OnPostSpawnBall", None);
                 }
             }
+            if let SimEvent::RocketExploded { at, .. } = ev {
+                self.rocket_blast(sim, at);
+            }
             if let SimEvent::MoverAt { mover, node, arrived } = ev {
                 for e in 0..self.ents.len() {
                     match self.ents[e].kind {
@@ -313,8 +320,24 @@ impl Io {
             if !self.ents[e].alive {
                 continue;
             }
-            let Kind::Trigger { b, once, enabled, players, cubes: takes_cubes, pellets, player_in, ref cubes_in } = self.ents[e].kind else { continue };
+            let Kind::Trigger { b, once, enabled, players, cubes: takes_cubes, pellets, rockets, player_in, ref cubes_in } = self.ents[e].kind else { continue };
             if !enabled {
+                continue;
+            }
+            if rockets {
+                // (Each rocket once: `cubes_in` holds the ones that have been in.)
+                let new: Vec<u32> = sim.rockets.iter().filter(|r| r.alive && geom::contains(&b, r.pos) && !cubes_in.contains(&r.id)).map(|r| r.id).collect();
+                for id in new {
+                    if let Kind::Trigger { cubes_in, .. } = &mut self.ents[e].kind {
+                        cubes_in.push(id);
+                    }
+                    self.fire(e, "OnStartTouch", None);
+                    self.fire(e, "OnTrigger", None);
+                    if once {
+                        self.ents[e].alive = false;
+                        break;
+                    }
+                }
                 continue;
             }
             if pellets {
@@ -395,6 +418,35 @@ impl Io {
                 for t in targets {
                     self.input(sim, t, &p.input, &p.param, p.caller);
                 }
+            }
+        }
+    }
+
+    /// A rocket's gone off at `at`: what's near is hurt, glass near enough breaks, and triggers
+    /// for rockets it went off in hear of it.
+    fn rocket_blast(&mut self, sim: &mut Sim, at: Vec3) {
+        for (e, c, r) in self.damageable.clone() {
+            if self.ents[e].alive && at.distance(c) < r + ROCKET_BLAST * 0.5 {
+                self.fire(e, "OnTakeDamage", None);
+            }
+        }
+        for e in 0..self.ents.len() {
+            match self.ents[e].kind {
+                Kind::Mover { index, .. } if self.ents[e].class == "func_breakable_surf" && self.ents[e].alive => {
+                    let m = &mut sim.movers[index];
+                    if m.present && m.boxes().any(|b| at.clamp(b.min, b.max).distance(at) < ROCKET_BLAST) {
+                        m.present = false;
+                        self.fire(e, "OnBreak", None);
+                    }
+                }
+                Kind::Trigger { b, enabled: true, rockets: true, .. } if self.ents[e].alive && geom::contains(&Aabb::new(b.min - Vec3::splat(0.5), b.max + Vec3::splat(0.5)), at) => {
+                    self.fire(e, "OnStartTouch", None);
+                    self.fire(e, "OnTrigger", None);
+                    if matches!(self.ents[e].kind, Kind::Trigger { once: true, .. }) {
+                        self.ents[e].alive = false;
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -580,6 +632,10 @@ impl Io {
                     (_, "enable" | "turnon" | "enablecollision") => m.present = true,
                     (_, "disable" | "turnoff" | "disablecollision") => m.present = false,
                     (MoverKind::Brush, "toggle") => m.present = !m.present,
+                    (MoverKind::Brush, "break" | "shatter") if m.present => {
+                        m.present = false;
+                        self.fire(e, "OnBreak", None);
+                    }
                     _ => {}
                 }
             }

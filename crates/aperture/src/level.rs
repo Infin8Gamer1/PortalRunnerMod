@@ -183,6 +183,11 @@ pub enum Item {
     /// A portal gun to pick up (on a pedestal), turned `turn`, riding mover `mover` (turning as
     /// it turns): touching it adds its colours to hers.
     GunPickup { at: Vec3, turn: glam::Quat, gun: Gun, mover: Option<usize> },
+    /// A rocket turret (Portal's escape) at `at`, aiming `yaw` at rest, working while its inputs
+    /// are on: it tracks her, locks on and fires a slow rocket. It rides mover `mover`.
+    RocketTurret { at: Vec3, yaw: f32, inputs: Inputs, mover: Option<usize> },
+    /// Something a rocket can hit and hurt (GLaDOS): a sphere.
+    RocketTarget { at: Vec3, radius: f32 },
     /// A sentry turret standing at `at`, facing `yaw` (faith_move's: 0 looks down -Z).
     Turret { at: Vec3, yaw: f32 },
     /// A pellet catcher: its lens at `at`, facing `facing`; on for good once a pellet's in.
@@ -611,7 +616,8 @@ impl Level {
                 | Item::Bridge { inputs, .. }
                 | Item::Laser { inputs, .. }
                 | Item::GelDispenser { inputs, .. }
-                | Item::PelletLauncher { inputs, .. } => inputs.all.iter().for_each(|s| see(*s)),
+                | Item::PelletLauncher { inputs, .. }
+                | Item::RocketTurret { inputs, .. } => inputs.all.iter().for_each(|s| see(*s)),
                 Item::Mover(MoverDef { inputs: Some(inputs), .. }) => inputs.all.iter().for_each(|s| see(*s)),
                 _ => {}
             }

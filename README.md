@@ -140,6 +140,8 @@ open doors, preset portals come and go, droppers make cubes, elevators ride and 
 elevator ends the chamber, pellets fly from their launchers into their catchers, and GLaDOS
 speaks her lines on cue (her scenes, read from Portal's scenes.image). Turrets watch for you, fire when they see you, and
 tip over when a cube hits them, you run into them, or you kick them (Mirror's Edge's melee).
+The escape's rocket turrets lock on and fire slow rockets: put a portal in front of one and
+send it into the glass, the tubes or GLaDOS.
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
@@ -242,7 +244,7 @@ The capture mode plays a scripted run and saves screenshots into the folder: scr
 `portals`, `stations`, `recursion`, `fling`, `gun`, `through` (running through portals, a
 screenshot every frame), `flingfilm` (the same, falling through a floor portal),
 `cubethrough` (a cube held half through one), `lighting` (still, moving and outdoors),
-`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `pellets` (Chamber 06's pellet and platform), `p1` (Portal's maps, each one's start; `PORTAL_FIRST_MAP`/`PORTAL_LAST_MAP` pick them, `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from), `rtx` (close-ups of Portal with RTX's pieces) and
+`plate` (the faith plate throwing), `goo` (goo pits), `glass` (observation windows), `pellets` (Chamber 06's pellet and platform), `rockets` (escape_01's rocket turret switched on), `p1` (Portal's maps, each one's start; `PORTAL_FIRST_MAP`/`PORTAL_LAST_MAP` pick them, `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from), `rtx` (close-ups of Portal with RTX's pieces) and
 `tour` (each map's start), in `src/capture.rs`. Each screenshot's line says how long frames
 really take (the game's own clock is fixed at 60 a second while capturing). `PORTAL_MAP=<n>` starts on map n; `PORTAL_NOVSYNC=1` uncaps the frame rate.
 

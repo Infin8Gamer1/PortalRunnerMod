@@ -315,7 +315,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 buttons.push(b);
                 l.hidden_models.push(model.unwrap());
             }
-            "func_door" | "func_movelinear" | "func_door_rotating" | "func_brush" | "func_wall_toggle" | "func_physbox" | "func_rotating" | "func_tracktrain" => {
+            "func_door" | "func_movelinear" | "func_door_rotating" | "func_brush" | "func_wall_toggle" | "func_physbox" | "func_rotating" | "func_tracktrain" | "func_breakable_surf" => {
                 let Some(m) = model else { continue };
                 let mut solids = model_boxes.remove(&m).unwrap_or_default();
                 let mut speed = num(e, "speed", 100.0).max(1.0) * 0.0254;
@@ -412,12 +412,15 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 if let Some(b) = mb {
                     let f = flags(e);
                     // A filter that lets only pellets through: Portal's pellet catchers.
-                    let pellets = key(e, "filtername").and_then(|f| named.get(&f.to_ascii_lowercase())).is_some_and(|f| key(f, "classname") == Some("filter_combineball_type"));
-                    let (players, cubes) = if pellets { (false, false) } else { (f & 1 != 0 || f & 64 != 0 || class == "trigger_look", f & 8 != 0 || f & 64 != 0) };
+                    let filter = key(e, "filtername").and_then(|f| named.get(&f.to_ascii_lowercase()));
+                    let pellets = filter.is_some_and(|f| key(f, "classname") == Some("filter_combineball_type"));
+                    // And one that lets only rockets through (a rocket turret's).
+                    let rockets = filter.is_some_and(|f| key(f, "filterclass").is_some_and(|c| c.eq_ignore_ascii_case("rocket_turret_projectile")) && key(f, "Negated") != Some("1"));
+                    let (players, cubes) = if pellets || rockets { (false, false) } else { (f & 1 != 0 || f & 64 != 0 || class == "trigger_look", f & 8 != 0 || f & 64 != 0) };
                     let enabled = !start_disabled;
                     kind = match buttons.iter().position(|bt| class == "trigger_multiple" && b.overlaps(&Aabb::new(bt.min - Vec3::splat(0.6), bt.max + Vec3::splat(0.6)))) {
                         Some(button) => io::Kind::ButtonTrigger { button, enabled, players, cubes, on: false },
-                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, pellets, player_in: false, cubes_in: Vec::new() },
+                        None => io::Kind::Trigger { b, once: class != "trigger_multiple", enabled, players, cubes, pellets, rockets, player_in: false, cubes_in: Vec::new() },
                     };
                 }
             }
@@ -432,6 +435,15 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             "npc_portal_turret_floor" => {
                 if let Some(at) = origin(e) {
                     l.items.push(Item::Turret { at, yaw: angles(e, "angles").1.to_radians() });
+                }
+            }
+            "npc_rocket_turret" => {
+                if let Some(at) = origin(e) {
+                    let s = sig();
+                    l.items.push(Item::RocketTurret { at, yaw: angles(e, "angles").1.to_radians(), inputs: Inputs::on(s), mover: None });
+                    // (Its first flag: it starts off.)
+                    initial.push((s, flags(e) & 1 == 0));
+                    kind = io::Kind::Switch { sig: s };
                 }
             }
             "point_energy_ball_launcher" => {
@@ -516,9 +528,21 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         io::Kind::Mover { index, .. } if !e.name.is_empty() => Some((e.name.to_ascii_lowercase(), index)),
         _ => None,
     }).collect();
+    // (The mover something's on: its parent, or its parent's, through what doesn't move by
+    // itself: a rocket turret's mount on the turret, on its lift.)
+    let parent_mover = |e: &Entity| -> Option<usize> {
+        let mut p = key(e, "parentname")?.to_ascii_lowercase();
+        for _ in 0..8 {
+            if let Some(&m) = mover_named.get(&p) {
+                return Some(m);
+            }
+            p = key(named.get(&p)?, "parentname")?.to_ascii_lowercase();
+        }
+        None
+    };
     let mut children = Vec::new();
     for (e, ent) in ents.iter().zip(&io_ents) {
-        if let (io::Kind::Mover { index, .. }, Some(parent)) = (&ent.kind, key(e, "parentname").and_then(|p| mover_named.get(&p.to_ascii_lowercase())))
+        if let (io::Kind::Mover { index, .. }, Some(parent)) = (&ent.kind, parent_mover(e).as_ref())
             && parent != index
         {
             children.push((*index, *parent));
@@ -567,6 +591,29 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             *m = Some(mover);
         }
     }
+    // A rocket turret on a lift rides it.
+    let lifts: Vec<Option<usize>> = ents.iter().filter(|e| key(e, "classname") == Some("npc_rocket_turret") && origin(e).is_some()).map(parent_mover).collect();
+    for (item, lift) in l.items.iter_mut().filter(|i| matches!(i, Item::RocketTurret { .. })).zip(lifts) {
+        if let Item::RocketTurret { mover, .. } = item {
+            *mover = lift;
+        }
+    }
+    // What rockets hurt: whatever the map has hear of its damage. GLaDOS (her body hangs from
+    // her origin, some 5 m tall) stops a rocket too.
+    let mut damageable = Vec::new();
+    for (k, e) in ents.iter().enumerate() {
+        if !e.iter().any(|(o, _)| o.eq_ignore_ascii_case("OnTakeDamage")) {
+            continue;
+        }
+        let Some(at) = origin(e) else { continue };
+        if key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props_bts/glados_body.mdl")) {
+            let (at, radius) = (at - Vec3::Y * 1.6, 2.6);
+            l.items.push(Item::RocketTarget { at, radius });
+            damageable.push((k, at, radius));
+        } else {
+            damageable.push((k, at, 0.6));
+        }
+    }
     // Path nodes know their train.
     for ent in &mut io_ents {
         if ent.class == "path_track" {
@@ -591,6 +638,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         .collect();
     let mut logic = io::Io::new(io_ents, initial, signals);
     logic.hidden = hidden;
+    logic.damageable = damageable;
     l.io = Some(logic);
 
     // The gun she starts with: what the map leaves by the start (none: Portal's chambers

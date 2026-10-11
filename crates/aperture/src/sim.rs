@@ -228,6 +228,45 @@ pub struct GunPickup {
     pub taken: bool,
 }
 
+/// A rocket turret: where its gun is, which way it's aiming, whether it's working, and how
+/// far it's got locking on and reloading.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RocketTurret {
+    /// Where it is, on its mover where it rides one (see [`Sim::rocket_turret_at`]).
+    pub at: Vec3,
+    pub mover: Option<usize>,
+    pub aim: Vec3,
+    pub inputs: Inputs,
+    pub on: bool,
+    pub lock: f32,
+    pub reload: f32,
+    /// It can see her (its sight's on her).
+    pub sees: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rocket {
+    pub id: u32,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub age: f32,
+    pub alive: bool,
+}
+
+/// A rocket turret turns this fast (radians a second), locks on in this long once it's on
+/// her, waits this long between rockets, and sees this far.
+const ROCKET_TURN: f32 = 1.4;
+pub const ROCKET_LOCK: f32 = 1.3;
+const ROCKET_RELOAD: f32 = 3.0;
+const ROCKET_RANGE: f32 = 45.0;
+/// A rocket flies this fast (m/s: slow enough to dodge, and to put a portal in front of),
+/// for at most this long, and kills within this of where it goes off.
+pub const ROCKET_SPEED: f32 = 9.0;
+const ROCKET_LIFE: f32 = 12.0;
+pub const ROCKET_BLAST: f32 = 2.2;
+/// A rocket turret's eye (and gun), above where it stands.
+pub const ROCKET_EYE: f32 = 0.6;
+
 /// A brush entity on the move (see [`MoverDef`](crate::level::MoverDef)).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mover {
@@ -260,13 +299,18 @@ impl Mover {
 
     /// Its boxes where it is now.
     pub fn boxes(&self) -> impl Iterator<Item = Aabb> + '_ {
+        self.solids().map(|(b, _)| b)
+    }
+
+    /// Its boxes where they are now, with what they're made of.
+    pub fn solids(&self) -> impl Iterator<Item = (Aabb, Mat)> + '_ {
         // A swinging door is solid shut, and out of the way once it's begun to open (its boxes
         // can't turn).
         let (d, solid) = match self.def.swing {
             Some(_) => (self.carried, self.at.length() < 0.02),
             None => (self.offset(), true),
         };
-        self.def.boxes.iter().filter(move |_| self.present && solid).map(move |b| b.b.translated(d))
+        self.def.boxes.iter().filter(move |_| self.present && solid).map(move |b| (b.b.translated(d), b.mat))
     }
 }
 
@@ -425,6 +469,11 @@ pub enum SimEvent {
     PelletBounced { at: Vec3, normal: Vec3 },
     /// A pellet's gone: worn out, into a grill, or caught (`caught`).
     PelletGone { at: Vec3, caught: bool },
+    /// A rocket turret's spotted her and is locking on.
+    RocketLocking { at: Vec3 },
+    RocketFired { at: Vec3 },
+    /// A rocket's gone off: where, and whether it hit a target (`rocket_targets`, its index).
+    RocketExploded { at: Vec3, target: Option<usize> },
     /// A mover reached a point on its path (and `arrived`: the one it was heading for).
     MoverAt { mover: usize, node: usize, arrived: bool },
 }
@@ -524,6 +573,11 @@ pub struct Sim {
     pub launchers: Vec<PelletLauncher>,
     pub pellets: Vec<Pellet>,
     pub pellet_catchers: Vec<PelletCatcher>,
+    pub rocket_turrets: Vec<RocketTurret>,
+    pub rockets: Vec<Rocket>,
+    /// What rockets can hit besides the world (GLaDOS): centre and radius.
+    pub rocket_targets: Vec<(Vec3, f32)>,
+    next_rocket: u32,
     next_pellet: u32,
     pub buttons: Vec<Button>,
     pub pedestals: Vec<Pedestal>,
@@ -594,6 +648,10 @@ impl Sim {
             launchers: Vec::new(),
             pellets: Vec::new(),
             pellet_catchers: Vec::new(),
+            rocket_turrets: Vec::new(),
+            rockets: Vec::new(),
+            rocket_targets: Vec::new(),
+            next_rocket: 1,
             next_pellet: 1,
             buttons: Vec::new(),
             pedestals: Vec::new(),
@@ -694,6 +752,8 @@ impl Sim {
                     sim.gel.fill(c, geom::snap_axis(normal), u, v, half, paint);
                 }
                 Item::Goo { b } => sim.goo.push(b),
+                Item::RocketTurret { at, yaw, inputs, mover } => sim.rocket_turrets.push(RocketTurret { at, mover, aim: Vec3::new(-yaw.sin(), 0.0, -yaw.cos()), inputs, on: false, lock: 0.0, reload: 0.0, sees: false }),
+                Item::RocketTarget { at, radius } => sim.rocket_targets.push((at, radius)),
                 Item::GunPickup { at, turn, gun, mover } => sim.gun_pickups.push(GunPickup { at, turn, gun, mover, taken: false }),
                 Item::Turret { at, yaw } => sim.turrets.push(Turret {
                     at,
@@ -872,11 +932,12 @@ impl Sim {
         }
         if mask.doors {
             for (i, m) in self.movers.iter().enumerate() {
-                for b in m.boxes() {
-                    if b.overlaps(&reach) {
-                        if let Some((t, n)) = ray_aabb(o, d, &b) {
-                            consider(t, n, HitWhat::Mover(i));
-                        }
+                for (b, mat) in m.solids() {
+                    if b.overlaps(&reach)
+                        && (mask.glass || !mat.glass())
+                        && let Some((t, n)) = ray_aabb(o, d, &b)
+                    {
+                        consider(t, n, HitWhat::Mover(i));
                     }
                 }
             }
@@ -1537,6 +1598,7 @@ impl Sim {
 
         self.update_movers(dt, ctrl);
         self.update_pellets(dt, ctrl);
+        self.update_rockets(dt, ctrl);
         self.update_turrets(dt, ctrl);
         if let Some(mut io) = self.io.take() {
             io.step(self, ctrl, dt);
@@ -1694,6 +1756,118 @@ impl Sim {
         if let Some(p) = self.pellets.iter_mut().find(|p| p.id == id && p.alive) {
             p.alive = false;
             self.events.push(SimEvent::PelletGone { at: p.pos, caught });
+        }
+    }
+
+    /// Where rocket turret `i` is now (riding its mover).
+    pub fn rocket_turret_at(&self, i: usize) -> Vec3 {
+        let t = &self.rocket_turrets[i];
+        t.at + t.mover.and_then(|m| self.movers.get(m)).map_or(Vec3::ZERO, |m| m.offset())
+    }
+
+    /// Rocket turrets and their rockets: tracking her, locking on, firing; rockets flying
+    /// (through portals) till they hit something and go off.
+    fn update_rockets(&mut self, dt: f32, ctrl: &mut Controller) {
+        let mask = Mask { doors: true, bridges: true, props: true, fizzlers: false, portals: false, grates: false, glass: true, skip_prop: None };
+        // (It sees her through glass, and fires through it: the glass breaks.)
+        let sight = Mask { glass: false, props: false, ..mask };
+        let target = ctrl.feet + Vec3::Y * 1.3;
+        for i in 0..self.rocket_turrets.len() {
+            let (at, on) = (self.rocket_turret_at(i) + Vec3::Y * ROCKET_EYE, self.rocket_turrets[i].inputs.eval(&self.signals));
+            let to = target - at;
+            let dist = to.length();
+            let dir = to / dist.max(1e-3);
+            let clear = on && dist < ROCKET_RANGE && self.raycast(at + dir * 0.8, dir, dist - 0.8, sight).is_none_or(|h| h.t > dist - 1.2);
+            let t = &mut self.rocket_turrets[i];
+            t.on = on;
+            t.reload = (t.reload - dt).max(0.0);
+            if !clear {
+                t.sees = false;
+                t.lock = (t.lock - dt).max(0.0);
+                continue;
+            }
+            if !t.sees {
+                self.events.push(SimEvent::RocketLocking { at });
+            }
+            t.sees = true;
+            // Turn towards her, at most so fast.
+            let angle = t.aim.angle_between(dir);
+            let step = (ROCKET_TURN * dt).min(angle);
+            if angle > 1e-4 {
+                let axis = t.aim.cross(dir).normalize_or(Vec3::Y);
+                t.aim = (Quat::from_axis_angle(axis, step) * t.aim).normalize();
+            }
+            if angle < 0.08 {
+                t.lock += dt;
+            }
+            if t.lock >= ROCKET_LOCK && t.reload <= 0.0 {
+                t.lock = 0.0;
+                t.reload = ROCKET_RELOAD;
+                let from = at + t.aim * 0.9;
+                let id = self.next_rocket;
+                self.next_rocket += 1;
+                self.rockets.retain(|r| r.alive);
+                self.rockets.push(Rocket { id, pos: from, vel: t.aim * ROCKET_SPEED, age: 0.0, alive: true });
+                self.events.push(SimEvent::RocketFired { at: from });
+            }
+        }
+        let me = ctrl.body().aabb(ctrl.feet);
+        let fly = Mask { portals: true, ..mask };
+        let mut blasts = Vec::new();
+        for k in 0..self.rockets.len() {
+            let mut r = self.rockets[k];
+            if !r.alive {
+                continue;
+            }
+            r.age += dt;
+            let mut left = r.vel.length() * dt;
+            let mut gone: Option<(Vec3, Option<usize>)> = (r.age > ROCKET_LIFE).then_some((r.pos, None));
+            let mut legs = 0;
+            while gone.is_none() && left > 1e-5 && legs < 4 {
+                legs += 1;
+                let d = r.vel.normalize_or_zero();
+                // A target in the way first (they've no collision of their own).
+                let target = self.rocket_targets.iter().enumerate().filter_map(|(n, (c, rad))| {
+                    let along = (*c - r.pos).dot(d);
+                    let off = (r.pos + d * along.clamp(0.0, left)).distance(*c);
+                    (off < *rad && along > -*rad).then_some((along.max(0.0), n))
+                }).min_by(|a, b| a.0.total_cmp(&b.0));
+                match self.raycast(r.pos, d, left, fly) {
+                    Some(hit) if target.is_none_or(|(t, _)| hit.t < t) => {
+                        if let HitWhat::Portal(c) = hit.what {
+                            let link = self.link(c).unwrap();
+                            r.vel = link.dir(r.vel);
+                            r.pos = link.point(hit.point) + r.vel.normalize_or_zero() * 2e-3;
+                            left -= hit.t;
+                        } else {
+                            gone = Some((hit.point + hit.normal * 0.05, None));
+                        }
+                    }
+                    _ => match target {
+                        Some((t, n)) if t <= left => gone = Some((r.pos + d * t, Some(n))),
+                        _ => {
+                            r.pos += d * left;
+                            left = 0.0;
+                        }
+                    },
+                }
+                if gone.is_none() && me.overlaps(&Aabb::from_center_size(r.pos, Vec3::splat(0.3))) {
+                    gone = Some((r.pos, None));
+                }
+            }
+            if let Some((at, target)) = gone {
+                r.alive = false;
+                blasts.push((at, target));
+            }
+            self.rockets[k] = r;
+        }
+        let mut killed = false;
+        for (at, target) in blasts {
+            self.events.push(SimEvent::RocketExploded { at, target });
+            killed |= me.center().distance(at) < ROCKET_BLAST;
+        }
+        if killed {
+            self.player_died(ctrl, true);
         }
     }
 

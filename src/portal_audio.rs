@@ -133,6 +133,10 @@ pub fn play(
             SimEvent::PelletLaunched { at } => one_shot(&mut commands, ex.sound("pellet_launch"), at_volume(at, 0.6), 1.0),
             SimEvent::PelletBounced { at, .. } => one_shot(&mut commands, pick(&ex, "pellet_bounce", n), at_volume(at, 0.7), 1.0),
             SimEvent::PelletGone { at, caught } => one_shot(&mut commands, ex.sound(if caught { "pellet_caught" } else { "pellet_gone" }), at_volume(at, 0.8), 1.0),
+            // The escape's rocket turret: its beep as it locks on, the launch, the blast.
+            SimEvent::RocketLocking { at } => one_shot(&mut commands, ex.sound("rocket_locking"), at_volume(at, 0.8), 1.0),
+            SimEvent::RocketFired { at } => one_shot(&mut commands, ex.sound("rocket_fire"), at_volume(at, 1.0), 1.0),
+            SimEvent::RocketExploded { at, .. } => one_shot(&mut commands, pick(&ex, "rocket_explode", n), at_volume(at, 1.0), 1.0),
             SimEvent::CatcherOff { at } => one_shot(&mut commands, ex.sound("catcher_off"), at_volume(at, 0.7), 1.0),
             SimEvent::LaserBurn => {
                 if n % 20 == 0 {

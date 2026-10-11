@@ -64,6 +64,13 @@ pub struct Pools {
     pellets: Vec<Entity>,
     /// Turrets' shots this frame.
     tracers: Vec<Entity>,
+    /// Rocket turrets' laser sights, their rockets in flight (each the model, its exhaust and
+    /// a light), and rockets going off (each a fireball and its light).
+    sights: Vec<Entity>,
+    rockets: Vec<Entity>,
+    blasts: Vec<Entity>,
+    /// Where each rocket that's going off went off, and when.
+    booms: Vec<(Vec3, f32)>,
     /// Each prop slot's cube, and its copy through the portal it's in (so the half of it
     /// that's through shows at the far side).
     props: Vec<[Entity; 2]>,
@@ -108,6 +115,10 @@ pub struct ChamberMats {
     /// A high energy pellet: the shell, glowing orange, and the hotter core.
     pub pellet: Handle<StandardMaterial>,
     pub pellet_core: Handle<StandardMaterial>,
+    /// A rocket turret's sight, and a rocket's fireball (emissive, so they glow and light the
+    /// room when ray traced, where an unlit colour shows grey).
+    pub sight: Handle<StandardMaterial>,
+    pub blast: Handle<StandardMaterial>,
     pub pellet_mesh: Handle<Mesh>,
     /// A short-lived scorch where a pellet bounced.
     pub scorch_mesh: Handle<Mesh>,
@@ -220,6 +231,13 @@ const GLASS_TILE: f32 = 3.25;
 const GOO_TILE: f32 = 0.25;
 /// How fast it drifts (texture tiles a second) and which way, as Portal's `TextureScroll` does.
 const GOO_SCROLL: f32 = 0.012;
+/// A tumbling turn (a pellet's, a fireball's) at time `t`.
+fn spin_at(t: f32) -> Quat {
+    Quat::from_rotation_y(t * 2.2) * Quat::from_rotation_x(t * 1.3)
+}
+
+/// How long a rocket's fireball lasts (seconds).
+const BLAST_TIME: f32 = 0.5;
 const GOO_SCROLL_ANGLE: f32 = -35.0;
 
 /// Goo drifts slowly.
@@ -452,6 +470,17 @@ pub fn setup(
                 emissive: LinearRgba::rgb(0.85, 0.18, 0.02),
                 emissive_texture: Some(plasma),
                 perceptual_roughness: 0.35,
+                ..default()
+            })
+        },
+        sight: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.05, 0.03), emissive: LinearRgba::rgb(30.0, 0.6, 0.3), ..default() }),
+        blast: {
+            let plasma = images.add(plasma());
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.45, 0.08),
+                emissive: LinearRgba::rgb(12.0, 4.0, 0.6),
+                emissive_texture: Some(plasma),
+                perceptual_roughness: 1.0,
                 ..default()
             })
         },
@@ -989,6 +1018,56 @@ pub fn update(
     pooled(&mut commands, &mut pools.blobs, sim.blobs.len(), |c| spawn_pooled(c, &m.blob, &m.blob_paint[0], false));
     let shots: Vec<(Vec3, Vec3)> = sim.events.iter().filter_map(|e| if let aperture::SimEvent::TurretShot { from, to, .. } = e { Some((*from, *to)) } else { None }).collect();
     pooled(&mut commands, &mut pools.tracers, shots.len(), |c| spawn_pooled(c, &m.beam, &m.tracer, false));
+    // A rocket turret's sight: from its muzzle along its aim to what that meets (through glass).
+    let sight_mask = aperture::sim::Mask { glass: false, ..aperture::sim::Mask::SOLID };
+    let sights: Vec<(Vec3, Vec3)> = (0..sim.rocket_turrets.len())
+        .filter(|&i| sim.rocket_turrets[i].on)
+        .map(|i| {
+            let aim = sim.rocket_turrets[i].aim;
+            let from = sim.rocket_turret_at(i) + Vec3::Y * aperture::sim::ROCKET_EYE + aim * 0.75;
+            (from, sim.raycast(from, aim, 60.0, sight_mask).map_or(from + aim * 60.0, |h| h.point))
+        })
+        .collect();
+    pooled(&mut commands, &mut pools.sights, sights.len(), |c| spawn_pooled(c, &m.beam, &m.sight, false));
+    let rockets: Vec<(Vec3, Vec3)> = sim.rockets.iter().filter(|r| r.alive).map(|r| (r.pos, r.vel.normalize_or(Vec3::NEG_Z))).collect();
+    let rocket_model = models.get("rocket");
+    pooled(&mut commands, &mut pools.rockets, rockets.len(), |c| {
+        let e = c.spawn((
+            ChamberGeom,
+            Vis::Pool,
+            Transform::default(),
+            Visibility::Hidden,
+            PointLight { intensity: 60_000.0, range: 8.0, radius: 0.1, color: Color::srgb(1.0, 0.55, 0.2), shadow_maps_enabled: false, ..default() },
+        )).id();
+        // (Portal's rocket is 0.24 m long, nose along -Z: drawn twice that, to read at a
+        // distance; its exhaust glows behind it.)
+        let body = match &rocket_model {
+            Some(scene) => c.spawn((WorldAssetRoot(scene.clone()), Transform::from_scale(Vec3::splat(2.0)))).id(),
+            None => c.spawn((Mesh3d(m.beam.clone()), MeshMaterial3d(m.black.clone()), Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)).with_scale(Vec3::new(3.0, 0.45, 3.0)))).id(),
+        };
+        let flame = c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_xyz(0.0, 0.0, 0.3).with_scale(Vec3::new(0.06, 0.06, 0.14)), NotShadowCaster)).id();
+        c.entity(e).add_children(&[body, flame]);
+        e
+    });
+    for ev in &sim.events {
+        if let aperture::SimEvent::RocketExploded { at, .. } = *ev {
+            pools.booms.push((at, t));
+        }
+    }
+    pools.booms.retain(|(_, at)| t - at < BLAST_TIME);
+    let booms = pools.booms.clone();
+    pooled(&mut commands, &mut pools.blasts, booms.len(), |c| {
+        let e = c.spawn((
+            ChamberGeom,
+            Vis::Pool,
+            Transform::default(),
+            Visibility::Hidden,
+            PointLight { intensity: 2_000_000.0, range: 14.0, radius: 0.5, color: Color::srgb(1.0, 0.6, 0.25), shadow_maps_enabled: false, ..default() },
+        )).id();
+        let ball = c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.blast.clone()), Transform::default(), NotShadowCaster)).id();
+        c.entity(e).add_children(&[ball]);
+        e
+    });
     let pellets: Vec<Vec3> = sim.pellets.iter().filter(|p| p.alive).map(|p| p.pos).collect();
     // A ball the sim's size: an orange shell, a hotter core, and a light. The parent carries
     // the light and the visibility; the mesh is a unit sphere scaled to the radius.
@@ -1115,7 +1194,34 @@ pub fn update(
             None => set(*e, None, None),
         }
     }
-    let spin = Quat::from_rotation_y(t * 2.2) * Quat::from_rotation_x(t * 1.3);
+    for (i, e) in pools.sights.iter().enumerate() {
+        match sights.get(i) {
+            Some((a, b)) => {
+                let d = *b - *a;
+                let len = d.length().max(1e-3);
+                set(*e, Some(Transform { translation: (*a + *b) * 0.5, rotation: Quat::from_rotation_arc(Vec3::Y, d / len), scale: Vec3::new(0.5, len, 0.5) }), None);
+            }
+            None => set(*e, None, None),
+        }
+    }
+    for (i, e) in pools.rockets.iter().enumerate() {
+        match rockets.get(i) {
+            Some((p, d)) => set(*e, Some(Transform::from_translation(*p).with_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, *d))), None),
+            None => set(*e, None, None),
+        }
+    }
+    // A fireball that swells and fades (the light with it).
+    for (i, e) in pools.blasts.iter().enumerate() {
+        match booms.get(i) {
+            Some((p, at)) => {
+                let u = ((t - at) / BLAST_TIME).clamp(0.0, 1.0);
+                let r = 0.9 * (0.3 + 0.7 * u.sqrt()) * (1.0 - u * u).max(0.05);
+                set(*e, Some(Transform::from_translation(*p).with_rotation(spin_at(t * 3.0)).with_scale(Vec3::splat(r))), None);
+            }
+            None => set(*e, None, None),
+        }
+    }
+    let spin = spin_at(t);
     for (i, e) in pools.pellets.iter().enumerate() {
         match pellets.get(i) {
             Some(p) => set(*e, Some(Transform::from_translation(*p).with_rotation(spin).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS))), None),

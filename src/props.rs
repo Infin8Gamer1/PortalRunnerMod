@@ -47,6 +47,8 @@ pub const NAMES: &[&str] = &[
     "pellet_launcher",
     "pellet_catcher",
     "turret",
+    "rocket_turret",
+    "rocket",
     "portalgun_world",
     "door_upper",
     "door_lower",
@@ -92,6 +94,8 @@ pub enum PropKind {
     Turret(usize),
     /// A portal gun on a pedestal, till she takes it.
     GunPickup(usize),
+    /// The escape's rocket turret, aiming.
+    RocketTurret(usize),
     /// A high energy pellet launcher (its mouth plays when it fires).
     PelletLauncher(usize),
     /// A high energy pellet catcher (it closes when it's caught one).
@@ -149,6 +153,16 @@ pub fn setup(mut commands: Commands, extracted: Res<Extracted>, assets: Res<Asse
 
 fn spawn_model(commands: &mut Commands, scene: Handle<WorldAsset>, tf: Transform, kind: PropKind) -> Entity {
     commands.spawn((ChamberGeom, kind, WorldAssetRoot(scene), tf, Visibility::default())).id()
+}
+
+/// Where rocket turret `i`'s model is, turned along its aim (its barrel is along the model's
+/// -X).
+fn rocket_turret_pose(sim: &Sim, i: usize) -> Transform {
+    let aim = sim.rocket_turrets[i].aim;
+    let yaw = (-aim.x).atan2(-aim.z);
+    let pitch = aim.y.clamp(-1.0, 1.0).asin();
+    let turn = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+    Transform::from_translation(sim.rocket_turret_at(i)).with_rotation(turn)
 }
 
 /// A rotation taking the model's right (+X), up (+Y) and back (+Z) to these.
@@ -293,6 +307,11 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
         r.turrets = true;
         for (i, t) in sim.turrets.iter().enumerate() {
             spawn_model(commands, scene.clone(), Transform::from_translation(t.at).with_rotation(Quat::from_rotation_y(t.yaw)), PropKind::Turret(i));
+        }
+    }
+    if let Some(scene) = models.get("rocket_turret") {
+        for i in 0..sim.rocket_turrets.len() {
+            spawn_model(commands, scene.clone(), rocket_turret_pose(sim, i), PropKind::RocketTurret(i));
         }
     }
     if let Some(scene) = models.get("laser_relay") {
@@ -715,6 +734,12 @@ pub fn animate(game: Res<Game>, mut parts: Query<(&PropPart, &mut Transform)>, m
             if let Some(t) = sim.turrets.get(i) {
                 let tilt = if t.fall_dir == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_axis_angle(Vec3::Y.cross(t.fall_dir).normalize(), t.fallen * std::f32::consts::FRAC_PI_2) };
                 tf.rotation = tilt * Quat::from_rotation_y(t.yaw);
+            }
+            continue;
+        }
+        if let PropKind::RocketTurret(i) = *kind {
+            if i < sim.rocket_turrets.len() {
+                *tf = rocket_turret_pose(sim, i);
             }
             continue;
         }

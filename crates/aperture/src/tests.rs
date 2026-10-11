@@ -1626,3 +1626,100 @@ fn cubes_slide_off_slopes_and_edges() {
     assert!((at[2] - Vec3::new(-10.0, 0.45, 3.0)).length() < 0.05, "moved on flat ground: {}", at[2]);
 }
 
+
+/// A rocket turret (#24) turns to her, locks on and fires; the rocket kills her.
+#[test]
+fn a_rocket_turret_locks_on_and_kills() {
+    let mut l = flat();
+    // Looking away from her (+Z): it has to turn round.
+    l.item(crate::level::Item::RocketTurret { at: Vec3::new(0.0, 1.3, -8.0), yaw: 0.0, inputs: Inputs::always(), mover: None });
+    l.spawn([0.0, 0.0, 6.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 8.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::RocketLocking { .. })), "never saw her");
+    let fired = ev.iter().position(|e| matches!(e, SimEvent::RocketFired { .. })).expect("never fired");
+    let died = ev.iter().position(|e| *e == SimEvent::PlayerDied).expect("didn't kill her");
+    assert!(died > fired);
+    // Switched off, it doesn't.
+    let mut l = flat();
+    l.item(crate::level::Item::RocketTurret { at: Vec3::new(0.0, 1.3, -8.0), yaw: 0.0, inputs: Inputs::on(0), mover: None });
+    l.spawn([0.0, 0.0, 6.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    let ev = run(&mut sim, &mut c, 8.0, |_, _| Input::default());
+    assert!(!ev.iter().any(|e| matches!(e, SimEvent::RocketFired { .. } | SimEvent::PlayerDied)));
+}
+
+/// A rocket into a portal comes out of the other and goes on into what it's aimed at.
+#[test]
+fn a_rocket_through_portals_hits_its_target() {
+    let mut l = flat();
+    l.item(crate::level::Item::RocketTurret { at: Vec3::new(0.0, 1.3, -10.0), yaw: std::f32::consts::PI, inputs: Inputs::always(), mover: None });
+    l.item(crate::level::Item::RocketTarget { at: Vec3::new(26.0, 1.3, 0.0), radius: 1.5 });
+    l.spawn([0.0, 0.0, 6.0], 0.0);
+    let (mut sim, mut c) = start(l);
+    // Blue across its line of fire (facing it), orange out along +X towards the target.
+    sim.set_portal(PortalColor::Blue, Some(Portal::new(Vec3::new(0.0, 1.3, -3.0), Vec3::NEG_Z, Vec3::Y)));
+    sim.set_portal(PortalColor::Orange, Some(Portal::new(Vec3::new(18.0, 1.3, 0.0), Vec3::X, Vec3::Y)));
+    let ev = run(&mut sim, &mut c, 6.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::RocketFired { .. })), "never fired");
+    let hit = ev.iter().find_map(|e| match e {
+        SimEvent::RocketExploded { at, target } => Some((*at, *target)),
+        _ => None,
+    });
+    assert!(matches!(hit, Some((_, Some(0)))), "{hit:?}");
+    assert!(!ev.contains(&SimEvent::PlayerDied));
+}
+
+/// Portal's escape (#24): escape_01's turret behind glass fires through it (the glass breaks),
+/// and escape_02's rides its lift and is shut off by a rocket into GLaDOS.
+#[test]
+fn portals_rocket_turrets() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
+    let text = |map: &str, ext: &str| std::fs::read_to_string(dir.join(format!("{map}.{ext}")));
+    let (Ok(solids), Ok(ents)) = (text("escape_01", "solids"), text("escape_01", "ents")) else { return };
+    let level = crate::source::level("escape_01", "map", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    assert_eq!(sim.rocket_turrets.len(), 1);
+    let io = sim.io.as_ref().unwrap();
+    let sig_of = |io: &crate::io::Io, name: &str| io.ents.iter().find_map(|e| match e.kind {
+        crate::io::Kind::Switch { sig } if e.name == name => Some(sig),
+        _ => None,
+    });
+    let laser = sig_of(io, "laser_1").expect("laser_1");
+    let glass: Vec<usize> = io.ents.iter().filter_map(|e| match e.kind {
+        crate::io::Kind::Mover { index, .. } if e.class == "func_breakable_surf" => Some(index),
+        _ => None,
+    }).collect();
+    assert_eq!(glass.len(), 3);
+    let rocket_triggers = io.ents.iter().filter(|e| matches!(e.kind, crate::io::Kind::Trigger { rockets: true, .. })).count();
+    assert_eq!(rocket_triggers, 4);
+    // She's on the far side of the glass (*51) from the turret, which is switched on.
+    let turret = sim.rocket_turrets[0].at;
+    let at = turret + Vec3::new(0.0, 0.0, -9.0);
+    let floor = sim.raycast(at, Vec3::NEG_Y, 6.0, crate::sim::Mask::SOLID).expect("floor").point;
+    c.feet = floor + Vec3::Y * 0.05;
+    run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+    assert!(!sim.io_signals[laser], "laser_1 starts on");
+    sim.io_signals[laser] = true;
+    let ev = run(&mut sim, &mut c, 12.0, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::RocketFired { .. })), "never fired");
+    assert!(glass.iter().any(|&m| !sim.movers[m].present), "no glass broke");
+    assert!(ev.contains(&SimEvent::PlayerDied), "didn't get her");
+
+    let (Ok(solids), Ok(ents)) = (text("escape_02", "solids"), text("escape_02", "ents")) else { return };
+    let level = crate::source::level("escape_02", "map", &solids, &ents);
+    let (mut sim, mut c) = start(level);
+    assert_eq!(sim.rocket_turrets.len(), 1);
+    assert!(sim.rocket_turrets[0].mover.is_some(), "not on its lift");
+    assert_eq!(sim.rocket_targets.len(), 1);
+    c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
+    run(&mut sim, &mut c, 0.2, |_, _| Input::default());
+    let rocket = sig_of(sim.io.as_ref().unwrap(), "rocket_1").expect("rocket_1");
+    sim.io_signals[rocket] = true;
+    let (centre, _) = sim.rocket_targets[0];
+    let from = centre + Vec3::new(0.0, 0.0, 6.0);
+    sim.rockets.push(crate::sim::Rocket { id: 99, pos: from, vel: (centre - from).normalize() * crate::sim::ROCKET_SPEED, age: 0.0, alive: true });
+    let ev = run(&mut sim, &mut c, 1.5, |_, _| Input::default());
+    assert!(ev.iter().any(|e| matches!(e, SimEvent::RocketExploded { target: Some(0), .. })), "missed GLaDOS");
+    assert!(!sim.io_signals[rocket], "the turret's still on");
+}

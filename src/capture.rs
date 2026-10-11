@@ -71,6 +71,8 @@ enum Act {
     AtLight(usize, usize),
     /// Stand off the `n`th cube (1.6 m along +X, or -X if that's in a wall), looking at it.
     ViewCube(usize),
+    /// Switch every rocket turret on.
+    RocketsOn,
 }
 
 fn fwd() -> MoveInput {
@@ -549,6 +551,16 @@ fn script(name: &str) -> Vec<Act> {
             side(&mut v, "catcher_c_closing");
             v.push(Wait(150));
             side(&mut v, "catcher_d_closed");
+            v
+        }
+        // The escape's rocket turret (escape_01, #24), switched on, seen from beyond the glass
+        // in front of it: its sight on her, the rocket, the glass going.
+        "rockets" => {
+            let map = aperture::levels::all().len() + 16;
+            let mut v = vec![Map(map), Wait(150), Teleport(Vec3::new(-14.74, -6.0, -0.6)), Look(180.0, 0.0), Wait(30), Shot("rocket_a_off"), RocketsOn, Wait(20), Shot("rocket_b_sight")];
+            for k in 0..48 {
+                v.extend([Wait(5), Shot(Box::leak(format!("rocket_c{k:02}").into_boxed_str()))]);
+            }
             v
         }
         // Holes in Portal's maps (#27): from a few of each map's lights, four ways round. Run
@@ -1098,6 +1110,11 @@ pub fn run(
                 p.pos = *at;
                 p.vel = *v;
                 p.age = 0.0;
+            }
+        }
+        Act::RocketsOn => {
+            for t in &mut game.sim.rocket_turrets {
+                t.inputs = aperture::level::Inputs::always();
             }
         }
         Act::PlaceCube(at) => {
