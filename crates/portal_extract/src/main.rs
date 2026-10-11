@@ -253,6 +253,9 @@ const TEXTURES: &[(&str, &[&str])] = &[
     ("black_panel", &["materials/metal/metalwall048b.vtf", "materials/metal/black_wall_metal_002a.vtf"]),
     ("black_floor", &["materials/metal/metal_modular_floor001.vtf", "materials/metal/black_floor_metal_001c.vtf"]),
     ("grate", &["materials/metal/metalgrate018.vtf"]),
+    // An emancipation grill's particles: the field's streaks, and the sparks off its edges.
+    ("cleanser_particle", &["materials/effects/portal_cleanser.vtf"]),
+    ("cleanser_edge", &["materials/effects/cleanser_edge.vtf"]),
     ("metal_box", &["materials/models/props/metal_box.vtf"]),
     // Deadly goo (Portal's `nature/hazard_liquid`; Portal with RTX's toxic water).
     ("goo", &["materials/nature/hazard_liquid.vtf"]),

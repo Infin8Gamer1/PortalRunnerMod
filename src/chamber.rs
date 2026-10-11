@@ -452,7 +452,7 @@ pub fn setup(
             materials.add(std(Color::srgb(0.15, 0.45, 1.0), None, 0.15, 0.0)),
             materials.add(std(Color::srgb(1.0, 0.45, 0.05), None, 0.15, 0.0)),
         ],
-        fizzler: materials.add(glow(LinearRgba::rgb(0.25, 0.55, 1.1), 0.25)),
+        fizzler: materials.add(glow(LinearRgba::rgb(0.25, 0.55, 1.1), 0.15)),
         bridge: materials.add(glow(LinearRgba::rgb(0.25, 0.75, 1.3), 0.45)),
         laser: materials.add(glow(LinearRgba::rgb(6.0, 0.3, 0.2), 1.0)),
         laser_glow: materials.add(glow(LinearRgba::rgb(1.2, 0.05, 0.03), 0.3)),

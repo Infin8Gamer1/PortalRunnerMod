@@ -11,6 +11,7 @@ mod chamber;
 mod extracted;
 mod fonts;
 mod graphics;
+mod grill_fx;
 mod gun;
 mod hud;
 mod me_props;
@@ -117,7 +118,7 @@ fn main() {
         switch_level,
         play,
         speed_fx::update,
-        (chamber::update, chamber::scroll_goo, source_map::sync, source_map::move_models, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props),
+        (chamber::update, chamber::scroll_goo, source_map::sync, source_map::move_models, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
         me_props::spawn_for_level,
         (
             props::tag_parts,

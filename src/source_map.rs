@@ -423,6 +423,7 @@ pub fn sync(
     };
     let mut cabin_lamp: Option<(Handle<Mesh>, Handle<StandardMaterial>)> = None;
     let mut sprite_quad: Option<Handle<Mesh>> = None;
+    let (mut grill_mats, mut grill_seed) = (crate::grill_fx::Mats::default(), 1u32);
     let sprites: HashMap<&str, usize> = game
         .sim
         .io
@@ -433,6 +434,16 @@ pub fn sync(
     for line in text.lines() {
         let f: Vec<&str> = line.split('|').collect();
         if f.len() < 6 {
+            continue;
+        }
+        // An emancipation grill's particles.
+        if f[0] == "particles" {
+            if let Some(kind) = crate::grill_fx::Kind::of(f[1]) {
+                let at = aperture::source::to_ours(floats(f[2]));
+                let seed = grill_seed;
+                grill_seed += 1;
+                crate::grill_fx::spawn(&mut commands, &mut meshes, &mut materials, &mut images, &extracted, &mut grill_mats, &game.sim, kind, at, source_rotation(floats(f[3])), seed);
+            }
             continue;
         }
         // A glow sprite: a quad facing the camera, glowing additively in its colour.

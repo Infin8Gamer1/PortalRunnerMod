@@ -316,6 +316,19 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
             o.x, o.y, o.z, width as f32 * scale, c(0), c(1), c(2), alpha, mode, u8::from(on), bsp::key(e, "parentname").unwrap_or("")
         ));
     }
+    // An emancipation grill's particle systems (info_particle_system: the field's streaks,
+    // the sparks off its edges): `particles|<effect>|x y z|pitch yaw roll|parent|name`.
+    for e in ents {
+        if bsp::key(e, "classname") != Some("info_particle_system") {
+            continue;
+        }
+        let Some(effect) = bsp::key(e, "effect_name").map(str::to_ascii_lowercase).filter(|n| n == "portal_cleanser" || n == "cleanser_edge_1") else { continue };
+        let (Some(o), a) = (bsp::vec3_key(e, "origin"), bsp::vec3_key(e, "angles").unwrap_or(Vec3::ZERO)) else { continue };
+        sprites.push_str(&format!(
+            "particles|{effect}|{} {} {}|{} {} {}|{}|{}\n",
+            o.x, o.y, o.z, a.x, a.y, a.z, bsp::key(e, "parentname").unwrap_or(""), bsp::key(e, "targetname").unwrap_or("")
+        ));
+    }
     for e in ents {
         let class = bsp::key(e, "classname").unwrap_or("");
         if !matches!(class, "prop_dynamic" | "prop_dynamic_override" | "prop_physics" | "prop_physics_override" | "prop_physics_multiplayer") {
