@@ -1201,8 +1201,11 @@ fn solve_testchmb_a_08() {
     p.ride_exit("testchmb_a_09");
 }
 
-/// Chamber 14 (testchmb_a_09): up the stairs (they rise as she comes to them). The rest (up
-/// to the cube room's floor, about 5 m above the top step) isn't scripted yet.
+/// Chamber 14 (testchmb_a_09), as Portal's own walkthrough has it: up the stairs (they rise as
+/// she comes to them, and sink once she's at the top), flung off the ledge into the sunken
+/// stairs and out high over the cube's shelf; the cube down the stairs onto the button, which
+/// opens the way to the pellet; the pellet sent by portal down into the ledge's catcher, which
+/// lowers the lift; back over the goo, up the lift and out.
 #[test]
 fn solve_testchmb_a_09() {
     let Some(mut p) = Play::load("testchmb_a_09") else { return };
@@ -1212,6 +1215,61 @@ fn solve_testchmb_a_09() {
     p.wait_for(10.0, "the stairs to rise", |p| p.sim.movers[top].node == 0 && p.sim.movers[top].goal.is_none());
     p.go(Vec3::new(17.0, 6.5, -13.8), 0.6);
     p.assert_alive("on the stairs");
+    p.go(Vec3::new(22.0, 6.5, -13.0), 0.6);
+    // The stairs sink behind her. Blue high on the far wall, facing the cube's shelf; orange
+    // on the sunken stairs; off the ledge into orange, flung out of blue onto the shelf.
+    p.wait_for(10.0, "the stairs to sink", |p| p.sim.movers[top].goal.is_none() && p.sim.movers[top].node != 0);
+    p.shoot(PortalColor::Blue, Vec3::new(32.5, 14.6, -27.4));
+    p.go(Vec3::new(18.4, 6.5, -13.8), 0.3);
+    p.nudge(Vec3::new(18.0, 6.5, -13.8));
+    p.shoot(PortalColor::Orange, Vec3::new(15.0, -3.25, -13.8));
+    p.through(PortalColor::Orange, 1.0);
+    // She catches the shelf's lip; up onto it, and the cube.
+    p.wait_for(3.0, "her to catch the shelf", |p| matches!(p.c.state, State::LedgeHang { .. } | State::Ground));
+    p.c.yaw = std::f32::consts::FRAC_PI_2;
+    for _ in 0..90 {
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), ..Default::default() });
+    }
+    p.wait(0.5);
+    p.assert_alive("flung onto the shelf");
+    p.pick_up(Vec3::new(19.6, 12.7, -27.5));
+    // Down off the shelf with it: the stairs rise for good. Down them, onto the button by the
+    // hall.
+    p.go(Vec3::new(25.0, 6.5, -24.0), 0.6);
+    p.wait_for(10.0, "the stairs to rise again", |p| p.sim.movers[top].node == 0 && p.sim.movers[top].goal.is_none());
+    p.go(Vec3::new(-20.0, 0.0, -13.0), 0.6);
+    p.cube_on_button(Vec3::new(-22.0, 0.2, -13.0));
+    let door = p.mover("door_left_a08");
+    p.wait_for(3.0, "the doors to the pellet room to open", |p| p.sim.movers[door].goal.is_none() && p.sim.movers[door].node != 0);
+    // The pellet: orange on the ceiling over the ledge's catcher (from the stairs), blue on
+    // the launcher room's wall where the pellet turns back. It comes down into the catcher.
+    p.go(Vec3::new(12.0, 4.0, -13.8), 0.6);
+    p.shoot(PortalColor::Orange, Vec3::new(21.9, 13.0, -13.0));
+    p.go(Vec3::new(-44.0, 0.0, 8.3), 0.6);
+    p.shoot(PortalColor::Blue, Vec3::new(-39.4, 1.56, 5.69));
+    let lift = p.mover("lift_lvl7a");
+    p.wait_for(30.0, "the pellet to reach the catcher (the lift to rise)", |p| p.sim.movers[lift].goal.is_some() || p.sim.movers[lift].node != 0);
+    p.assert_alive("sending the pellet");
+    // Back over the goo: its platforms sink for a while every 12 s, so each is crossed just as
+    // it's come back up (to the island between them, then on).
+    let cross = |p: &mut Play, lift: &str, to: Vec3| {
+        let m = p.mover(lift);
+        p.wait_for(15.0, &format!("{lift} to sink"), |p| p.sim.movers[m].node == 1);
+        p.wait_for(15.0, &format!("{lift} to come back up"), |p| p.sim.movers[m].node == 0 && p.sim.movers[m].goal.is_none());
+        p.go(to, 0.6);
+    };
+    p.go(Vec3::new(-47.5, 0.0, 0.5), 0.6);
+    cross(&mut p, "lift_lvl7a_goo3", Vec3::new(-47.0, 0.0, -10.5));
+    cross(&mut p, "lift_lvl7a_goo1", Vec3::new(-47.5, 0.0, -21.0));
+    p.assert_alive("back over the goo");
+    // Down the hall onto the lift it lowered; up, and on to the elevator.
+    p.wait_for(10.0, "the lift to come down", |p| p.sim.movers[lift].goal.is_none());
+    let deck = p.sim.movers[lift].boxes().fold(f32::MIN, |m, b| m.max(b.max.y));
+    p.go(Vec3::new(-13.0, deck, -9.75), 0.4);
+    p.wait_for(10.0, "the lift to take her up", |p| p.sim.movers[lift].goal.is_some());
+    p.wait_for(15.0, "the lift to stop", |p| p.sim.movers[lift].goal.is_none());
+    eprintln!("up the lift at {}", p.c.feet);
+    p.ride_exit("testchmb_a_10");
 }
 
 /// Portals go on Portal's tilted faces on their true plane (#47): a diagonal wall in

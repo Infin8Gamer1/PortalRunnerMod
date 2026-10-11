@@ -567,6 +567,9 @@ pub struct Sim {
     pub statics: Vec<Static>,
     static_world: BoxWorld,
     pub portals: [Option<Portal>; 2],
+    /// The mover each portal was shot onto, if any, and where it was then: the portal closes
+    /// once it moves (Portal's func_door stairs, lowered).
+    pub portal_mover: [Option<(usize, Vec3)>; 2],
     carved: [Option<BoxWorld>; 2],
     pub props: Vec<Prop>,
     next_prop: u32,
@@ -643,6 +646,7 @@ impl Sim {
             statics: Vec::new(),
             static_world: BoxWorld::default(),
             portals: [None, None],
+            portal_mover: [None, None],
             carved: [None, None],
             props: Vec::new(),
             next_prop: 1,
@@ -817,6 +821,7 @@ impl Sim {
 
     pub fn set_portal(&mut self, c: PortalColor, p: Option<Portal>) {
         self.portals[c.index()] = p;
+        self.portal_mover[c.index()] = None;
         self.rebuild_carved();
         self.drop_if_held_through();
     }
@@ -835,6 +840,7 @@ impl Sim {
             self.events.push(SimEvent::PortalsCleared);
         }
         self.portals = [None, None];
+        self.portal_mover = [None, None];
         self.rebuild_carved();
         self.player_env = None;
         self.drop_if_held_through();
@@ -849,6 +855,23 @@ impl Sim {
     /// in through `c` is undone by going in through the other.
     fn held_crossed(&mut self, c: PortalColor) {
         self.held_through = if self.held_through == Some(c.other()) { None } else { Some(c) };
+    }
+
+    /// Close any portal whose mover has moved off from under it.
+    fn fizzle_portals_on_movers(&mut self) {
+        for c in PortalColor::BOTH {
+            let Some((m, at)) = self.portal_mover[c.index()] else { continue };
+            let Some(p) = self.portals[c.index()] else { continue };
+            let mv = &self.movers[m];
+            if mv.goal.is_some() || !mv.present || mv.offset().distance(at) > 0.01 {
+                self.set_portal(c, None);
+                self.player_env = None;
+                for prop in &mut self.props {
+                    prop.env = None;
+                }
+                self.events.push(SimEvent::PortalFizzled { color: c, at: p.center });
+            }
+        }
     }
 
     /// Close any portal whose surface no longer takes portals.
@@ -884,11 +907,19 @@ impl Sim {
     }
 
     /// Boxes that move: closed doors, bridges, cubes (but not `skip`).
-    fn moving_boxes(&self, skip: Option<usize>, include_held: bool) -> Vec<Aabb> {
+    fn moving_boxes(&self, skip: Option<usize>, include_held: bool, env: Option<PortalColor>) -> Vec<Aabb> {
         let mut v: Vec<Aabb> = self.doors.iter().filter(|d| d.solid()).map(|d| d.b).collect();
         v.extend(self.turrets.iter().map(|t| t.aabb()));
+        // (Going through a portal, the hole goes through what moves behind it too: a mover it's
+        // on, or one just under the surface it's on.)
+        let hole = env.filter(|_| self.linked()).and_then(|c| self.portals[c.index()]).map(|p| (p, p.slab(collide::TUNNEL_DEPTH, 0.005)));
         for m in &self.movers {
-            v.extend(m.boxes().filter(|b| b.size().min_element() > 0.0));
+            for b in m.boxes().filter(|b| b.size().min_element() > 0.0) {
+                match hole {
+                    Some((p, h)) if p.signed_distance(b.center()) < 0.0 => v.extend(geom::subtract(&b, &h)),
+                    _ => v.push(b),
+                }
+            }
         }
         for b in &self.bridges {
             v.extend(b.segs.iter().map(|s| s.aabb));
@@ -906,7 +937,7 @@ impl Sim {
     pub fn player_world(&self) -> BodyWorld<'_> {
         BodyWorld {
             still: self.still_for(self.player_env),
-            moving: plain(self.moving_boxes(None, false)),
+            moving: plain(self.moving_boxes(None, false, self.player_env)),
             gel: &self.gel,
             fixtures: &self.level.fixtures,
         }
@@ -925,7 +956,7 @@ impl Sim {
         let dd = d * max;
         let reach = Aabb::new(o.min(o + dd) - Vec3::splat(0.01), o.max(o + dd) + Vec3::splat(0.01));
         for (i, s) in self.statics.iter().enumerate() {
-            if !s.b.overlaps(&reach) || (s.mat == Mat::Grate && !mask.grates) || (s.mat.glass() && !mask.glass) {
+            if !s.b.overlaps(&reach) || (s.mat.see_through() && !mask.grates) || (s.mat.glass() && !mask.glass) {
                 continue;
             }
             if let Some((t, n)) = ray_aabb(o, d, &s.b) {
@@ -1096,11 +1127,15 @@ impl Sim {
                 Some((k, at)) => self.place_on_slope(color, at, k, last_dir),
                 None => self.place(color, h.point, h.normal, i, last_dir),
             },
+            HitWhat::Mover(m) if self.movers[m].goal.is_none() => self.place(color, h.point, h.normal, usize::MAX, last_dir),
             _ => None,
         };
         match placed {
             Some(p) => {
                 self.set_portal(color, Some(p));
+                // On a mover: it stays while the mover does.
+                let inside = p.center - p.normal * 0.02;
+                self.portal_mover[color.index()] = self.movers.iter().enumerate().find(|(_, m)| m.goal.is_none() && m.boxes().any(|b| geom::contains(&b, inside))).map(|(i, m)| (i, m.offset()));
                 self.events.push(SimEvent::Shot { color, from, to: h.point, opened: true });
                 self.events.push(SimEvent::PortalOpened { color, at: p.center, normal: p.normal });
                 // Anything standing in the new portal's way from before is not its concern.
@@ -1175,6 +1210,7 @@ impl Sim {
         }
         let inside = p - n * 0.02;
         self.statics.iter().any(|s| s.mat.portalable() && matches!(s.owner, Owner::Level(_)) && geom::contains(&s.b, inside))
+            || self.movers.iter().any(|m| m.goal.is_none() && m.solids().any(|(b, mat)| mat.portalable() && geom::contains(&b, inside)))
     }
 
     /// Whether anything solid is at `p` (the surface's open side must be clear).
@@ -1680,6 +1716,7 @@ impl Sim {
         let player_box = ctrl.body().aabb(ctrl.feet);
 
         self.update_movers(dt, ctrl);
+        self.fizzle_portals_on_movers();
         self.update_pellets(dt, ctrl);
         self.update_rockets(dt, ctrl);
         self.update_turrets(dt, ctrl);
@@ -2346,7 +2383,7 @@ impl Sim {
             let mut env = self.props[i].env;
             collide::update_env(&mut env, &self.portals, linked, self.props[i].pos, half, self.props[i].vel, dt);
             self.props[i].env = env;
-            let mut moving = self.moving_boxes(Some(i), true);
+            let mut moving = self.moving_boxes(Some(i), true, env);
             if !held {
                 moving.push(player_box);
             }

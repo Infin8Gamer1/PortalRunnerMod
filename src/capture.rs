@@ -577,6 +577,32 @@ fn script(name: &str) -> Vec<Act> {
             v.extend([Map(map + 13), Wait(150), TurretsOff, Teleport(Vec3::new(-17.0, 79.4, 30.9)), Launch(Vec3::ZERO), Look(90.0, -45.0), Fire(PortalColor::Blue), Wait(1), Shot("tilted_e_ramp")]);
             v
         }
+        // Chamber 14's fling (testchmb_a_09, #21): blue high on the far wall over the cube's
+        // shelf, orange on the sunken stairs (on the nodraw brush over them); off the ledge
+        // into orange and out over the shelf.
+        "fling14" => {
+            let map = aperture::levels::all().len() + 9;
+            let jump = MoveInput { move_axis: Vec2::new(0.0, 1.0), jump_pressed: true, jump_held: true, ..default() };
+            let mut v = vec![Map(map), Wait(200), TurretsOff];
+            v.extend([
+                Portal(PortalColor::Blue, Vec3::new(32.512, 14.607, -27.416), Vec3::NEG_X, Vec3::Y),
+                Portal(PortalColor::Orange, Vec3::new(11.2, -3.2258, -13.8), Vec3::Y, Vec3::NEG_X),
+                Teleport(Vec3::new(21.5, 6.6, -13.8)),
+                Launch(Vec3::ZERO),
+                Look(90.0, -25.0),
+                Wait(20),
+                Shot("fling14_a_edge"),
+                // (Walking up to the drop she'd stop and look over it, as in Mirror's Edge: a
+                // run and a jump takes her off.)
+                Hold(fwd(), 30),
+                Hold(jump, 3),
+            ]);
+            for k in 0..20 {
+                v.extend([Hold(fwd(), 5), Shot(Box::leak(format!("fling14_b{k:02}").into_boxed_str()))]);
+            }
+            v.extend([Wait(60), Look(90.0, 0.0), Wait(5), Shot("fling14_c_shelf")]);
+            v
+        }
         // Chamber 01's cycling portals (testchmb_a_00's upper rooms, #21): the cycle started,
         // then the last room's portal on its wall, at Portal's size, from in front of it.
         "chamber01" => {
@@ -1158,7 +1184,10 @@ pub fn run(
             }
         }
         Act::Launch(v) => game.ctrl.launch(*v),
-        Act::Portal(c, at, n, up) => game.sim.set_portal(*c, Some(aperture::Portal::new(*at, *n, *up))),
+        Act::Portal(c, at, n, up) => {
+            let half = game.sim.portal_half();
+            game.sim.set_portal(*c, Some(aperture::Portal::sized(*at, *n, *up, half)));
+        }
         Act::Teleport(p) => {
             // What she's holding comes too.
             let d = *p - game.ctrl.feet;

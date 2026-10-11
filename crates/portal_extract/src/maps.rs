@@ -483,8 +483,14 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             } else if c & bsp::CONTENTS_GRATE != 0 {
                 "grate"
             } else if c & bsp::CONTENTS_SOLID != 0 {
-                let mats: Vec<usize> = bsp.brush_textures(b).into_iter().filter_map(|t| material_of(t, &mut materials)).collect();
-                if mats.iter().any(|&m| materials[m].name.starts_with("glass/")) {
+                let textures = bsp.brush_textures(b);
+                let mats: Vec<usize> = textures.iter().filter_map(|&t| material_of(t, &mut materials)).collect();
+                // All nodraw: invisible, but portals stick to it as to anything not marked
+                // otherwise (Portal's Chamber 14 floors its sunken stairs with one).
+                let nodraw = !textures.is_empty() && textures.iter().all(|&t| bsp.texture(t).is_some_and(|(d, _)| d.name.eq_ignore_ascii_case("tools/toolsnodraw")));
+                if nodraw {
+                    "white"
+                } else if mats.iter().any(|&m| materials[m].name.starts_with("glass/")) {
                     "glass"
                 } else {
                     let yes = mats.iter().filter(|&&m| materials[m].portalable).count();
