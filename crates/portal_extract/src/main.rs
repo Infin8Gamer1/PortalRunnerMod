@@ -689,7 +689,8 @@ fn main() {
                         said.push(format!("{start}:{ours}"));
                         lines += 1;
                     }
-                    table.push_str(&format!("{f}|{}|{}\n", scene.length, said.join(";")));
+                    let fired: Vec<String> = scene.triggers.iter().map(|(at, n)| format!("{at}:{n}")).collect();
+                    table.push_str(&format!("{f}|{}|{}|{}\n", scene.length, said.join(";"), fired.join(";")));
                 }
                 std::fs::write(out.join("maps").join("scenes.txt"), table).expect("write scenes");
                 println!("  {} of GLaDOS's scenes ({lines} lines)", files.len());
@@ -783,10 +784,22 @@ fn write_pbr(r: &remix::Remix, m: &remix::Material, dir: &Path, name: &str) -> R
 }
 
 fn decode_vtf(bytes: &[u8]) -> Result<image::RgbaImage, String> {
+    decode_vtf_frame(bytes, 0)
+}
+
+fn decode_vtf_frame(bytes: &[u8], frame: u32) -> Result<image::RgbaImage, String> {
     let mut data = bytes.to_vec();
     let vtf = vtf::from_bytes(&mut data).map_err(|e| e.to_string())?;
-    let img = vtf.highres_image.decode(0).map_err(|e| e.to_string())?;
+    let img = vtf.highres_image.decode(frame).map_err(|e| e.to_string())?;
     Ok(img.to_rgba8())
+}
+
+/// How many frames a VTF has (an animated or switched texture has more than one).
+fn vtf_frames(bytes: &[u8]) -> u32 {
+    match bytes.get(24..26) {
+        Some(b) if bytes.starts_with(b"VTF\0") => u16::from_le_bytes([b[0], b[1]]).max(1) as u32,
+        _ => 1,
+    }
 }
 
 /// A VMT's `$basetexture` (and whether it's translucent).

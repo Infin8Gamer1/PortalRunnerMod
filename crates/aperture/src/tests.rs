@@ -833,7 +833,8 @@ fn portals_chamber_00_runs_its_logic() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
     let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
     let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let level = crate::source::level("testchmb_a_00", "00", &solids, &ents);
+    let scenes = std::fs::read_to_string(dir.join("scenes.txt")).map(|t| crate::source::parse_scenes(&t)).unwrap_or_default();
+    let level = crate::source::level_with_scenes("testchmb_a_00", "00", &solids, &ents, &scenes);
     let (mut sim, mut c) = start(level);
     run(&mut sim, &mut c, 5.0, |_, _| Input::default());
     assert!(sim.portals.iter().all(|p| p.is_none()), "portals open too soon");
@@ -860,10 +861,24 @@ fn portals_chamber_00_runs_its_logic() {
         let m = &sim.movers[door(&sim, name)];
         assert_eq!(m.node, 1, "{name} didn't open");
     }
-    // Off the button: they close again.
+    // Its state panel shows the check (frame 1); the other door's still shows the X (#30).
+    let panel = |sim: &Sim, name: &str| -> u32 {
+        let model = sim.movers[door(sim, name)].def.model;
+        sim.io.as_ref().unwrap().frames.get(&model).copied().unwrap_or(0)
+    };
+    assert_eq!(panel(&sim, "exit_doorstate_a00"), 1, "the panel didn't turn to the check");
+    assert_eq!(panel(&sim, "exit_doorstate_a00_b"), 0, "the other door's panel changed too");
+    // Off the button: they close again, and the panel's back to the X.
     sim.props[cube].pos = at + Vec3::new(3.0, 0.8, 0.0);
     run(&mut sim, &mut c, 4.0, |_, _| Input::default());
     assert_eq!(sim.movers[door(&sim, "exit_door_left_a00")].node, 0, "didn't close");
+    assert_eq!(panel(&sim, "exit_doorstate_a00"), 0, "the panel stayed on the check");
+
+    // The chamber's number sign, seen from the vault, has flickered on since GLaDOS's
+    // welcome dimmed the lights: it ends lit (skin 6, #35).
+    let io = sim.io.as_ref().unwrap();
+    let sign = io.ents.iter().position(|e| e.name == "sign_00").expect("sign_00");
+    assert_eq!(io.skins.get(&sign), Some(&6), "the sign didn't come on");
 }
 
 /// Chamber 00's lift between its rooms: step in, and five seconds later it carries her up

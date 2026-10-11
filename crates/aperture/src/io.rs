@@ -71,6 +71,9 @@ pub enum Kind {
     /// Touched by Faith (`players`), cubes (`cubes`) or high energy pellets (`pellets`: Portal's
     /// catchers, which take the pellet); once: then it's done.
     Trigger { b: Aabb, once: bool, enabled: bool, players: bool, cubes: bool, pellets: bool, player_in: bool, cubes_in: Vec<u32> },
+    /// A floor button's moving top (a func_door in the map; the sim's button `button` stands in
+    /// for it): it opens as the button goes down and closes as it comes up.
+    ButtonDoor { button: usize, down: bool },
     /// A floor button's trigger: the sim's button `button` pressing it.
     ButtonTrigger { button: usize, enabled: bool, players: bool, cubes: bool, on: bool },
     Mover { index: usize, kind: MoverKind },
@@ -78,9 +81,9 @@ pub enum Kind {
     Switch { sig: Sig },
     /// A preset portal (`start`: open as the map starts).
     Portal { color: PortalColor, portal: Portal, start: bool },
-    /// A choreographed scene (GLaDOS speaking): its lines (start, sound) and length; with none
-    /// known, a short wait.
-    Scene { lines: Vec<(f32, String)>, length: f32 },
+    /// A choreographed scene (GLaDOS speaking): its lines (start, sound), length and the
+    /// outputs it fires as it goes (start, n: `OnTriggerN`); with none known, a short wait.
+    Scene { lines: Vec<(f32, String)>, length: f32, triggers: Vec<(f32, u32)> },
     /// Spawns a cube here (env_entity_maker, point_template).
     Maker { at: Vec3, kind: CubeKind },
     /// A train's path point (`node` on mover `mover`).
@@ -89,8 +92,11 @@ pub enum Kind {
     Auto,
     /// Finishes the level and names the next map and the landmark the two maps share.
     ChangeLevel { map: String, landmark: String },
-    /// A model that animates (prop_dynamic): see [`Io::animations`].
+    /// A model that animates (prop_dynamic): see [`Io::animations`] and [`Io::skins`].
     Animated,
+    /// Picks which frame of its brush's texture shows (env_texturetoggle: a door's state
+    /// panel, X or check): see [`Io::frames`].
+    TextureToggle { target: String },
     Other,
 }
 
@@ -127,6 +133,10 @@ pub struct Io {
     /// one's started (so the host can tell a replay).
     pub animations: HashMap<usize, (String, u32)>,
     animation_count: u32,
+    /// Each animated prop's (entity's) skin, where the logic has changed it.
+    pub skins: HashMap<usize, u32>,
+    /// The texture frame each brush model shows, where the logic has picked one.
+    pub frames: HashMap<usize, u32>,
     /// GLaDOS's lines as she says them: a count that goes up with each, and the sound.
     pub voice: Vec<(u32, String)>,
     /// Which preset portal (entity) is open in each colour.
@@ -225,6 +235,19 @@ impl Io {
             }
         }
         for e in 0..self.ents.len() {
+            if let Kind::ButtonDoor { button, down } = self.ents[e].kind {
+                let now = sim.buttons.get(button).is_some_and(|b| b.pressed);
+                if now != down {
+                    self.ents[e].kind = Kind::ButtonDoor { button, down: now };
+                    if now {
+                        self.fire(e, "OnOpen", None);
+                        self.fire(e, "OnFullyOpen", None);
+                    } else {
+                        self.fire(e, "OnClose", None);
+                        self.fire(e, "OnFullyClosed", None);
+                    }
+                }
+            }
             if let Kind::ButtonTrigger { button, enabled, players, cubes, on } = self.ents[e].kind {
                 let Some(b) = sim.buttons.get(button) else { continue };
                 let now = enabled && b.pressed && if b.by_cube { cubes } else { players };
@@ -536,7 +559,7 @@ impl Io {
                     _ => {}
                 }
             }
-            Kind::Scene { lines, length } => match i.as_str() {
+            Kind::Scene { lines, length, triggers } => match i.as_str() {
                 "start" => {
                     self.fire(e, "OnStart", None);
                     let length = if length > 0.0 { length } else { SCENE_SECONDS };
@@ -544,7 +567,11 @@ impl Io {
                     for (at, sound) in lines {
                         self.queue.push(Pending { at: now + at, target: "!self".into(), input: "__say".into(), param: sound, caller: e });
                     }
+                    for (at, n) in triggers {
+                        self.queue.push(Pending { at: now + at, target: "!self".into(), input: "__trigger".into(), param: n.to_string(), caller: e });
+                    }
                 }
+                "__trigger" => self.fire(e, &format!("OnTrigger{}", param.trim()), None),
                 "__say" => {
                     let n = self.voice.last().map_or(1, |v| v.0 + 1);
                     self.voice.push((n, param.to_string()));
@@ -554,7 +581,7 @@ impl Io {
                     }
                 }
                 "__done" => self.fire(e, "OnCompletion", None),
-                "cancel" => self.queue.retain(|p| !(p.caller == e && (p.input == "__done" || p.input == "__say"))),
+                "cancel" => self.queue.retain(|p| !(p.caller == e && p.input.starts_with("__"))),
                 _ => {}
             },
             Kind::Maker { at, kind } if i == "forcespawn" => {
@@ -562,6 +589,17 @@ impl Io {
                 if !sim.props.iter().any(|p| p.alive && p.pos.distance(at) < 0.5) {
                     sim.spawn_prop(kind, at, None);
                     sim.events.push(SimEvent::CubeDropped { at });
+                }
+            }
+            Kind::Animated if i == "skin" => {
+                self.skins.insert(e, num(param).max(0.0) as u32);
+            }
+            Kind::TextureToggle { target } if i == "settextureindex" || i == "incrementtextureindex" => {
+                for t in self.by_name.get(&target).cloned().unwrap_or_default() {
+                    let Kind::Mover { index, .. } = self.ents[t].kind else { continue };
+                    let model = sim.movers[index].def.model;
+                    let n = if i == "settextureindex" { num(param).max(0.0) as u32 } else { self.frames.get(&model).map_or(1, |f| f + 1) };
+                    self.frames.insert(model, n);
                 }
             }
             Kind::Animated if i == "setanimation" => {

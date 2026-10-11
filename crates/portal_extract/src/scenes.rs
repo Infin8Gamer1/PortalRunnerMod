@@ -4,15 +4,19 @@
 //! The image (`VSIF`, version 2): a header, a string pool, then an entry per scene, found by
 //! the CRC32 of its file name, its data LZMA-compressed (Valve's `LZMA` header) binary VCD
 //! (`bvcd`). In that, a speak event is its type (5), its name and its start and end times
-//! (floats), then its sound: a soundscript name, by index into the pool. Those are read
-//! here as they stand, in order; the rest of the scene (faces, looks) isn't wanted.
+//! (floats), then its sound: a soundscript name, by index into the pool. A fire-trigger event
+//! (type 9) is laid out the same, its parameter the number of the scene entity's output it
+//! fires (`OnTrigger1`...). Those are read here as they stand, in order; the rest of the scene
+//! (faces, looks) isn't wanted.
 
 use std::collections::HashMap;
 
-/// A scene's lines: (start, soundscript), and its length (seconds).
+/// A scene's lines: (start, soundscript), its length (seconds), and the triggers it fires
+/// (start, n: the scene entity's `OnTriggerN`).
 pub struct Scene {
     pub lines: Vec<(f32, String)>,
     pub length: f32,
+    pub triggers: Vec<(f32, u32)>,
 }
 
 pub struct Image<'a> {
@@ -56,12 +60,23 @@ impl<'a> Image<'a> {
             return None;
         }
         let mut lines = Vec::new();
+        let mut triggers = Vec::new();
         let mut length = 0.0f32;
         for i in 11..b.len().saturating_sub(2) {
+            let f = |at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+            if b[i - 11] == 9 {
+                let (start, name, param) = (f(i - 8), u16::from_le_bytes([b[i - 10], b[i - 9]]) as usize, u16::from_le_bytes([b[i], b[i + 1]]) as usize);
+                if (0.0..600.0).contains(&start) && self.string(name).is_some() {
+                    if let Some(n) = self.string(param).and_then(|p| p.trim().parse::<u32>().ok()).filter(|n| (1..=16).contains(n)) {
+                        triggers.push((start, n));
+                        length = length.max(start);
+                    }
+                }
+                continue;
+            }
             if b[i - 11] != 5 {
                 continue;
             }
-            let f = |at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
             let (start, end) = (f(i - 8), f(i - 4));
             if !(start >= 0.0 && end > start && end < 600.0) {
                 continue;
@@ -74,7 +89,7 @@ impl<'a> Image<'a> {
                 length = length.max(end);
             }
         }
-        Some(Scene { lines, length })
+        Some(Scene { lines, length, triggers })
     }
 }
 

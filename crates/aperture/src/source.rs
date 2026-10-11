@@ -142,17 +142,26 @@ fn cube_kind(e: &Entity) -> CubeKind {
     if key(e, "skin") == Some("1") { CubeKind::Companion } else { CubeKind::Storage }
 }
 
-/// GLaDOS's scenes (`maps/scenes.txt`): scene file to (length, lines).
-pub type Scenes = HashMap<String, (f32, Vec<(f32, String)>)>;
+/// GLaDOS's scenes (`maps/scenes.txt`): scene file to its length, lines (start, sound) and
+/// the triggers it fires (start, n: its `OnTriggerN`).
+pub type Scenes = HashMap<String, SceneInfo>;
 
-/// Read `maps/scenes.txt` (a line a scene: `file|length|start:sound;...`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneInfo {
+    pub length: f32,
+    pub lines: Vec<(f32, String)>,
+    pub triggers: Vec<(f32, u32)>,
+}
+
+/// Read `maps/scenes.txt` (a line a scene: `file|length|start:sound;...|start:n;...`).
 pub fn parse_scenes(text: &str) -> Scenes {
     text.lines()
         .filter_map(|l| {
             let mut f = l.split('|');
-            let (file, length, lines) = (f.next()?, f.next()?.parse().ok()?, f.next().unwrap_or(""));
+            let (file, length, lines, triggers) = (f.next()?, f.next()?.parse().ok()?, f.next().unwrap_or(""), f.next().unwrap_or(""));
             let lines = lines.split(';').filter_map(|x| x.split_once(':')).filter_map(|(t, s)| Some((t.parse().ok()?, s.to_string()))).collect();
-            Some((file.to_string(), (length, lines)))
+            let triggers = triggers.split(';').filter_map(|x| x.split_once(':')).filter_map(|(t, n)| Some((t.parse().ok()?, n.parse().ok()?))).collect();
+            Some((file.to_string(), SceneInfo { length, lines, triggers }))
         })
         .collect()
 }
@@ -276,6 +285,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     .fold(f32::MIN, f32::max);
                 let at = Vec3::new(c.x, if floor > b.min.y - 1.0 { floor } else { b.min.y }, c.z);
                 l.items.push(Item::FloorButton { sig: sig(), at, cube_only: false });
+                kind = io::Kind::ButtonDoor { button: buttons.len(), down: false };
                 buttons.push(b);
                 l.hidden_models.push(model.unwrap());
             }
@@ -409,8 +419,8 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
             }
             "logic_choreographed_scene" => {
                 let file = key(e, "SceneFile").unwrap_or("").replace('\\', "/").to_ascii_lowercase();
-                let (length, lines) = scenes.get(&file).cloned().unwrap_or_default();
-                kind = io::Kind::Scene { lines, length };
+                let SceneInfo { length, lines, triggers } = scenes.get(&file).cloned().unwrap_or_default();
+                kind = io::Kind::Scene { lines, length, triggers };
             }
             "trigger_changelevel" => {
                 kind = io::Kind::ChangeLevel {
@@ -419,6 +429,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 }
             }
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => kind = io::Kind::Animated,
+            "env_texturetoggle" => kind = io::Kind::TextureToggle { target: key(e, "target").unwrap_or("").to_ascii_lowercase() },
             "env_entity_maker" => {
                 if let (Some(at), Some((_, k))) = (origin(e), key(e, "EntityTemplate").and_then(&template_cube)) {
                     kind = io::Kind::Maker { at, kind: k };

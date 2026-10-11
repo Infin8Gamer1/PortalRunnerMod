@@ -62,6 +62,8 @@ enum Act {
     Film(&'static str, MoveInput, u32),
     /// Wait until a live pellet has reached this x, or this many frames pass.
     WaitPelletX(f32, u32),
+    /// Put the first cube here, still.
+    PlaceCube(Vec3),
 }
 
 fn fwd() -> MoveInput {
@@ -438,6 +440,32 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("stairs_e_climbing"),
                 Hold(fwd(), 60),
                 Shot("stairs_f_top"),
+            ]
+        }
+        // Portal's Chamber 00 (testchmb_a_00), its signs as the logic drives them: the number
+        // sign flickering on once GLaDOS has dimmed the lights (#35), the vault's clock, and the
+        // door state panel, X until a cube's on its button, then the check (#30).
+        "signs" => {
+            let first = aperture::levels::all().len();
+            vec![
+                Map(first),
+                Wait(60),
+                Look(-152.0, 33.0),
+                Wait(5),
+                Shot("signs_a_number_off"),
+                // (PORTAL_SIGNS_QUICK skips the minute GLaDOS takes, for the panel alone.)
+                Wait(if std::env::var("PORTAL_SIGNS_QUICK").is_ok() { 1 } else { 3780 }),
+                Shot("signs_b_number_on"),
+                Look(180.0, 26.0),
+                Wait(5),
+                Shot("signs_c_clock"),
+                Teleport(Vec3::new(24.28, 3.7, 18.5)),
+                Look(180.0, 18.0),
+                Wait(30),
+                Shot("signs_d_panel_x"),
+                PlaceCube(Vec3::new(23.58, 4.4, 13.0)),
+                Wait(150),
+                Shot("signs_e_panel_check"),
             ]
         }
         // High energy pellets and the platform they power (#23, #22): Chamber 06, its pellet
@@ -927,6 +955,12 @@ pub fn run(
             cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
         Act::Menu(screen) => menu.open_at(*screen),
+        Act::PlaceCube(at) => {
+            if let Some(p) = game.sim.props.iter_mut().find(|p| p.alive) {
+                p.pos = *at;
+                p.vel = Vec3::ZERO;
+            }
+        }
         Act::Launch(v) => game.ctrl.launch(*v),
         Act::Portal(c, at, n, up) => game.sim.set_portal(*c, Some(aperture::Portal::new(*at, *n, *up))),
         Act::Teleport(p) => {

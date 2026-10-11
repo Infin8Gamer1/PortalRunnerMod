@@ -76,6 +76,33 @@ pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
 #[derive(Component)]
 pub struct MapModel(pub usize);
 
+/// A brush's texture with frames the map's logic picks between (env_texturetoggle): frame 0
+/// first.
+#[derive(Component)]
+pub struct TextureFrames {
+    model: usize,
+    frames: Vec<Handle<Image>>,
+    shown: u32,
+}
+
+/// Show the frame the logic picked on each switched texture.
+pub fn show_frames(game: Res<Game>, mut q: Query<(&mut TextureFrames, &MeshMaterial3d<StandardMaterial>)>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    let Some(io) = &game.sim.io else { return };
+    for (mut f, mat) in &mut q {
+        let want = io.frames.get(&f.model).copied().unwrap_or(0) % f.frames.len() as u32;
+        if want == f.shown {
+            continue;
+        }
+        f.shown = want;
+        let Some(mut m) = materials.get_mut(&mat.0) else { continue };
+        let tex = f.frames[want as usize].clone();
+        if m.emissive_texture.is_some() {
+            m.emissive_texture = Some(tex.clone());
+        }
+        m.base_color_texture = Some(tex);
+    }
+}
+
 /// One of the map's props: where it stands, and the mover it rides with (its parent).
 #[derive(Component)]
 pub struct MapProp {
@@ -83,6 +110,10 @@ pub struct MapProp {
     mover: Option<usize>,
     /// Its entity in the map's logic, and its model (for its animations), if it animates.
     animated: Option<(usize, Handle<bevy::gltf::Gltf>)>,
+    /// Its model's name without the skin (`map/props_animsigns/signage_num00`), and the skin
+    /// it shows: the logic can switch it (a chamber sign flickering on).
+    model: String,
+    skin: u32,
 }
 
 /// A map prop's animation player (on a node inside its model): its entity in the logic, and
@@ -117,6 +148,9 @@ pub struct Lamps(pub HashSet<AssetId<StandardMaterial>>);
 
 /// How bright a light panel glows (as the chambers' lamps do).
 const PANEL_GLOW: f32 = 6.0;
+/// How bright a lit sign glows: enough to read in a dim room, not so much its colours (a
+/// door's blue X, its orange check) burn out to white.
+const SIGN_GLOW: f32 = 0.25;
 /// A Portal light's brightness to our lumens.
 const LUMENS_PER_BRIGHTNESS: f32 = 2500.0;
 /// Under ray tracing, each light is a small glowing bulb: its radius, and how brightly it
@@ -208,7 +242,12 @@ fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Im
         perceptual_roughness: if mr.is_some() { 1.0 } else { 0.75 },
         metallic: if mr.is_some() { 1.0 } else { 0.0 },
         metallic_roughness_texture: mr,
-        emissive: if glows { LinearRgba::rgb(PANEL_GLOW, PANEL_GLOW, PANEL_GLOW) } else { LinearRgba::BLACK },
+        emissive: if glows {
+            let k = if name.starts_with("signage/") { SIGN_GLOW } else { PANEL_GLOW };
+            LinearRgba::rgb(k, k, k)
+        } else {
+            LinearRgba::BLACK
+        },
         emissive_texture: if glows { base } else { None },
         alpha_mode: if additive {
             AlphaMode::Add
@@ -259,6 +298,7 @@ pub fn sync(
         return;
     };
     let mut handles = Vec::with_capacity(file.materials.len());
+    let mut frames: HashMap<String, Vec<Handle<Image>>> = HashMap::new();
     for (mat, flags) in &file.materials {
         let h = match cache.0.get(mat) {
             Some(h) => h.clone(),
@@ -283,7 +323,25 @@ pub fn sync(
         if mesh.generate_tangents().is_err() {
             warn!("{name}: no tangents for {mat}");
         }
-        let mut e = commands.spawn((ChamberGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(handles[g.material].clone()), Transform::default()));
+        // A texture the logic switches between frames (a door's state panel: X, then the check)
+        // on a brush of its own: its own material, so each panel follows its own door.
+        let mut handle = handles[g.material].clone();
+        let mut switched = None;
+        if g.model != 0 {
+            let frames = frames.entry(mat.clone()).or_insert_with(|| (1..64).map_while(|k| extracted.texture(&format!("map/{mat}_frame{k}"))).map(|t| images.add(t)).collect::<Vec<_>>()).clone();
+            if let Some(own) = (!frames.is_empty()).then(|| materials.get(&handle).cloned()).flatten() {
+                let first = own.base_color_texture.clone();
+                handle = materials.add(own);
+                if lamps.0.contains(&handles[g.material].id()) {
+                    lamps.0.insert(handle.id());
+                }
+                switched = first.map(|f| TextureFrames { model: g.model as usize, frames: std::iter::once(f).chain(frames).collect(), shown: 0 });
+            }
+        }
+        let mut e = commands.spawn((ChamberGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(handle), Transform::default()));
+        if let Some(f) = switched {
+            e.insert(f);
+        }
         if flags & (1 | 8) != 0 || mat.starts_with("glass/") {
             e.insert(NotShadowCaster);
         }
@@ -324,9 +382,13 @@ pub fn sync(
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
         let at = aperture::source::to_ours(floats(f[2])) + shift;
         let animated = animated.get(f[5]).map(|&e| (e, assets.load(path.clone())));
+        let (model, skin) = match f[1].rsplit_once("_skin").and_then(|(m, k)| Some((m, k.parse::<u32>().ok()?))) {
+            Some((m, k)) => (m.to_string(), k),
+            None => (f[1].to_string(), 0),
+        };
         let mut spawned = commands.spawn((
             ChamberGeom,
-            MapProp { base: at, mover, animated },
+            MapProp { base: at, mover, animated, model, skin },
             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
             Visibility::default(),
             Transform::from_translation(at).with_rotation(source_rotation(floats(f[3]))),
@@ -391,6 +453,25 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
         let want = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
+        }
+    }
+}
+
+/// A prop shows the skin the map's logic last gave it (its model for that skin).
+pub fn show_skins(game: Res<Game>, assets: Res<AssetServer>, extracted: Res<Extracted>, mut props: Query<(&mut MapProp, &mut WorldAssetRoot)>) {
+    let Some(io) = &game.sim.io else { return };
+    if io.skins.is_empty() {
+        return;
+    }
+    for (mut p, mut root) in &mut props {
+        let Some(&want) = p.animated.as_ref().and_then(|(e, _)| io.skins.get(e)) else { continue };
+        if want == p.skin {
+            continue;
+        }
+        p.skin = want;
+        let name = if want > 0 { format!("{}_skin{want}", p.model) } else { p.model.clone() };
+        if let Some(path) = extracted.model(&name) {
+            root.0 = assets.load(GltfAssetLabel::Scene(0).from_asset(path));
         }
     }
 }

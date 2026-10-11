@@ -73,12 +73,16 @@ fn material(name: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&c
         textured: false,
     };
     let png = tex_dir.join(format!("{name}.png"));
-    if png.exists() {
+    let base = crate::vmt_base_texture(&text);
+    let vtf = base.as_ref().and_then(|b| read(&format!("materials/{b}.vtf")));
+    // A texture with frames (a door's state panel: X, then the check) has each one written,
+    // `_frame1` on: the map's logic picks which is shown.
+    let frames = vtf.as_deref().map_or(1, crate::vtf_frames);
+    if png.exists() && (frames == 1 || tex_dir.join(format!("{name}_frame1.png")).exists()) {
         m.textured = true;
         return m;
     }
-    let Some(base) = crate::vmt_base_texture(&text) else { return m };
-    let Some(vtf) = read(&format!("materials/{base}.vtf")) else { return m };
+    let Some(vtf) = vtf else { return m };
     let Ok(img) = crate::decode_vtf(&vtf) else { return m };
     let _ = std::fs::create_dir_all(png.parent().unwrap());
     let img = crate::remix::shrink(img, MAP_TEXTURE_MAX);
@@ -86,6 +90,19 @@ fn material(name: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&c
         return m;
     }
     m.textured = true;
+    if frames > 1 {
+        for k in 1..frames {
+            if let Ok(img) = crate::decode_vtf_frame(&vtf, k) {
+                let _ = crate::remix::shrink(img, MAP_TEXTURE_MAX).save(tex_dir.join(format!("{name}_frame{k}.png")));
+            }
+        }
+        // Portal with RTX remasters one frame only (it's found by the last one's pixels): the
+        // frames stay Portal's, so they match.
+        for suffix in ["_normal", "_mr", "_emissive"] {
+            let _ = std::fs::remove_file(tex_dir.join(format!("{name}{suffix}.png")));
+        }
+        return m;
+    }
     // Portal with RTX's maps for it, where it has them (not glass: Portal with RTX's is a
     // translucent shader, its colour map without the panes' alpha).
     if name.starts_with("glass/") {
@@ -132,12 +149,22 @@ pub type UsedModel = (String, i32, Vec<String>);
 fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<UsedModel>, String> {
     // The animations the map's logic plays on each named prop.
     let mut anims: HashMap<String, Vec<String>> = HashMap::new();
+    // And the skins it switches each to (a chamber sign flickering on: 2, 3, 4... 6).
+    let mut skins: HashMap<String, Vec<i32>> = HashMap::new();
     for e in ents {
         for (k, v) in e {
             if !(k.starts_with("On") || k.starts_with("Out")) {
                 continue;
             }
             let f: Vec<&str> = v.split([',', '\x1b']).collect();
+            if f.len() >= 3 && f[1].eq_ignore_ascii_case("Skin") {
+                if let Ok(k) = f[2].trim().parse::<i32>() {
+                    let list = skins.entry(f[0].trim().to_ascii_lowercase()).or_default();
+                    if !list.contains(&k) {
+                        list.push(k);
+                    }
+                }
+            }
             if f.len() >= 3 && (f[1].eq_ignore_ascii_case("SetAnimation") || f[1].eq_ignore_ascii_case("SetDefaultAnimation")) && !f[2].trim().is_empty() {
                 let list = anims.entry(f[0].trim().to_ascii_lowercase()).or_default();
                 let a = f[2].trim().to_ascii_lowercase();
@@ -157,15 +184,18 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path) -> Result<Vec<UsedModel>,
         text.push_str(&format!("{kind}|{}|{} {} {}|{} {} {}|{parent}|{name}\n", prop_glb(&model, skin), o.x, o.y, o.z, a.x, a.y, a.z));
         let mut its: Vec<String> = anims.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default();
         its.extend(default_anim.map(|d| d.to_ascii_lowercase()));
-        match used.iter_mut().find(|(m, s, _)| *m == model && *s == skin) {
-            Some((_, _, list)) => {
-                for a in its {
-                    if !list.contains(&a) {
-                        list.push(a);
+        let switched = if name.is_empty() { Vec::new() } else { skins.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default() };
+        for skin in std::iter::once(skin).chain(switched) {
+            match used.iter_mut().find(|(m, s, _)| *m == model && *s == skin) {
+                Some((_, _, list)) => {
+                    for a in &its {
+                        if !list.contains(a) {
+                            list.push(a.clone());
+                        }
                     }
                 }
+                None => used.push((model.clone(), skin, its.clone())),
             }
-            None => used.push((model, skin, its)),
         }
     };
     for p in &bsp.static_props {
