@@ -5,6 +5,8 @@ edition = "2024"
 description = "Copies what Portal Runner uses out of your own Portal / Portal 2 / Portal with RTX installs: sounds, textures (VTF to PNG, and RTX Remix PBR maps) and models (MDL to glTF)"
 
 [dependencies]
+# The game's own copies of Portal's maps (level files) are made here.
+aperture = { path = "../aperture" }
 vtf = "0.4"
 vmdl = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }

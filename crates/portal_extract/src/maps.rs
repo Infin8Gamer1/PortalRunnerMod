@@ -6,6 +6,8 @@
 //! - `maps/<name>.solids`: collision boxes, a line each: `<kind> <model> <min xyz> <max xyz>`,
 //!   kind one of `bounds` (a brush model's bounds), `white` (takes portals), `black`, `glass`, `grate`, `clip` (stops Faith,
 //!   nothing else), `goo`, `water`.
+//! - `maps/<name>.brushes`: the brushes as built, each side's plane and texture (see
+//!   `brushes_text`), for the game's own, editable copy of the map.
 //! - `maps/<name>.ents`: the entity lump as it is.
 //! - `maps/<name>.props`: its props (static, dynamic, physics), their models converted once
 //!   each into `models/map/`.
@@ -168,7 +170,7 @@ pub fn prop_glb(model: &str, skin: i32) -> String {
 /// x y z u v (each corner, ours, four times)|nx ny nz`), their materials' textures once. `name`
 /// is its info_overlay_accessor's, where the logic can switch its texture's frame (a door's
 /// indicator strip, blue to orange).
-fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, tex_dir: &Path) -> Result<(), String> {
+fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, tex_dir: &Path) -> Result<Vec<(String, u8)>, String> {
     let names: HashMap<i32, &str> = ents
         .iter()
         .filter(|e| bsp::key(e, "classname") == Some("info_overlay_accessor"))
@@ -193,7 +195,8 @@ fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) ->
         let n = ours(o.normal).normalize_or_zero();
         text.push_str(&format!("{base}|{}|{}|{}|{} {} {}\n", m.flags(), names.get(&o.id).copied().unwrap_or(""), corners.join(" "), n.x, n.y, n.z));
     }
-    std::fs::write(path, text).map_err(|e| e.to_string())
+    std::fs::write(path, text).map_err(|e| e.to_string())?;
+    Ok(mats.into_values().map(|m| (m.name.clone(), m.flags())).collect())
 }
 
 /// A prop model the map uses: (model, skin, the animations the map plays on it).
@@ -366,9 +369,98 @@ fn hull_bottom(mdl: &[u8], a: Vec3) -> Option<f32> {
     Some(-low)
 }
 
-/// Write a map out (see the module notes). Returns (groups, boxes, materials) written, and
-/// the prop models it uses.
-pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<(usize, usize, usize, Vec<UsedModel>), String> {
+/// A number as short as it reads back the same, without noise below a hundred-thousandth.
+fn short(x: f32) -> String {
+    let x = (x * 100_000.0).round() / 100_000.0;
+    if x == 0.0 { "0".into() } else { format!("{x}") }
+}
+
+/// The map's brushes as they were built (`maps/<name>.brushes`), for the game's own copy of
+/// the map (`aperture::port`), where each brush is something to edit. First the materials,
+/// `mat <flags> <name>` (flags as the mesh file's); then each brush, `brush <model> <contents>`
+/// (Source's contents bits), and its sides, `side <nx ny nz d> <ux uy uz uo> <vx vy vz vo>
+/// <material>`, in our space: the plane faces out of the brush, `d` metres along it; a point's
+/// texture coordinates are `p·u + uo` and `p·v + vo`, in the texture's widths and heights. A
+/// brush entity's brushes are where it is as the map starts (moved with its template, if one's
+/// made where it's put). Last, the displacements (their brushes aren't kept in the map: the
+/// map has only their faces), `disp <power> <corner xyz> x4 <ux uy uz uo> <vx vy vz vo>
+/// <material>` and on the next line their points' offsets from the flat face, `offsets <xyz...>`:
+/// rows from the first corner towards the second, each from the first corner's side to the
+/// fourth's.
+fn brushes_text(bsp: &Bsp, origins: &HashMap<usize, Vec3>, placed: &HashMap<usize, crate::templates::Place>, materials: &mut Vec<MapMaterial>, material_of: &mut dyn FnMut(i32, &mut Vec<MapMaterial>) -> Option<usize>) -> String {
+    let mut body = String::new();
+    // Our space from Source's, for directions (no scale) and planes.
+    let dir = |v: Vec3| Vec3::new(-v.y, v.z, -v.x);
+    // A texture axis (Source's: texels from a point in the model's space) as ours, for points
+    // in the map: the model's turned by `r`, then moved by `t`.
+    let axis = |v: [f32; 4], size: f32, r: glam::Mat3, t: Vec3| {
+        let a = r * Vec3::new(v[0], v[1], v[2]);
+        (dir(a) / (0.0254 * size), (v[3] - a.dot(t)) / size)
+    };
+    let vec = |v: Vec3| format!("{} {} {}", short(v.x), short(v.y), short(v.z));
+    for mi in 0..bsp.models.len() {
+        let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };
+        let (r, t) = match placed.get(&mi) {
+            Some(p) => (p.turn, p.to + p.turn * (origin - p.from)),
+            None => (glam::Mat3::IDENTITY, origin),
+        };
+        for bi in bsp.model_brushes(mi) {
+            let b = &bsp.brushes[bi];
+            body.push_str(&format!("brush {mi} {}\n", b.contents));
+            for s in (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel) {
+                let plane = &bsp.planes[s.plane];
+                let n = r * plane.normal;
+                let d = plane.dist + n.dot(t);
+                let (name, [(u, uo), (v, vo)]) = match bsp.texture(s.texinfo) {
+                    Some((td, ti)) => {
+                        let (w, h) = (td.width.max(1) as f32, td.height.max(1) as f32);
+                        // (Its material in the table, and its texture written, even where none of
+                        // its faces are drawn.)
+                        let _ = material_of(s.texinfo, materials);
+                        (bsp::base_material(&td.name), [axis(ti.s, w, r, t), axis(ti.t, h, r, t)])
+                    }
+                    None => ("tools/toolsnodraw".into(), [(Vec3::ZERO, 0.0), (Vec3::ZERO, 0.0)]),
+                };
+                // (The plane's normal as it is: rounded, an angled face far out in the map would
+                // move.)
+                let no = dir(n);
+                body.push_str(&format!("side {} {} {} {} {} {} {} {} {name}\n", no.x, no.y, no.z, short(d * 0.0254), vec(u), short(uo), vec(v), short(vo)));
+            }
+        }
+    }
+    let w = &bsp.models[0];
+    for f in &bsp.faces[w.first_face..w.first_face + w.num_faces] {
+        let (Some(d), Some((td, ti))) = (f.disp.and_then(|k| bsp.disps.get(k)), bsp.texture(f.texinfo)) else { continue };
+        let pts = bsp.face_points(f);
+        if pts.len() != 4 {
+            continue;
+        }
+        let _ = material_of(f.texinfo, materials);
+        let first = (0..4).min_by(|&a, &b| pts[a].distance(d.start).total_cmp(&pts[b].distance(d.start))).unwrap_or(0);
+        let (wd, ht) = (td.width.max(1) as f32, td.height.max(1) as f32);
+        let ((u, uo), (v, vo)) = (axis(ti.s, wd, glam::Mat3::IDENTITY, Vec3::ZERO), axis(ti.t, ht, glam::Mat3::IDENTITY, Vec3::ZERO));
+        let corners: Vec<String> = (0..4).map(|k| vec(ours(pts[(first + k) % 4]))).collect();
+        body.push_str(&format!("disp {} {} {} {} {} {} {}\n", d.power, corners.join(" "), vec(u), short(uo), vec(v), short(vo), bsp::base_material(&td.name)));
+        let offsets: Vec<String> = d.offsets.iter().map(|o| vec(dir(*o) * 0.0254)).collect();
+        body.push_str(&format!("offsets {}\n", offsets.join(" ")));
+    }
+    let mut text = String::new();
+    for m in materials.iter() {
+        text.push_str(&format!("mat {} {}\n", m.flags(), m.name));
+    }
+    text.push_str(&body);
+    text
+}
+
+/// What a map's extraction wrote: the prop models it uses, and its materials (faces' and
+/// overlays') with their flags.
+pub struct Extracted {
+    pub materials: Vec<(String, u8)>,
+    pub used: Vec<UsedModel>,
+}
+
+/// Write a map out (see the module notes).
+pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&crate::remix::Remix>, out: &Path) -> Result<Extracted, String> {
     let bsp = Bsp::parse(bytes)?;
     let mut ents = bsp::parse_entities(&bsp.entities);
     let origins = bsp::model_origins(&ents);
@@ -475,7 +567,6 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
 
     // Collision boxes; first, each brush model's bounds (triggers and the like are these).
     let mut solids = String::new();
-    let mut nboxes = 0;
     for (mi, model) in bsp.models.iter().enumerate() {
         let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };
         let (a, z) = place_box(mi, model.mins + origin, model.maxs + origin);
@@ -500,7 +591,6 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
                     continue;
                 }
                 solids.push_str(&format!("{kind} 0 {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z));
-                nboxes += 1;
             }
         }
     }
@@ -567,10 +657,12 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
             for (lo, hi) in bsp::brush_boxes(&bsp, b) {
                 let (a, z) = place_box(mi, lo + origin, hi + origin);
                 solids.push_str(&format!("{kind} {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));
-                nboxes += 1;
             }
         }
     }
+
+    let brushes = brushes_text(&bsp, &origins, &placed, &mut materials, &mut material_of);
+    std::fs::write(map_dir.join(format!("{name}.brushes")), brushes).map_err(|e| e.to_string())?;
 
     // The mesh file.
     let mut m = Vec::new();
@@ -601,8 +693,9 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     let lump = if placed.is_empty() { bsp.entities.clone() } else { crate::templates::write(&ents) };
     std::fs::write(map_dir.join(format!("{name}.ents")), lump).map_err(|e| e.to_string())?;
     let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")), read)?;
-    overlays(&bsp, &ents, &map_dir.join(format!("{name}.overlays")), read, remix, &tex_dir)?;
-    Ok((groups.len(), nboxes, materials.len(), used))
+    let mut mats: Vec<(String, u8)> = materials.iter().map(|m| (m.name.clone(), m.flags())).collect();
+    mats.extend(overlays(&bsp, &ents, &map_dir.join(format!("{name}.overlays")), read, remix, &tex_dir)?);
+    Ok(Extracted { materials: mats, used })
 }
 
 #[cfg(test)]

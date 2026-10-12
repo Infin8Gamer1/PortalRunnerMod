@@ -7,14 +7,21 @@
 //! as Faith's does. A built chamber can be read back into one ([`LevelDoc::from_level`]) as a
 //! starting point: its boxes as they end up, after the rooms are cut.
 
-use glam::{EulerRot, Quat, Vec3};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use glam::{EulerRot, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
 use faith_move::climb::Ladder;
 use faith_move::{Aabb, Fixture};
 
-use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, ModelProp, MoverDef, Paint, PlacedLight, PresetPortal, Sig, Solid, SunLight, NO_MODEL};
+use crate::art::{ArtOverlay, FaceGroup, MapArt};
+use crate::brush::{tool_material, Brush, Collision, Displacement};
+use crate::io::Output;
+use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, ModelProp, MoverDef, Paint, PlacedLight, PresetPortal, Sig, Slope, Solid, SunLight, NO_MODEL};
 use crate::portal::PortalColor;
+use crate::source::{self, MapBox, Scenes};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LevelDoc {
@@ -34,6 +41,10 @@ pub struct LevelDoc {
     /// The fill light everywhere, if the level sets its own (else as indoors or outdoors has it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ambient: Option<Ambient>,
+    /// The Portal map it's the game's own copy of (`testchmb_a_00`), if it is one: its level
+    /// changes lead to the next map's copy, and it's played by Portal's rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
 }
 
 /// The fill light everywhere: its colour (sRGB, 0-1) and brightness.
@@ -67,6 +78,13 @@ pub struct Object {
     pub pitch: f32,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub roll: f32,
+    /// What the logic calls it (Portal's entities: other entities' outputs name it).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// What it sets off (a Portal entity's): when it fires an event, an input sent to the
+    /// entities with a name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<Output>,
 }
 
 /// How something can be turned.
@@ -202,6 +220,25 @@ pub enum Kind {
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
     Model { path: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    /// One of Portal's brushes: a convex solid, each face with its own material (see
+    /// [`crate::brush`]), its planes from here, turned as it's turned.
+    Brush(Brush),
+    /// A displacement (a bumpy face: a dirt floor's mounds), its corners from here.
+    Displacement(Displacement),
+    /// A decal on a surface (a sign, an indicator strip, a stain): its corners from here, with
+    /// where its texture is at each; facing `normal`. Its name is the one the logic switches
+    /// its texture's frame by.
+    Overlay { mat: String, corners: [Vec3; 4], uv: [[f32; 2]; 4], normal: Vec3 },
+    /// One of Portal's entities: its class and keys (Source's), standing here, turned as it's
+    /// turned, with its name and outputs. A brush entity (a door, a trigger) has its brushes,
+    /// from here: they move with it, but don't turn with it.
+    Entity {
+        class: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keys: Vec<(String, String)>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        brushes: Vec<Brush>,
+    },
 }
 
 fn light_radius() -> f32 {
@@ -250,7 +287,7 @@ impl Kind {
     pub fn turns(&self) -> Option<Turns> {
         match self {
             Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } | Kind::SpotLight { .. } | Kind::Sun { .. } => Some(Turns::Aim),
-            Kind::MeProp { .. } | Kind::Model { .. } => Some(Turns::Free),
+            Kind::MeProp { .. } | Kind::Model { .. } | Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => Some(Turns::Free),
             Kind::Spawn | Kind::Turret | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(Turns::Yaw),
             _ => None,
         }
@@ -299,7 +336,25 @@ impl Kind {
             Kind::Ladder { pipe, .. } => if *pipe { "Drainpipe" } else { "Ladder" }.into(),
             Kind::MeProp { mesh, .. } => mesh.clone(),
             Kind::Model { path, .. } => path.rsplit('/').next().unwrap_or(path).trim_end_matches(".glb").to_string(),
+            Kind::Brush(b) => {
+                // (Named after the material most of its drawn faces have.)
+                let mut count: HashMap<&str, usize> = HashMap::new();
+                for f in b.faces.iter().filter(|f| !tool_material(&f.mat)) {
+                    *count.entry(f.mat.as_str()).or_default() += 1;
+                }
+                let mat = count.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|(m, _)| m).or_else(|| b.faces.first().map(|f| f.mat.as_str())).unwrap_or("");
+                format!("Brush {}", mat.rsplit('/').next().unwrap_or(mat))
+            }
+            Kind::Displacement(d) => format!("Displacement {}", d.mat.rsplit('/').next().unwrap_or(&d.mat)),
+            Kind::Overlay { mat, .. } => format!("Overlay {}", mat.rsplit('/').next().unwrap_or(mat)),
+            Kind::Entity { class, .. } => class.clone(),
         }
+    }
+
+    /// Whether it's part of a Portal map's own build (a brush, an entity...): a level with
+    /// these is made the way Portal's maps are ([`LevelDoc::build_with`]).
+    pub fn is_map_part(&self) -> bool {
+        matches!(self, Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. })
     }
 
     /// The signal it drives, if it's a source.
@@ -327,6 +382,144 @@ impl Kind {
     }
 }
 
+/// A map's faces to draw, gathered by brush model and material.
+#[derive(Default)]
+struct Faces {
+    groups: Vec<FaceGroup>,
+    at: HashMap<(usize, String), usize>,
+    /// What hides faces inside it.
+    hiders: Hiders,
+}
+
+/// The brushes that hide what's inside them (solid, none of them seen through), bucketed by
+/// where they are.
+#[derive(Default)]
+struct Hiders {
+    /// Each one, its box, and which of the world's brushes it is.
+    brushes: Vec<(Brush, Aabb, usize)>,
+    cells: HashMap<(i32, i32, i32), Vec<usize>>,
+}
+
+/// The size of a [`Hiders`] bucket (metres).
+const HIDER_CELL: f32 = 4.0;
+
+impl Hiders {
+    fn new(brushes: &[Brush]) -> Hiders {
+        let mut h = Hiders::default();
+        for (w, b) in brushes.iter().enumerate().filter(|(_, b)| b.opaque()) {
+            let Some(bx) = b.bounds() else { continue };
+            let k = h.brushes.len();
+            h.brushes.push((b.clone(), bx, w));
+            let (lo, hi) = (cell(bx.min), cell(bx.max));
+            for x in lo.0..=hi.0 {
+                for y in lo.1..=hi.1 {
+                    for z in lo.2..=hi.2 {
+                        h.cells.entry((x, y, z)).or_default().push(k);
+                    }
+                }
+            }
+        }
+        h
+    }
+
+    /// Whether a polygon (of the world's brush `own`, if it's one: not hidden by itself) is
+    /// inside another.
+    fn hides(&self, pts: &[Vec3], own: Option<usize>) -> bool {
+        if self.brushes.is_empty() {
+            return false;
+        }
+        let mid = pts.iter().copied().sum::<Vec3>() / pts.len() as f32;
+        let Some(list) = self.cells.get(&cell(mid)) else { return false };
+        list.iter().any(|&k| {
+            let (b, bx, w) = &self.brushes[k];
+            let inside = pts.iter().all(|p| (p.cmpge(bx.min - 1e-3) & p.cmple(bx.max + 1e-3)).all());
+            inside && own != Some(*w) && b.holds(pts)
+        })
+    }
+}
+
+fn cell(p: Vec3) -> (i32, i32, i32) {
+    ((p.x / HIDER_CELL).floor() as i32, (p.y / HIDER_CELL).floor() as i32, (p.z / HIDER_CELL).floor() as i32)
+}
+
+impl Faces {
+    fn group(&mut self, model: usize, mat: &str) -> &mut FaceGroup {
+        let i = *self.at.entry((model, mat.to_string())).or_insert_with(|| {
+            self.groups.push(FaceGroup { model, mat: mat.to_string(), ..Default::default() });
+            self.groups.len() - 1
+        });
+        &mut self.groups[i]
+    }
+
+    /// A brush's faces (not its tool textures', nor what's hidden inside another brush), each a
+    /// fan of triangles.
+    fn brush(&mut self, model: usize, b: &Brush, own: Option<usize>) {
+        for (i, pts) in b.polygons().into_iter().enumerate() {
+            let f = &b.faces[i];
+            if pts.len() < 3 || tool_material(&f.mat) || self.hiders.hides(&pts, own) {
+                continue;
+            }
+            let n = f.n.normalize();
+            let g = self.group(model, &f.mat);
+            let base = g.pos.len() as u32;
+            for p in &pts {
+                g.pos.push(p.to_array());
+                g.nrm.push(n.to_array());
+                g.uv.push([p.dot(f.u.truncate()) + f.u.w, p.dot(f.v.truncate()) + f.v.w]);
+            }
+            for k in 1..pts.len() as u32 - 1 {
+                g.idx.extend([base, base + k, base + k + 1]);
+            }
+        }
+    }
+
+    /// A displacement's grid, textured as its flat face is, each triangle wound to face the
+    /// way the face does, its normals from the grid.
+    fn displacement(&mut self, d: &Displacement) {
+        let side = d.side();
+        let grid = d.grid();
+        let n = d.normal();
+        let q: Vec<Vec3> = grid.iter().map(|(p, _)| *p).collect();
+        let mut nrm = vec![Vec3::ZERO; q.len()];
+        let mut tris = Vec::new();
+        for i in 0..side - 1 {
+            for j in 0..side - 1 {
+                let (a, b, c, e) = (i * side + j, (i + 1) * side + j, (i + 1) * side + j + 1, i * side + j + 1);
+                for t in [[a, b, c], [a, c, e]] {
+                    let w = (q[t[1]] - q[t[0]]).cross(q[t[2]] - q[t[0]]);
+                    let t = if w.dot(n) < 0.0 { [t[0], t[2], t[1]] } else { t };
+                    let fw = (q[t[1]] - q[t[0]]).cross(q[t[2]] - q[t[0]]);
+                    for k in t {
+                        nrm[k] += fw;
+                    }
+                    tris.push(t);
+                }
+            }
+        }
+        let g = self.group(0, &d.mat);
+        let base = g.pos.len() as u32;
+        for (k, (_, flat)) in grid.iter().enumerate() {
+            g.pos.push(q[k].to_array());
+            g.nrm.push(nrm[k].normalize_or(n).to_array());
+            g.uv.push([flat.dot(d.u.truncate()) + d.u.w, flat.dot(d.v.truncate()) + d.v.w]);
+        }
+        g.idx.extend(tris.into_iter().flat_map(|t| t.map(|k| base + k as u32)));
+    }
+}
+
+/// The box round some points, at least `pad` thick each way.
+fn points_box(pts: impl Iterator<Item = Vec3>, pad: f32) -> Aabb {
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in pts {
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    if lo.x > hi.x {
+        return Aabb::from_center_size(Vec3::ZERO, Vec3::splat(pad * 2.0));
+    }
+    Aabb::new(lo - pad, hi + pad)
+}
+
 /// A balance beam's own box: 30 cm wide and deep, under the line along its top.
 fn beam_box(at: Vec3, to: Vec3) -> Aabb {
     let (a, b) = (at, at + to);
@@ -344,11 +537,32 @@ fn inputs_label(i: &Inputs) -> String {
 
 impl Object {
     pub fn new(kind: Kind, at: Vec3) -> Self {
-        Object { kind, at, size: Vec3::ZERO, yaw: 0.0, pitch: 0.0, roll: 0.0 }
+        Object { kind, at, size: Vec3::ZERO, yaw: 0.0, pitch: 0.0, roll: 0.0, name: String::new(), outputs: Vec::new() }
     }
 
     pub fn sized(kind: Kind, at: Vec3, size: Vec3) -> Self {
-        Object { kind, at, size, yaw: 0.0, pitch: 0.0, roll: 0.0 }
+        Object { kind, at, size, yaw: 0.0, pitch: 0.0, roll: 0.0, name: String::new(), outputs: Vec::new() }
+    }
+
+    /// Whether it's turned at all.
+    pub fn turned(&self) -> bool {
+        self.yaw != 0.0 || self.pitch != 0.0 || self.roll != 0.0
+    }
+
+    /// A brush of its own (or one of a brush entity's) as it stands in the world.
+    pub fn place_brush(&self, b: &Brush) -> Brush {
+        let b = if self.turned() && !matches!(self.kind, Kind::Entity { .. }) { b.turned(self.rotation()) } else { b.clone() };
+        b.moved(self.at)
+    }
+
+    /// Its displacement as it stands in the world.
+    pub fn place_displacement(&self, d: &Displacement) -> Displacement {
+        let q = self.rotation();
+        let turn = |v: Vec4| {
+            let a = q * v.truncate();
+            Vec4::from((a, v.w - a.dot(self.at)))
+        };
+        Displacement { corners: d.corners.map(|c| self.at + q * c), u: turn(d.u), v: turn(d.v), offsets: d.offsets.iter().map(|o| q * *o).collect(), ..d.clone() }
     }
 
     /// A prop's box in the world: `b` (from it, before it's turned or scaled) scaled, turned
@@ -456,6 +670,24 @@ impl Object {
             }
             Kind::MeProp { bounds: Some(b), scale, .. } | Kind::Model { bounds: Some(b), scale, .. } => self.prop_box(*b, *scale),
             Kind::MeProp { .. } | Kind::Model { .. } => up(1.0, 1.0),
+            Kind::Brush(b) => {
+                let b = if self.turned() { b.turned(self.rotation()).bounds() } else { b.bounds() };
+                b.map_or_else(|| around(0.1), |b| Aabb::new(b.min + self.at, b.max + self.at))
+            }
+            Kind::Displacement(d) => points_box(self.place_displacement(d).grid().into_iter().map(|(p, _)| p), 0.01),
+            Kind::Overlay { corners, .. } => {
+                let q = self.rotation();
+                points_box(corners.iter().map(|c| self.at + q * *c), 0.01)
+            }
+            Kind::Entity { brushes, .. } if !brushes.is_empty() => {
+                let mut b: Option<Aabb> = None;
+                for x in brushes.iter().filter_map(|x| x.bounds()) {
+                    let x = Aabb::new(x.min + self.at, x.max + self.at);
+                    b = Some(b.map_or(x, |b| Aabb::new(b.min.min(x.min), b.max.max(x.max))));
+                }
+                b.unwrap_or_else(|| around(0.25))
+            }
+            Kind::Entity { .. } => around(0.25),
             _ => around(0.35),
         }
     }
@@ -463,7 +695,7 @@ impl Object {
 
 impl LevelDoc {
     pub fn new(name: &str) -> Self {
-        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None }
+        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None }
     }
 
     /// A white room to start from: floor, walls, ceiling, a lamp grid and the start.
@@ -489,8 +721,9 @@ impl LevelDoc {
         d
     }
 
+    /// As a file: an object a line.
     pub fn to_ron(&self) -> String {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default().struct_names(false)).unwrap_or_default()
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default().struct_names(false).depth_limit(2)).unwrap_or_default()
     }
 
     pub fn from_ron(text: &str) -> Result<LevelDoc, String> {
@@ -500,8 +733,20 @@ impl LevelDoc {
     /// Make it into a level. Its words live as long as the program (a level's are `'static`):
     /// a few bytes each time the editor rebuilds it.
     pub fn build(&self) -> Level {
+        self.build_with(&Scenes::new())
+    }
+
+    /// The same, with GLaDOS's scenes for its entities to play.
+    pub fn build_with(&self, scenes: &Scenes) -> Level {
         let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
-        let mut l = Level::new(leak(&self.name));
+        let map = self.objects.iter().any(|o| o.kind.is_map_part());
+        let mut l = if map { self.build_map(leak(&self.name), scenes) } else { Level::new(leak(&self.name)) };
+        // Its own pieces' signals come after the map's logic's, and its cuts only cut its own
+        // blocks (the map's faces are drawn as they are).
+        let base = if map { l.signal_count() } else { 0 };
+        let sg = |s: &Sig| *s + base;
+        let inp = |i: &Inputs| Inputs { all: i.all.iter().map(|s| s + base).collect(), invert: i.invert };
+        let first = l.solids.len();
         l.intro = leak(&self.intro);
         l.indoor = self.indoor;
         l.kill_y = self.kill_y;
@@ -522,7 +767,7 @@ impl LevelDoc {
         for o in &self.objects {
             if let Kind::Cut = o.kind {
                 let (a, b) = corners(o);
-                l.cut(a, b);
+                l.cut_from(first, a, b);
             }
         }
         let mut spawn = None;
@@ -551,40 +796,40 @@ impl LevelDoc {
                     l.lamp(at.to_array());
                 }
                 Kind::FloorButton { sig, cube_only } => {
-                    l.item(Item::FloorButton { sig: *sig, at, cube_only: *cube_only });
+                    l.item(Item::FloorButton { sig: sg(sig), at, cube_only: *cube_only });
                 }
                 Kind::Pedestal { sig, time } => {
-                    l.pedestal(*sig, at.to_array(), *time);
+                    l.pedestal(sg(sig), at.to_array(), *time);
                 }
                 Kind::Door { inputs } => {
-                    l.door(inputs.clone(), a, b);
+                    l.door(inp(inputs), a, b);
                 }
                 Kind::Cube { cube } => {
                     l.cube(*cube, at.to_array());
                 }
                 Kind::Dropper { cube, inputs } => {
-                    l.dropper(*cube, at.to_array(), inputs.clone());
+                    l.dropper(*cube, at.to_array(), inp(inputs));
                 }
                 Kind::Fizzler { inputs } => {
-                    l.fizzler(a, b, inputs.clone());
+                    l.fizzler(a, b, inp(inputs));
                 }
                 Kind::FaithPlate { target, apex, inputs } => {
-                    l.item(Item::FaithPlate { at, target: *target, apex: *apex, inputs: inputs.clone() });
+                    l.item(Item::FaithPlate { at, target: *target, apex: *apex, inputs: inp(inputs) });
                 }
                 Kind::Bridge { inputs } => {
-                    l.item(Item::Bridge { at, dir: o.dir(), up: o.rotation() * Vec3::Y, inputs: inputs.clone() });
+                    l.item(Item::Bridge { at, dir: o.dir(), up: o.rotation() * Vec3::Y, inputs: inp(inputs) });
                 }
                 Kind::Laser { inputs } => {
-                    l.laser(at.to_array(), dir, inputs.clone());
+                    l.laser(at.to_array(), dir, inp(inputs));
                 }
                 Kind::Catcher { sig } => {
-                    l.catcher(*sig, at.to_array(), dir);
+                    l.catcher(sg(sig), at.to_array(), dir);
                 }
                 Kind::Relay { sig } => {
-                    l.relay(*sig, at.to_array());
+                    l.relay(sg(sig), at.to_array());
                 }
                 Kind::GelPipe { paint, inputs, rate, speed } => {
-                    l.item(Item::GelDispenser { at, dir: o.dir(), paint: *paint, inputs: inputs.clone(), rate: *rate, speed: *speed });
+                    l.item(Item::GelDispenser { at, dir: o.dir(), paint: *paint, inputs: inp(inputs), rate: *rate, speed: *speed });
                 }
                 Kind::Painted { paint, normal } => {
                     l.paint(*paint, a, b, normal.to_array());
@@ -596,20 +841,20 @@ impl LevelDoc {
                     l.turret(at.to_array(), o.yaw);
                 }
                 Kind::PelletLauncher { inputs, life } => {
-                    l.item(Item::PelletLauncher { at, dir: o.dir(), inputs: inputs.clone(), life: *life, launch: Launch::default() });
+                    l.item(Item::PelletLauncher { at, dir: o.dir(), inputs: inp(inputs), life: *life, launch: Launch::default() });
                 }
                 Kind::PelletCatcher { sig } => {
-                    l.pellet_catcher(*sig, at.to_array(), dir);
+                    l.pellet_catcher(sg(sig), at.to_array(), dir);
                 }
                 Kind::Platform { travel, speed, inputs } => {
-                    l.platform(a, b, travel.to_array(), *speed, inputs.clone());
+                    l.platform(a, b, travel.to_array(), *speed, inp(inputs));
                 }
                 Kind::Portal { color } => {
                     l.portals.push(PresetPortal { color: *color, center: at, normal: o.dir(), up: o.rotation() * Vec3::Y });
                 }
                 Kind::Wire { sig, points } => {
                     let pts: Vec<[f32; 3]> = std::iter::once(at).chain(points.iter().map(|p| at + *p)).map(|p| p.to_array()).collect();
-                    l.wire(*sig, &pts);
+                    l.wire(sg(sig), &pts);
                 }
                 Kind::PointLight { color, intensity, range, radius, shadows } => {
                     l.placed_lights.push(PlacedLight { at, color: *color, intensity: *intensity, range: *range, radius: *radius, spot: None, shadows: *shadows });
@@ -639,11 +884,126 @@ impl LevelDoc {
                     let solid = (bounds.is_some() && *solid).then(|| o.bounds());
                     l.models.push(ModelProp { path: path.clone(), at, turn: o.rotation(), scale: *scale, solid });
                 }
+                // (The map's: made into it already.)
+                Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => {}
             }
         }
-        let (at, yaw) = spawn.unwrap_or((Vec3::ZERO, 0.0));
-        l.spawn(at.to_array(), yaw);
+        match spawn {
+            // A start of its own, in a map: instead of the map's.
+            Some((at, yaw)) if map && !l.checkpoints.is_empty() => {
+                l.checkpoints.remove(0);
+                l.spawn(at.to_array(), yaw);
+            }
+            Some((at, yaw)) => {
+                l.spawn(at.to_array(), yaw);
+            }
+            None if !map || l.checkpoints.is_empty() => {
+                l.spawn([0.0; 3], 0.0);
+            }
+            None => {}
+        }
         l.ambient = self.ambient.map(|a| (a.color, a.brightness));
+        l
+    }
+
+    /// The map it's a copy of, made as `aperture::source` makes Portal's maps (from the boxes
+    /// and entities `portal_extract` writes out): its brushes into boxes to collide with,
+    /// faces that take portals at a slant and faces to draw; its entities into the game's
+    /// pieces and logic; and what's drawn besides.
+    pub(crate) fn build_map(&self, title: &'static str, scenes: &Scenes) -> Level {
+        let mut boxes: Vec<MapBox> = Vec::new();
+        let mut slopes: Vec<(usize, Slope)> = Vec::new();
+        let mut faces = Faces::default();
+        let kind_of = |c: Collision| -> Option<&'static str> {
+            Some(match c {
+                Collision::Solid(Mat::White) => "white",
+                Collision::Solid(Mat::Glass | Mat::Frosted) => "glass",
+                Collision::Solid(Mat::Grate) => "grate",
+                Collision::Solid(Mat::Clip) => "clip",
+                Collision::Solid(_) => "black",
+                Collision::Goo => "goo",
+                Collision::None => return None,
+            })
+        };
+        let add_brush = |model: usize, b: &Brush, own: Option<usize>, boxes: &mut Vec<MapBox>, slopes: &mut Vec<(usize, Slope)>, faces: &mut Faces| {
+            if let Some(kind) = kind_of(b.collision()) {
+                boxes.extend(b.boxes().into_iter().map(|bx| MapBox { kind: kind.to_string(), model, b: bx }));
+            }
+            slopes.extend(b.slopes(model != 0).into_iter().map(|s| (model, s)));
+            faces.brush(model, b, own);
+        };
+        // The world: its brushes and displacements. (A face inside another brush that hides
+        // it, against a wall, isn't drawn: Portal's compiler leaves those out, and glass there
+        // would show.)
+        let world: Vec<Brush> = self.objects.iter().filter_map(|o| if let Kind::Brush(b) = &o.kind { Some(o.place_brush(b)) } else { None }).collect();
+        faces.hiders = Hiders::new(&world);
+        let mut w = 0;
+        for o in &self.objects {
+            match &o.kind {
+                Kind::Brush(_) => {
+                    add_brush(0, &world[w], Some(w), &mut boxes, &mut slopes, &mut faces);
+                    w += 1;
+                }
+                Kind::Displacement(d) => {
+                    let d = o.place_displacement(d);
+                    let kind = if d.noportal { "black" } else { "white" };
+                    boxes.extend(d.boxes().into_iter().map(|b| MapBox { kind: kind.into(), model: 0, b }));
+                    faces.displacement(&d);
+                }
+                _ => {}
+            }
+        }
+        // Its entities, as Source's (a brush entity's brushes its own model: they move, so the
+        // world doesn't hide their faces).
+        faces.hiders = Hiders::default();
+        let mut ents: Vec<source::Entity> = Vec::new();
+        let mut placed: Vec<(source::Entity, Vec3, Quat)> = Vec::new();
+        let mut model = 0;
+        for o in &self.objects {
+            let Kind::Entity { class, keys, brushes } = &o.kind else { continue };
+            let mut e: source::Entity = vec![("classname".into(), class.clone())];
+            if !o.name.is_empty() {
+                e.push(("targetname".into(), o.name.clone()));
+            }
+            e.push(("origin".into(), source::source_point(o.at)));
+            let a = source::angles_of(o.rotation());
+            let deg = |x: f32| {
+                let x = (x * 1000.0).round() / 1000.0;
+                if x == 0.0 { "0".to_string() } else { format!("{x}") }
+            };
+            e.push(("angles".into(), format!("{} {} {}", deg(a.x), deg(a.y), deg(a.z))));
+            if !brushes.is_empty() {
+                model += 1;
+                e.push(("model".into(), format!("*{model}")));
+                let mut bounds: Option<Aabb> = None;
+                for b in brushes {
+                    let b = o.place_brush(b);
+                    if let Some(x) = b.bounds() {
+                        bounds = Some(bounds.map_or(x, |y| Aabb::new(y.min.min(x.min), y.max.max(x.max))));
+                    }
+                    add_brush(model, &b, None, &mut boxes, &mut slopes, &mut faces);
+                }
+                if let Some(b) = bounds {
+                    boxes.push(MapBox { kind: "bounds".into(), model, b });
+                }
+            }
+            e.extend(keys.iter().cloned());
+            e.extend(o.outputs.iter().map(|out| (out.event.clone(), out.value())));
+            placed.push((e.clone(), o.at, o.rotation()));
+            ents.push(e);
+        }
+        let name = self.map.clone().unwrap_or_default();
+        let mut l = source::level_from(&name, title, &boxes, slopes, &ents, scenes);
+        let overlays = self
+            .objects
+            .iter()
+            .filter_map(|o| {
+                let Kind::Overlay { mat, corners, uv, normal } = &o.kind else { return None };
+                let q = o.rotation();
+                Some(ArtOverlay { mat: mat.clone(), flags: None, name: o.name.to_ascii_lowercase(), corners: std::array::from_fn(|k| (o.at + q * corners[k], uv[k])), normal: q * *normal })
+            })
+            .collect();
+        l.art = Some(Arc::new(MapArt { mesh: None, faces: faces.groups, props: crate::art::entity_props(&placed), overlays, ropes: crate::rope::hang(&ents) }));
         l
     }
 

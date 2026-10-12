@@ -494,7 +494,9 @@ pub fn brush_boxes(bsp: &Bsp, b: &Brush) -> Vec<(Vec3, Vec3)> {
     // diagonal wall a row of posts), finely enough that a slope's steps stay small.
     let angled: Vec<Vec3> = (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| &bsp.planes[s.plane]).filter(|p| !p.axial).map(|p| p.normal).collect();
     let across = angled.iter().fold(Vec3::ZERO, |m, n| m + n.abs());
-    let axis = if across.x >= across.y { 0 } else { 1 };
+    // (A tie, a round brush's, goes to X, whatever the rounding in its planes: the game's own
+    // copy of the map slices it the same way.)
+    let axis = if across.x >= across.y - 1e-3 { 0 } else { 1 };
     let size = hi - lo;
     let len = size[axis];
     // (Only for something you'd walk on, or under: a wall that leans has no steps to keep small.)

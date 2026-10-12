@@ -589,7 +589,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     // The chamber's boxes (and the boxes of emitters and the like).
     for s in &sim.statics {
         // One of Portal's maps is drawn from its own faces (`source_map`).
-        if l.source.is_some() && matches!(s.owner, Owner::Level(_)) {
+        if matches!(s.owner, Owner::Level(i) if i < l.map_solids) {
             continue;
         }
         match s.owner {

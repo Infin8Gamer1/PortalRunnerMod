@@ -6,7 +6,9 @@ use bevy::gizmos::transform_gizmo::{TransformGizmoMode, TransformGizmoSettings};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 
-use aperture::doc::{Kind, LevelDoc, Turns};
+use aperture::brush::{tool_material, Collision, Contents};
+use aperture::doc::{Kind, LevelDoc, Object, Turns};
+use aperture::io::Output;
 use aperture::{CubeKind, Inputs, Mat, Paint, PortalColor};
 
 use super::catalog::{Category, CATALOG};
@@ -20,17 +22,47 @@ const MATS: [Mat; 11] = [Mat::White, Mat::Black, Mat::Glass, Mat::Frosted, Mat::
 const CUBES: [CubeKind; 3] = [CubeKind::Storage, CubeKind::Companion, CubeKind::Reflector];
 const PAINTS: [Paint; 4] = [Paint::Bounce, Paint::Speed, Paint::Portal, Paint::Water];
 const GRIDS: [f32; 6] = [0.0, 0.125, 0.25, 0.5, 1.0, 2.0];
+const CONTENTS: [Contents; 7] = [Contents::Solid, Contents::Window, Contents::Grate, Contents::Goo, Contents::Water, Contents::Clip, Contents::Empty];
+
+/// Which objects the outliner lists.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+enum Shown {
+    #[default]
+    All,
+    /// Brushes, displacements and overlays.
+    Brushes,
+    /// Portal's entities.
+    Entities,
+    /// Everything else: the game's own pieces, props, lights.
+    Pieces,
+}
+
+use super::MatTarget;
 
 /// The browser's search, the outliner's filter.
 #[derive(Default)]
 pub struct UiState {
     search: String,
     filter: String,
+    shown_kinds: Shown,
     /// The selection the outliner last showed (to scroll to a new one).
     shown: Option<usize>,
+    /// The outliner's rows (object, label), and what they were made for.
+    rows: Vec<(usize, String)>,
+    rows_key: Option<(String, Shown, u64, usize)>,
     /// What the props browser lists (and for what).
     prop_list: Vec<usize>,
     prop_key: Option<(usize, Option<String>, String, usize)>,
+    /// The names in the level (for outputs' targets), and when they were gathered.
+    names: Vec<String>,
+    names_version: Option<u64>,
+    /// The material picker's search, and the materials it lists.
+    mat_search: String,
+    mat_list: Vec<String>,
+    mat_key: Option<String>,
+    /// Materials whose pictures are wanted (shown this frame), and their pictures.
+    mat_wanted: Vec<String>,
+    mat_tex: HashMap<String, Option<egui::TextureId>>,
 }
 
 /// A material's look for its tile: its texture, else its colour.
@@ -55,12 +87,19 @@ pub fn draw(
     mut game_settings: ResMut<crate::settings::Settings>,
     mut prop_thumbs: ResMut<Thumbs>,
     mut prop_textures: Local<HashMap<usize, egui::TextureId>>,
+    (extracted, mut images): (Res<crate::extracted::Extracted>, ResMut<Assets<Image>>),
 ) -> Result {
     // The props' pictures made since last time, for egui.
     for (i, h) in &prop_thumbs.ready {
         if !prop_textures.contains_key(i) {
             prop_textures.insert(*i, contexts.add_image(EguiTextureHandle::Strong(h.clone())));
         }
+    }
+    // Pictures of Portal's materials shown last frame (a few a frame: they're read from disk).
+    let wanted: Vec<String> = std::mem::take(&mut state.mat_wanted).into_iter().filter(|n| !state.mat_tex.contains_key(n)).take(6).collect();
+    for name in wanted {
+        let tex = extracted.texture(&format!("map/{name}")).map(|img| contexts.add_image(EguiTextureHandle::Strong(images.add(img))));
+        state.mat_tex.insert(name, tex);
     }
     if let Some(m) = &mats {
         for mat in MATS {
@@ -117,10 +156,22 @@ pub fn draw(
         ui.separator();
         egui::ScrollArea::vertical().id_salt("details").show(ui, |ui| {
             let looks = ed.selected.and_then(|i| ed.doc.objects.get(i)).and_then(|o| materials_of(&o.kind, &lib, me_cache.as_deref()));
-            details(ui, ed, looks.as_ref());
+            details(ui, ed, looks.as_ref(), &mut state);
         });
     });
     ed.panels.push(right.response.rect);
+
+    // ---- the material picker
+    if let Some(target) = ed.picking {
+        let mut open = true;
+        let window = egui::Window::new("Portal's materials").open(&mut open).default_size([460.0, 520.0]).default_pos(ctx.viewport_rect().center() - egui::vec2(230.0, 260.0)).show(&ctx, |ui| material_picker(ui, ed, &mut state, target));
+        if let Some(w) = window {
+            ed.panels.push(w.response.rect);
+        }
+        if !open || ed.selected != Some(target.obj) {
+            ed.picking = None;
+        }
+    }
 
     // One undo step per edit in the panels: committed once it's let go of.
     let busy = ctx.egui_is_using_pointer() || ctx.memory(|m| m.focused().is_some());
@@ -160,6 +211,26 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
                         Ok(d) => {
                             ed.open(d, Some(p.clone()));
                             ed.status = format!("Opened {}", p.display());
+                        }
+                        Err(e) => ed.status = e,
+                    }
+                    ui.close();
+                }
+            }
+        });
+        ui.menu_button("Open a Portal chamber", |ui| {
+            let files = crate::source_map::native_files(crate::extracted::find_root().as_deref());
+            if files.is_empty() {
+                ui.weak("None yet: run the extractor (cargo run --release -p portal_extract)");
+            }
+            for (p, map) in files {
+                let title = aperture::port::MAPS.iter().find(|(m, _)| *m == map).map(|(_, t)| aperture::port::native_title(t)).unwrap_or(map);
+                if ui.button(title).clicked() {
+                    match super::read_doc(&p) {
+                        Ok(d) => {
+                            let n = d.objects.len();
+                            ed.open(d, Some(p.clone()));
+                            ed.status = format!("Opened {} ({n} objects)", p.display());
                         }
                         Err(e) => ed.status = e,
                     }
@@ -462,30 +533,56 @@ fn tile(p: &egui::Painter, rect: egui::Rect, i: usize, thumbs: &HashMap<Mat, Thu
 
 fn outliner(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState) {
     ui.heading("Outliner");
-    ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("Filter"));
-    let filter = state.filter.to_lowercase();
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("Filter (label or name)").desired_width(ui.available_width() - 100.0));
+        egui::ComboBox::from_id_salt("shown").width(84.0).selected_text(format!("{:?}", state.shown_kinds)).show_ui(ui, |ui| {
+            for k in [Shown::All, Shown::Brushes, Shown::Entities, Shown::Pieces] {
+                ui.selectable_value(&mut state.shown_kinds, k, format!("{k:?}"));
+            }
+        });
+    });
+    // The rows, made again only when the level or the filter changes (a Portal map has
+    // thousands of objects).
+    let key = (state.filter.to_lowercase(), state.shown_kinds, ed.version, ed.doc.objects.len());
+    if state.rows_key.as_ref() != Some(&key) {
+        state.rows = ed
+            .doc
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| match state.shown_kinds {
+                Shown::All => true,
+                Shown::Brushes => matches!(o.kind, Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. }),
+                Shown::Entities => matches!(o.kind, Kind::Entity { .. }),
+                Shown::Pieces => !o.kind.is_map_part(),
+            })
+            .map(|(i, o)| (i, if o.name.is_empty() { o.kind.label() } else { format!("{}  \"{}\"", o.kind.label(), o.name) }))
+            .filter(|(_, label)| key.0.is_empty() || label.to_lowercase().contains(&key.0))
+            .collect();
+        state.rows_key = Some(key);
+    }
     let scroll_to = ed.selected != state.shown;
     state.shown = ed.selected;
-    egui::ScrollArea::vertical().id_salt("outliner").max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
-        let mut pick = None;
-        for (i, o) in ed.doc.objects.iter().enumerate() {
-            let label = o.kind.label();
-            if !filter.is_empty() && !label.to_lowercase().contains(&filter) {
-                continue;
-            }
-            let r = ui.selectable_label(ed.selected == Some(i), format!("{i:>3}  {label}"));
-            if r.clicked() {
-                pick = Some(i);
-            }
-            if scroll_to && ed.selected == Some(i) {
-                r.scroll_to_me(Some(egui::Align::Center));
-            }
+    let row_h = ui.text_style_height(&egui::TextStyle::Button) + ui.spacing().item_spacing.y;
+    let mut area = egui::ScrollArea::vertical().id_salt("outliner").max_height(240.0).auto_shrink([false, true]);
+    if scroll_to {
+        if let Some(k) = ed.selected.and_then(|s| state.rows.iter().position(|(i, _)| *i == s)) {
+            area = area.vertical_scroll_offset((k as f32 * row_h - 100.0).max(0.0));
         }
-        if let Some(i) = pick {
-            ed.selected = Some(i);
-            state.shown = Some(i);
+    }
+    let mut pick = None;
+    area.show_rows(ui, row_h, state.rows.len(), |ui, range| {
+        for (i, label) in &state.rows[range] {
+            if ui.selectable_label(ed.selected == Some(*i), format!("{i:>4}  {label}")).clicked() {
+                pick = Some(*i);
+            }
         }
     });
+    if let Some(i) = pick {
+        ed.selected = Some(i);
+        state.shown = Some(i);
+    }
+    ui.weak(format!("{} of {} objects", state.rows.len(), ed.doc.objects.len()));
 }
 
 /// What a prop's materials found: a line to show, whether some have nothing, and which.
@@ -521,9 +618,34 @@ fn materials_of(kind: &Kind, lib: &Library, me: Option<&crate::me_props::MePropC
     }
 }
 
-fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
-    let before = ed.doc.clone();
+fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mut UiState) {
+    // What it was before this frame's edits: the level's own fields and the selected object
+    // (not the whole level each frame: a Portal map's is big).
+    let objects = std::mem::take(&mut ed.doc.objects);
+    let head = ed.doc.clone();
+    ed.doc.objects = objects;
+    let sel = ed.selected;
+    let was: Option<Object> = sel.and_then(|i| ed.doc.objects.get(i).cloned());
     let newest = ed.doc.objects.iter().rev().find_map(|o| o.kind.drives()).unwrap_or(0);
+    // The names in the level (outputs name them), gathered again when it changes.
+    if state.names_version != Some(ed.version) {
+        let mut names: Vec<String> = ed.doc.objects.iter().filter(|o| !o.name.is_empty()).map(|o| o.name.clone()).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        state.names = names;
+        state.names_version = Some(ed.version);
+    }
+    // What fires at the selection: (the object, its event, the input).
+    let incoming: Vec<(usize, String, String)> = match sel.and_then(|i| ed.doc.objects.get(i)).map(|o| o.name.clone()).filter(|n| !n.is_empty()) {
+        Some(name) => ed.doc.objects.iter().enumerate().flat_map(|(k, o)| o.outputs.iter().filter(|out| out.target.eq_ignore_ascii_case(&name)).map(move |out| (k, out.event.clone(), out.input.clone()))).collect(),
+        None => Vec::new(),
+    };
+    let mut picking = None;
+    let incoming_labels: Vec<String> = incoming.iter().map(|(k, e, inp)| {
+        let o = &ed.doc.objects[*k];
+        format!("{} {}: {e}, {inp}", o.kind.label(), o.name)
+    }).collect();
+    let mut go_to = None;
     match ed.selected {
         None => {
             ui.heading("Level");
@@ -548,6 +670,11 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
                     ui.checkbox(&mut ed.doc.orange, "orange");
                 });
                 ui.end_row();
+                if let Some(map) = &ed.doc.map {
+                    ui.label("Portal map");
+                    ui.label(map).on_hover_text("The game's own copy of this map: its level changes lead to the next map's copy");
+                    ui.end_row();
+                }
                 ui.label("Ambient light");
                 ui.vertical(|ui| {
                     let mut own = ed.doc.ambient.is_some();
@@ -606,6 +733,12 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
                         }
                         None => {}
                     }
+                    if matches!(o.kind, Kind::Entity { .. } | Kind::Overlay { .. }) {
+                        ui.label("Name");
+                        ui.add(egui::TextEdit::singleline(&mut o.name).hint_text("what the logic calls it"));
+                        ui.end_row();
+                    }
+                    map_fields(ui, o, i, state, &mut picking);
                     pick_target = kind_fields(ui, &mut o.kind, newest);
                     if let Some(l) = looks {
                         ui.label("Materials");
@@ -616,6 +749,21 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
                         ui.end_row();
                     }
                 });
+                if let Kind::Entity { keys, .. } = &mut o.kind {
+                    entity_keys(ui, keys);
+                }
+                if matches!(o.kind, Kind::Entity { .. }) {
+                    outputs(ui, &mut o.outputs, &state.names);
+                    if !incoming_labels.is_empty() {
+                        egui::CollapsingHeader::new(format!("Fired at it ({})", incoming_labels.len())).default_open(true).show(ui, |ui| {
+                            for (k, label) in incoming_labels.iter().enumerate() {
+                                if ui.link(label).on_hover_text("Select it").clicked() {
+                                    go_to = Some(incoming[k].0);
+                                }
+                            }
+                        });
+                    }
+                }
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -641,9 +789,275 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
         }
         Some(_) => ed.selected = None,
     }
-    if ed.doc != before && ed.before_edit.is_none() {
+    // Changed this frame: the level as it was, for its undo step (one copy, as the edit starts).
+    let objects = std::mem::take(&mut ed.doc.objects);
+    let head_changed = ed.doc != head;
+    ed.doc.objects = objects;
+    let obj_changed = sel.is_some_and(|i| ed.doc.objects.get(i) != was.as_ref());
+    if (head_changed || obj_changed) && ed.before_edit.is_none() {
+        let mut before = LevelDoc { objects: ed.doc.objects.clone(), ..head };
+        if let (Some(i), Some(w)) = (sel, was) {
+            if i < before.objects.len() {
+                before.objects[i] = w;
+            }
+        }
         ed.before_edit = Some(before);
     }
+    if let Some(k) = go_to {
+        ed.selected = Some(k);
+    }
+    if picking.is_some() {
+        ed.picking = picking;
+    }
+}
+
+/// A material's name and its picture (if it has one), small.
+fn material_row(ui: &mut egui::Ui, state: &mut UiState, mat: &str, size: f32) {
+    match state.mat_tex.get(mat) {
+        Some(Some(id)) => {
+            ui.add(egui::Image::new((*id, egui::vec2(size, size))));
+        }
+        Some(None) => {
+            ui.add_sized([size, size], egui::Label::new("·"));
+        }
+        None => {
+            state.mat_wanted.push(mat.to_string());
+            ui.add_sized([size, size], egui::Label::new("…"));
+        }
+    }
+    ui.label(mat.rsplit('/').next().unwrap_or(mat)).on_hover_text(mat);
+}
+
+/// A brush's, displacement's or overlay's fields: what it is and its materials.
+fn map_fields(ui: &mut egui::Ui, o: &mut Object, i: usize, state: &mut UiState, picking: &mut Option<MatTarget>) {
+    match &mut o.kind {
+        Kind::Brush(b) => {
+            ui.label("Contents");
+            combo(ui, "contents", &mut b.contents, &CONTENTS);
+            ui.end_row();
+            ui.label("Collides as");
+            ui.label(match b.collision() {
+                Collision::Solid(m) if m.portalable() => "solid: takes portals".to_string(),
+                Collision::Solid(m) => format!("solid: {m:?}, no portals"),
+                Collision::Goo => "deadly goo".to_string(),
+                Collision::None => "nothing".to_string(),
+            })
+            .on_hover_text("Its contents, and what most of its drawn faces' materials take");
+            ui.end_row();
+            if let Some(bx) = b.bounds() {
+                let s = bx.size();
+                ui.label("Size");
+                ui.label(format!("{:.2} x {:.2} x {:.2} m", s.x, s.y, s.z)).on_hover_text("Scale it with the gizmo (R)");
+                ui.end_row();
+            }
+            ui.label("Materials");
+            if ui.button("Pick for every face…").on_hover_text("Every drawn face (not its nodraw ones)").clicked() {
+                *picking = Some(MatTarget { obj: i, face: None });
+            }
+            ui.end_row();
+            for (k, f) in b.faces.iter().enumerate() {
+                let n = f.n;
+                let side = [(Vec3::Y, "top"), (Vec3::NEG_Y, "bottom"), (Vec3::X, "+x"), (Vec3::NEG_X, "-x"), (Vec3::Z, "+z"), (Vec3::NEG_Z, "-z")].iter().find(|(a, _)| a.dot(n) > 0.99).map_or("slant", |(_, s)| s);
+                ui.label(format!("  face {k} ({side})"));
+                ui.horizontal(|ui| {
+                    material_row(ui, state, &f.mat, 18.0);
+                    if ui.small_button("…").on_hover_text("Pick its material").clicked() {
+                        *picking = Some(MatTarget { obj: i, face: Some(k) });
+                    }
+                    if !tool_material(&f.mat) && f.noportal {
+                        ui.weak("no portals");
+                    }
+                });
+                ui.end_row();
+            }
+        }
+        Kind::Displacement(d) => {
+            ui.label("Material");
+            ui.horizontal(|ui| {
+                let mat = d.mat.clone();
+                material_row(ui, state, &mat, 18.0);
+                if ui.small_button("…").clicked() {
+                    *picking = Some(MatTarget { obj: i, face: None });
+                }
+            });
+            ui.end_row();
+            ui.label("Grid");
+            ui.label(format!("{0} x {0} points", d.side()));
+            ui.end_row();
+        }
+        Kind::Overlay { mat, .. } => {
+            ui.label("Material");
+            ui.horizontal(|ui| {
+                let m = mat.clone();
+                material_row(ui, state, &m, 18.0);
+                if ui.small_button("…").clicked() {
+                    *picking = Some(MatTarget { obj: i, face: None });
+                }
+            });
+            ui.end_row();
+        }
+        Kind::Entity { class, brushes, .. } => {
+            ui.label("Class");
+            ui.add(egui::TextEdit::singleline(class).hint_text("Source's: logic_relay, trigger_once..."));
+            ui.end_row();
+            if !brushes.is_empty() {
+                ui.label("Brushes");
+                ui.label(format!("{} (they move with it)", brushes.len()));
+                ui.end_row();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A Portal entity's keys (Source's): each one's value, to change; more to add.
+fn entity_keys(ui: &mut egui::Ui, keys: &mut Vec<(String, String)>) {
+    egui::CollapsingHeader::new(format!("Keys ({})", keys.len())).default_open(true).show(ui, |ui| {
+        let mut remove = None;
+        for (k, (key, value)) in keys.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add_sized([120.0, 18.0], egui::TextEdit::singleline(key));
+                ui.add_sized([(ui.available_width() - 28.0).max(60.0), 18.0], egui::TextEdit::singleline(value));
+                if ui.small_button("x").on_hover_text("Remove it").clicked() {
+                    remove = Some(k);
+                }
+            });
+        }
+        if let Some(k) = remove {
+            keys.remove(k);
+        }
+        if ui.small_button("+ key").clicked() {
+            keys.push((String::new(), String::new()));
+        }
+    });
+}
+
+/// A Portal entity's outputs: when it fires an event, an input sent (after a delay, so many
+/// times) to the entities of a name.
+fn outputs(ui: &mut egui::Ui, outs: &mut Vec<Output>, names: &[String]) {
+    egui::CollapsingHeader::new(format!("Outputs ({})", outs.len())).default_open(true).show(ui, |ui| {
+        let mut remove = None;
+        for (k, out) in outs.iter_mut().enumerate() {
+            ui.push_id(k, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut out.event).desired_width(90.0).hint_text("OnTrigger"));
+                    ui.label("to");
+                    ui.add(egui::TextEdit::singleline(&mut out.target).desired_width(100.0).hint_text("target"));
+                    ui.menu_button("…", |ui| {
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            for n in names {
+                                if ui.button(n).clicked() {
+                                    out.target = n.clone();
+                                    ui.close();
+                                }
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text("The level's names");
+                    if ui.small_button("x").on_hover_text("Remove it").clicked() {
+                        remove = Some(k);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.add(egui::TextEdit::singleline(&mut out.input).desired_width(80.0).hint_text("Input"));
+                    ui.add(egui::TextEdit::singleline(&mut out.param).desired_width(60.0).hint_text("value"));
+                    ui.add(egui::DragValue::new(&mut out.delay).speed(0.05).range(0.0..=600.0).prefix("after ").suffix(" s"));
+                    ui.add(egui::DragValue::new(&mut out.times).speed(0.1).range(-1..=99).prefix("× ")).on_hover_text("How many times (-1: every time)");
+                });
+            });
+            ui.add_space(2.0);
+        }
+        if let Some(k) = remove {
+            outs.remove(k);
+        }
+        if ui.small_button("+ output").clicked() {
+            outs.push(Output { event: "OnTrigger".into(), target: String::new(), input: "Trigger".into(), param: String::new(), delay: 0.0, times: -1 });
+        }
+    });
+}
+
+/// Portal's materials, to give the face (or faces) being picked for.
+fn material_picker(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, target: MatTarget) {
+    let flags = crate::source_map::material_flags();
+    ui.add(egui::TextEdit::singleline(&mut state.mat_search).hint_text("Search").desired_width(f32::INFINITY));
+    let key = state.mat_search.to_lowercase();
+    if state.mat_key.as_ref() != Some(&key) {
+        let mut list: Vec<String> = flags.keys().filter(|m| key.is_empty() || m.contains(&key)).cloned().collect();
+        list.extend(["tools/toolsnodraw", "tools/toolsplayerclip", "tools/toolstrigger", "tools/toolsinvisible"].iter().map(|t| t.to_string()).filter(|t| key.is_empty() || t.contains(&key)));
+        list.sort();
+        state.mat_list = list;
+        state.mat_key = Some(key);
+    }
+    if flags.is_empty() {
+        ui.weak("No materials: run the extractor (cargo run --release -p portal_extract)");
+    }
+    let tile = egui::vec2(96.0, 118.0);
+    let per_row = ((ui.available_width() + 6.0) / (tile.x + 6.0)).floor().max(1.0) as usize;
+    let rows = state.mat_list.len().div_ceil(per_row);
+    let mut chosen = None;
+    let list = state.mat_list.clone();
+    egui::ScrollArea::vertical().id_salt("materials").show_rows(ui, tile.y + 6.0, rows, |ui, range| {
+        for row in range {
+            ui.horizontal(|ui| {
+                for m in list.iter().skip(row * per_row).take(per_row) {
+                    let (rect, r) = ui.allocate_exact_size(tile, egui::Sense::click());
+                    let p = ui.painter();
+                    p.rect_filled(rect, 4.0, if r.hovered() { egui::Color32::from_gray(60) } else { egui::Color32::from_gray(38) });
+                    let img = egui::Rect::from_min_size(rect.min, egui::vec2(tile.x, tile.x)).shrink(4.0);
+                    match state.mat_tex.get(m) {
+                        Some(Some(id)) => {
+                            p.image(*id, img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                        }
+                        got => {
+                            if got.is_none() {
+                                state.mat_wanted.push(m.clone());
+                            }
+                            p.rect_filled(img, 3.0, egui::Color32::from_gray(28));
+                            p.text(img.center(), egui::Align2::CENTER_CENTER, if m.starts_with("tools/") { "tool" } else { "…" }, egui::FontId::proportional(14.0), egui::Color32::from_gray(110));
+                        }
+                    }
+                    let label = egui::Rect::from_min_max(egui::pos2(rect.min.x + 2.0, img.max.y + 2.0), rect.max);
+                    let galley = p.layout(m.rsplit('/').next().unwrap_or(m).to_string(), egui::FontId::proportional(10.0), egui::Color32::from_gray(210), label.width());
+                    p.with_clip_rect(label).galley(label.min, galley, egui::Color32::WHITE);
+                    if r.on_hover_text(m.as_str()).clicked() {
+                        chosen = Some(m.clone());
+                    }
+                }
+            });
+        }
+    });
+    let Some(mat) = chosen else { return };
+    // (Whether it takes portals, as the maps' materials say; a tool texture says nothing.)
+    let noportal = !tool_material(&mat) && flags.get(&mat).is_some_and(|f| f & 16 == 0);
+    let see_through = aperture::port::see_through(flags, &mat);
+    ed.change(|d| {
+        let Some(o) = d.objects.get_mut(target.obj) else { return };
+        match &mut o.kind {
+            Kind::Brush(b) => {
+                let all_tools = b.faces.iter().all(|f| tool_material(&f.mat));
+                for (k, f) in b.faces.iter_mut().enumerate() {
+                    let take = match target.face {
+                        Some(j) => j == k,
+                        None => all_tools || !tool_material(&f.mat),
+                    };
+                    if take {
+                        f.mat = mat.clone();
+                        f.noportal = noportal;
+                        f.see_through = see_through;
+                    }
+                }
+            }
+            Kind::Displacement(dp) => {
+                dp.mat = mat.clone();
+                dp.noportal = noportal;
+            }
+            Kind::Overlay { mat: m, .. } => *m = mat.clone(),
+            _ => {}
+        }
+    });
+    ed.status = format!("Material: {mat}");
 }
 
 fn vec3(ui: &mut egui::Ui, v: &mut Vec3, speed: f64) {
@@ -949,6 +1363,8 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             ui.end_row();
         }
         Kind::Cut | Kind::Spawn | Kind::Exit | Kind::Lamp | Kind::Goo | Kind::Turret | Kind::BargeDoor | Kind::BarbedWire => {}
+        // (Their fields are `map_fields`' and the entity panels'.)
+        Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => {}
     }
     pick
 }

@@ -188,7 +188,22 @@ pub struct Editor {
     handle: Option<Entity>,
     ui_camera: Option<Entity>,
     ui_sink: Option<Entity>,
+    /// Goes up with each change to the document (for what's worked out from it to know).
+    pub version: u64,
+    /// What the material picker's open for.
+    pub picking: Option<MatTarget>,
 }
+
+/// What the material picker gives a material to: an object, and one of its faces (none: all
+/// of a brush's drawn faces, or a displacement's or overlay's own).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct MatTarget {
+    pub obj: usize,
+    pub face: Option<usize>,
+}
+
+/// The undo history keeps at most this many objects, all its steps together.
+const UNDO_OBJECTS: usize = 300_000;
 
 impl Default for Editor {
     fn default() -> Self {
@@ -230,6 +245,8 @@ impl Default for Editor {
             handle: None,
             ui_camera: None,
             ui_sink: None,
+            version: 0,
+            picking: None,
         }
     }
 }
@@ -241,9 +258,13 @@ impl Editor {
             return;
         }
         self.undo.push(before);
-        if self.undo.len() > 200 {
-            self.undo.remove(0);
+        // (At most 200 steps, fewer of a big level: each is the whole level as it was.)
+        let keep = (UNDO_OBJECTS / self.doc.objects.len().max(1)).clamp(10, 200);
+        if self.undo.len() > keep {
+            let extra = self.undo.len() - keep;
+            self.undo.drain(..extra);
         }
+        self.version += 1;
         self.redo.clear();
         self.unsaved = true;
         self.rebuild = true;
@@ -281,6 +302,7 @@ impl Editor {
     fn after_history(&mut self) {
         self.unsaved = true;
         self.rebuild = true;
+        self.version += 1;
         if self.selected.is_some_and(|i| i >= self.doc.objects.len()) {
             self.selected = None;
         }
@@ -290,6 +312,7 @@ impl Editor {
     pub fn open(&mut self, doc: LevelDoc, path: Option<PathBuf>) {
         self.save_name = doc.name.clone();
         self.doc = doc;
+        self.version += 1;
         self.path = path;
         self.selected = None;
         self.undo.clear();
@@ -297,8 +320,11 @@ impl Editor {
         self.unsaved = false;
         self.rebuild = true;
         self.started = true;
-        if let Some(s) = self.doc.objects.iter().find(|o| o.kind == Kind::Spawn) {
-            self.cam = FlyCam { pos: s.at + Vec3::new(0.0, 2.5, 0.0), yaw: s.yaw.to_radians(), pitch: -0.3, speed: self.cam.speed };
+        // Looking out from the start (a Portal map's: its player start).
+        let start = self.doc.objects.iter().find(|o| o.kind == Kind::Spawn).or_else(|| self.doc.objects.iter().find(|o| matches!(&o.kind, Kind::Entity { class, .. } if class == "info_player_start")));
+        if let Some(s) = start {
+            let yaw = if s.kind == Kind::Spawn { s.yaw.to_radians() } else { (-s.dir().x).atan2(-s.dir().z) };
+            self.cam = FlyCam { pos: s.at + Vec3::new(0.0, 2.5, 0.0), yaw, pitch: -0.3, speed: self.cam.speed };
         }
     }
 
@@ -381,7 +407,8 @@ impl Editor {
                 if !self.files.iter().any(|(_, p)| *p == path) {
                     let i = game.levels.len();
                     game.levels.push((self.doc.name.clone(), file_level(path.clone())));
-                    game.source_names.push(None);
+                    game.source_names.push(self.doc.map.clone());
+                    game.groups.push(crate::LevelGroup::Testing);
                     self.files.push((i, path));
                 }
             }
@@ -389,16 +416,36 @@ impl Editor {
         }
     }
 
-    /// Edit level `i` of the game's list: its file, or a copy of a built chamber.
-    pub fn open_level(&mut self, game: &Game, i: usize) {
-        if let Some((_, path)) = self.files.iter().find(|(j, _)| *j == i) {
-            match read_doc(path) {
-                Ok(d) => self.open(d, Some(path.clone())),
-                Err(e) => self.status = e,
+    /// Edit level `i` of the game's list: its file, or a copy of a built chamber. One of
+    /// Portal's maps as imported: the game's own copy of it (a level file), if there is one.
+    /// Whether what's open is that level (or its copy).
+    pub fn open_level(&mut self, game: &Game, i: usize) -> bool {
+        let i = if game.groups.get(i) == Some(&crate::LevelGroup::PortalImported) {
+            match (0..game.levels.len()).find(|&j| game.groups[j] == crate::LevelGroup::PortalNative && game.source_names[j] == game.source_names[i]) {
+                Some(j) => j,
+                None => {
+                    self.status = "No copy of this map to edit: run the extractor (cargo run --release -p portal_extract). Starting a new level".into();
+                    self.open(LevelDoc::starter("Untitled"), None);
+                    return false;
+                }
             }
-        } else if game.source_names.get(i).is_some_and(|s| s.is_some()) {
-            self.status = "Portal's own maps can't be edited (their geometry is the map's): starting a new level".into();
-            self.open(LevelDoc::starter("Untitled"), None);
+        } else {
+            i
+        };
+        if let Some(path) = self.files.iter().find(|(j, _)| *j == i).map(|(_, p)| p.clone()) {
+            let path = &path;
+            let started = std::time::Instant::now();
+            match read_doc(path) {
+                Ok(d) => {
+                    let n = d.objects.len();
+                    self.open(d, Some(path.clone()));
+                    self.status = format!("Opened {} ({n} objects, {:.1} s)", path.display(), started.elapsed().as_secs_f32());
+                }
+                Err(e) => {
+                    self.status = e;
+                    return false;
+                }
+            }
         } else {
             let (mut d, skipped) = LevelDoc::from_level(&(game.levels[i].1)());
             d.name = format!("{} (copy)", d.name);
@@ -406,21 +453,22 @@ impl Editor {
             self.unsaved = true;
             self.status = if skipped > 0 { format!("Imported {} ({skipped} things the editor can't show were left out)", game.levels[i].0) } else { format!("Imported {}", game.levels[i].0) };
         }
+        true
     }
 
     fn enter(&mut self, game: &mut Game, menu: &mut menu::Menu) {
         if self.slot.is_none() {
             let shared = self.shared.clone();
             self.slot = Some(game.levels.len());
-            game.levels.push(("Editor".into(), Arc::new(move || shared.read().map(|d| d.build()).unwrap_or_else(|_| LevelDoc::starter("Untitled").build()))));
+            game.levels.push(("Editor".into(), Arc::new(move || shared.read().map(|d| d.build_with(&crate::source_map::scenes())).unwrap_or_else(|_| LevelDoc::starter("Untitled").build()))));
             game.source_names.push(None);
+            game.groups.push(crate::LevelGroup::Editor);
         }
         // The level being played, unless that's the editor's own or there's unsaved work.
         if !self.started || (Some(game.level_index) != self.slot && !self.unsaved) {
             let i = game.level_index;
-            self.open_level(game, i);
-            // Start where she's standing (in the level that's open, not a Portal map's).
-            if game.source_names[i].is_none() {
+            // Start where she's standing (in the level that's open).
+            if self.open_level(game, i) {
                 let v = game.shot.view;
                 self.cam = FlyCam { pos: v.eye, yaw: v.yaw, pitch: v.pitch, speed: self.cam.speed };
             }
@@ -493,7 +541,7 @@ pub fn read_doc(path: &Path) -> Result<LevelDoc, String> {
 /// A level made from a file each time it's loaded (so saving shows on the next load).
 fn file_level(path: PathBuf) -> crate::source_map::LevelFn {
     Arc::new(move || match read_doc(&path) {
-        Ok(d) => d.build(),
+        Ok(d) => d.build_with(&crate::source_map::scenes()),
         Err(e) => {
             error!("{e}");
             LevelDoc::starter("Broken level file").build()
@@ -501,15 +549,38 @@ fn file_level(path: PathBuf) -> crate::source_map::LevelFn {
     })
 }
 
-/// The level files, after the game's chambers and Portal's maps (startup).
+/// A level file's name, without reading all of it (the game's copies of Portal's maps are
+/// big): its `name:` line.
+fn doc_name(path: &Path) -> String {
+    use std::io::BufRead;
+    let named = std::fs::File::open(path).ok().and_then(|f| {
+        std::io::BufReader::new(f).lines().take(8).map_while(Result::ok).find_map(|l| {
+            let rest = l.trim().strip_prefix("name:")?.trim().trim_end_matches(',');
+            let quoted = rest.strip_prefix('"')?.strip_suffix('"')?;
+            Some(quoted.replace("\\\"", "\"").replace("\\\\", "\\"))
+        })
+    });
+    named.unwrap_or_else(|| read_doc(path).map(|d| d.name).unwrap_or_else(|_| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()))
+}
+
+/// The game's copies of Portal's maps and the level files, after the game's chambers and
+/// Portal's maps (startup).
 pub fn add_levels(mut game: ResMut<Game>, mut ed: ResMut<Editor>) {
     let before = game.levels.len();
+    for (path, map) in crate::source_map::native_files(crate::extracted::find_root().as_deref()) {
+        let name = doc_name(&path);
+        ed.files.push((game.levels.len(), path.clone()));
+        game.levels.push((name, file_level(path)));
+        game.source_names.push(Some(map));
+        game.groups.push(crate::LevelGroup::PortalNative);
+    }
     for path in level_files() {
-        let name = read_doc(&path).map(|d| d.name).unwrap_or_else(|_| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+        let name = doc_name(&path);
         info!("Level {}: {} ({})", game.levels.len(), name, path.display());
         ed.files.push((game.levels.len(), path.clone()));
         game.levels.push((name, file_level(path)));
         game.source_names.push(None);
+        game.groups.push(crate::LevelGroup::Testing);
     }
     // PORTAL_MAP=<n> can start on a level file too.
     if let Some(i) = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).filter(|i| (before..game.levels.len()).contains(i)) {
@@ -764,13 +835,23 @@ fn ray_box(o: Vec3, d: Vec3, b: &Aabb) -> Option<(f32, Vec3)> {
     (near <= far && near > 0.0).then_some((near, n))
 }
 
+/// Whether it's a volume that's only there to be walked into (a trigger: none of its faces
+/// drawn), not something to see.
+fn volume(kind: &Kind) -> bool {
+    match kind {
+        Kind::Entity { brushes, .. } => !brushes.is_empty() && brushes.iter().all(|b| b.faces.iter().all(|f| aperture::brush::tool_material(&f.mat))),
+        _ => false,
+    }
+}
+
 /// The object a ray meets first.
 fn pick(doc: &LevelDoc, o: Vec3, d: Vec3) -> Option<usize> {
     let mut best: Option<(f32, usize)> = None;
     for (i, obj) in doc.objects.iter().enumerate() {
         if let Some((t, _)) = ray_box(o, d, &obj.bounds()) {
-            // Pieces win over the walls round them by a little.
-            let t = if obj.kind.is_box() { t + 0.05 } else { t };
+            // Pieces win over the walls round them by a little; what's seen over a volume
+            // (a trigger) that's round it.
+            let t = if volume(&obj.kind) { t + 1000.0 } else if obj.kind.is_box() || matches!(obj.kind, Kind::Brush(_)) { t + 0.05 } else { t };
             if best.is_none_or(|(bt, _)| t < bt) {
                 best = Some((t, i));
             }
@@ -802,7 +883,13 @@ fn place(doc: &LevelDoc, lib: &Library, pick: Pick, p: Vec3, n: Vec3, look: Vec3
 fn surface(doc: &LevelDoc, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
     let mut best: Option<(f32, Vec3)> = None;
     for obj in &doc.objects {
-        if !matches!(obj.kind, Kind::Block { .. } | Kind::Platform { .. } | Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. }) {
+        let solid = match &obj.kind {
+            Kind::Block { .. } | Kind::Platform { .. } | Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. } => true,
+            // (An angled brush: its box.)
+            Kind::Brush(b) => matches!(b.collision(), aperture::brush::Collision::Solid(_)),
+            _ => false,
+        };
+        if !solid {
             continue;
         }
         if let Some((t, n)) = ray_box(o, d, &obj.bounds()) {
@@ -1021,7 +1108,8 @@ fn interact(
         if let (Some(i), Ok(tf)) = (ed.selected, handles.get(h)) {
             let mode = settings.mode;
             let tf = *tf;
-            if let Some(obj) = ed.doc.objects.get_mut(i) {
+            if i < ed.doc.objects.len() {
+                let obj = &mut ed.doc.objects[i];
                 match mode {
                     TransformGizmoMode::Translate => obj.at = tf.translation,
                     TransformGizmoMode::Scale if obj.kind.is_box() => {
@@ -1029,8 +1117,20 @@ fn interact(
                         obj.size = tf.scale.abs().max(Vec3::splat(0.05));
                     }
                     TransformGizmoMode::Scale => {
-                        if let Kind::MeProp { scale, .. } | Kind::Model { scale, .. } = &mut obj.kind {
-                            *scale = tf.scale.abs().max(Vec3::splat(0.01));
+                        // (A brush, or a brush entity's brushes: scaled from as they were when the
+                        // drag began, about the object's point.)
+                        let k = tf.scale.abs().max(Vec3::splat(0.01));
+                        let was = ed.before_drag.as_ref().and_then(|d| d.objects.get(i)).map(|o| o.kind.clone());
+                        let obj = &mut ed.doc.objects[i];
+                        match (&mut obj.kind, was) {
+                            (Kind::MeProp { scale, .. } | Kind::Model { scale, .. }, _) => *scale = k,
+                            (Kind::Brush(b), Some(Kind::Brush(orig))) => *b = orig.scaled(k),
+                            (Kind::Entity { brushes, .. }, Some(Kind::Entity { brushes: orig, .. })) if brushes.len() == orig.len() => {
+                                for (b, o) in brushes.iter_mut().zip(&orig) {
+                                    *b = o.scaled(k);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     TransformGizmoMode::Rotate => match obj.kind.turns() {
@@ -1211,7 +1311,8 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
         }
     }
     for (i, o) in ed.doc.objects.iter().enumerate().filter(|_| view.markers) {
-        let b = o.bounds();
+        // (Only what has a box drawn works it out: a Portal map's thousands of brushes don't.)
+        let b = if matches!(o.kind, Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } | Kind::Block { .. } | Kind::Decor { .. }) { Aabb::from_center_size(o.at, Vec3::ZERO) } else { o.bounds() };
         match &o.kind {
             Kind::Spawn => {
                 cuboid(&mut gizmos, &b, Color::srgb(0.3, 0.9, 0.45));
@@ -1273,6 +1374,18 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
                 cuboid(&mut gizmos, &end, Color::srgba(0.6, 0.6, 0.7, 0.5));
                 gizmos.line(b.center(), end.center(), Color::srgba(0.6, 0.6, 0.7, 0.5));
             }
+            // Portal's entities: a volume's outline (a trigger's orange), a point entity's
+            // mark in its kind's colour (props and brushes are drawn as they are).
+            Kind::Entity { class, brushes, .. } => {
+                if !brushes.is_empty() {
+                    if volume(&o.kind) {
+                        let c = if class.starts_with("trigger_") { Color::srgba(1.0, 0.55, 0.15, 0.7) } else { Color::srgba(0.75, 0.75, 0.8, 0.5) };
+                        cuboid(&mut gizmos, &o.bounds(), c);
+                    }
+                } else if let Some(c) = entity_color(class) {
+                    gizmos.cube(Transform::from_translation(o.at).with_scale(Vec3::splat(0.25)), c);
+                }
+            }
             Kind::FaithPlate { target, apex, .. } if ed.selected == Some(i) => {
                 // The arc it throws along.
                 let top = o.at.y.max(target.y) + apex;
@@ -1298,6 +1411,24 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
         let b = sel.bounds();
         let grow = Aabb::new(b.min - 0.02, b.max + 0.02);
         cuboid(&mut gizmos, &grow, Color::srgb(1.0, 0.75, 0.1));
+        // A Portal entity's outputs (green, to what they name) and what names it (cyan).
+        let name = sel.name.to_ascii_lowercase();
+        let targets: Vec<String> = sel.outputs.iter().map(|out| out.target.to_ascii_lowercase()).collect();
+        if !targets.is_empty() || !name.is_empty() {
+            let from = b.center();
+            for o in &ed.doc.objects {
+                if std::ptr::eq(o, sel) {
+                    continue;
+                }
+                let lname = o.name.to_ascii_lowercase();
+                if !lname.is_empty() && targets.contains(&lname) {
+                    gizmos.arrow(from, o.bounds().center(), Color::srgb(0.3, 1.0, 0.4));
+                }
+                if !name.is_empty() && o.outputs.iter().any(|out| out.target.eq_ignore_ascii_case(&name)) {
+                    gizmos.arrow(o.bounds().center(), from, Color::srgb(0.3, 0.85, 1.0));
+                }
+            }
+        }
         let sigs: Vec<usize> = sel.kind.drives().into_iter().chain(sel.kind.inputs().map(|i| i.all.clone()).unwrap_or_default()).collect();
         for o in &ed.doc.objects {
             let linked = o.kind.drives().is_some_and(|s| sigs.contains(&s)) || o.kind.inputs().is_some_and(|i| i.all.iter().any(|s| sigs.contains(s)));
@@ -1319,6 +1450,25 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
             arrow(&mut gizmos, g.at, g.dir(), 0.8, green);
         }
     }
+}
+
+/// A point entity's mark's colour, by its kind (none: it's drawn, a prop).
+fn entity_color(class: &str) -> Option<Color> {
+    Some(if class.starts_with("prop_") || class == "env_sprite" || class == "move_rope" || class == "keyframe_rope" {
+        return None;
+    } else if class.starts_with("logic_") || class.starts_with("math_") || class.starts_with("point_") || class == "env_entity_maker" {
+        Color::srgb(1.0, 0.85, 0.2)
+    } else if class.starts_with("light") {
+        Color::srgb(1.0, 0.95, 0.75)
+    } else if class.starts_with("info_") || class.starts_with("path_") {
+        Color::srgb(0.3, 0.9, 0.45)
+    } else if class.starts_with("npc_") || class.starts_with("weapon_") {
+        Color::srgb(1.0, 0.35, 0.3)
+    } else if class.starts_with("ambient_") || class.starts_with("env_soundscape") {
+        Color::srgb(0.6, 0.5, 1.0)
+    } else {
+        Color::srgb(0.4, 0.85, 1.0)
+    })
 }
 
 /// The View menu's choices: what the camera draws (the level's meshes, Faith, the editor's

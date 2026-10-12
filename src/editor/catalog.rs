@@ -2,8 +2,10 @@
 
 use bevy::prelude::*;
 
+use aperture::brush::{box_brush, Brush, Contents};
 use aperture::doc::{Kind, LevelDoc, Object};
 use aperture::{CubeKind, Inputs, Mat, Paint, PortalColor};
+use faith_move::Aabb;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
@@ -14,11 +16,15 @@ pub enum Category {
     Gameplay,
     Lights,
     Parkour,
+    /// Brushes of Portal's materials.
+    PortalBrushes,
+    /// Portal's entities: logic, triggers, moving brushes.
+    PortalLogic,
     Props,
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Lights, Category::Parkour, Category::Props];
+    pub const ALL: [Category; 10] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Lights, Category::Parkour, Category::PortalBrushes, Category::PortalLogic, Category::Props];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -29,6 +35,8 @@ impl Category {
             Category::Gameplay => "Gameplay",
             Category::Lights => "Lights",
             Category::Parkour => "Parkour",
+            Category::PortalBrushes => "Portal brushes",
+            Category::PortalLogic => "Portal logic",
             Category::Props => "Props",
         }
     }
@@ -80,6 +88,26 @@ const fn block(name: &'static str, mat: Mat, size: Vec3, kind: fn() -> Kind) -> 
 }
 
 const P: Vec3 = Vec3::ZERO;
+
+/// How many texture widths a metre Portal's textures show at its usual scale (a 512 texel
+/// texture across 128 units).
+pub const PORTAL_TEXTURE_SCALE: f32 = 1.0 / (128.0 * 0.0254);
+
+/// A box brush of one of Portal's materials (sized where it's placed).
+fn brush(mat: &str, contents: Contents, noportal: bool) -> Kind {
+    Kind::Brush(box_brush(&Aabb::from_center_size(Vec3::ZERO, Vec3::ONE), mat, contents, PORTAL_TEXTURE_SCALE, noportal))
+}
+
+/// One of Portal's point entities, with these keys.
+fn point(class: &str, keys: &[(&str, &str)]) -> Kind {
+    Kind::Entity { class: class.into(), keys: keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), brushes: Vec::new() }
+}
+
+/// One of Portal's brush entities (one box brush of `mat`, sized where it's placed).
+fn brushed(class: &str, keys: &[(&str, &str)], mat: &str, contents: Contents) -> Kind {
+    let Kind::Brush(b) = brush(mat, contents, false) else { unreachable!() };
+    Kind::Entity { class: class.into(), keys: keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), brushes: vec![b] }
+}
 
 pub static CATALOG: &[Entry] = &[
     block("White panels", Mat::White, Vec3::new(2.0, 2.0, 2.0), || Kind::Block { mat: Mat::White }),
@@ -141,6 +169,29 @@ pub static CATALOG: &[Entry] = &[
     e("Barge door", Category::Parkour, Place::Upright, Vec3::new(1.4, 2.2, 0.1), || Kind::BargeDoor, [170, 120, 80], "🚪"),
     e("Barbed wire", Category::Parkour, Place::Box, Vec3::new(2.0, 0.7, 0.4), || Kind::BarbedWire, [150, 150, 150], "〰"),
     e("Soft landing", Category::Parkour, Place::Box, Vec3::new(3.0, 0.5, 3.0), || Kind::SoftPad { solid: true }, [80, 120, 200], "⬛"),
+    e("Portal white wall", Category::PortalBrushes, Place::Box, Vec3::new(3.25, 3.25, 0.4), || brush("plastic/plasticwall001a", Contents::Solid, false), [235, 235, 235], "⬜"),
+    e("Portal concrete floor", Category::PortalBrushes, Place::Box, Vec3::new(3.25, 0.4, 3.25), || brush("concrete/concrete_modular_floor001a", Contents::Solid, false), [190, 190, 185], "▭"),
+    e("Portal black metal", Category::PortalBrushes, Place::Box, Vec3::new(3.25, 3.25, 0.4), || brush("metal/metalwall048b", Contents::Solid, true), [60, 62, 66], "⬛"),
+    e("Portal metal floor", Category::PortalBrushes, Place::Box, Vec3::new(3.25, 0.4, 3.25), || brush("metal/metalwall_bts_005a", Contents::Solid, true), [90, 90, 95], "▭"),
+    e("Portal glass", Category::PortalBrushes, Place::Box, Vec3::new(3.25, 3.25, 0.1), || brush("glass/glasswindow_refract01", Contents::Window, true), [150, 210, 230], "▯"),
+    e("Portal light panel", Category::PortalBrushes, Place::Box, Vec3::new(1.6, 0.1, 1.6), || brush("lights/white009", Contents::Solid, true), [255, 250, 225], "💡"),
+    e("Nodraw", Category::PortalBrushes, Place::Box, Vec3::new(2.0, 2.0, 2.0), || brush("tools/toolsnodraw", Contents::Solid, false), [200, 180, 60], "ND"),
+    e("Player clip", Category::PortalBrushes, Place::Box, Vec3::new(2.0, 3.0, 0.2), || brush("tools/toolsplayerclip", Contents::Clip, true), [150, 90, 200], "CLIP"),
+    e("Relay", Category::PortalLogic, Place::Out(0.5), P, || point("logic_relay", &[]), [255, 215, 60], "⇢"),
+    e("Timer", Category::PortalLogic, Place::Out(0.5), P, || point("logic_timer", &[("RefireTime", "1")]), [255, 215, 60], "⏱"),
+    e("Map start (auto)", Category::PortalLogic, Place::Out(0.5), P, || point("logic_auto", &[]), [255, 215, 60], "▶"),
+    e("Counter", Category::PortalLogic, Place::Out(0.5), P, || point("math_counter", &[("min", "0"), ("max", "2")]), [255, 215, 60], "#"),
+    e("Case", Category::PortalLogic, Place::Out(0.5), P, || point("logic_case", &[]), [255, 215, 60], "⑂"),
+    e("Trigger (once)", Category::PortalLogic, Place::Box, Vec3::new(3.0, 3.0, 3.0), || brushed("trigger_once", &[("spawnflags", "1")], "tools/toolstrigger", Contents::Empty), [255, 140, 40], "⬚"),
+    e("Trigger", Category::PortalLogic, Place::Box, Vec3::new(3.0, 3.0, 3.0), || brushed("trigger_multiple", &[("spawnflags", "1"), ("wait", "1")], "tools/toolstrigger", Contents::Empty), [255, 140, 40], "⬚"),
+    e("Sliding door (brush)", Category::PortalLogic, Place::Upright, Vec3::new(3.25, 3.25, 0.2), || brushed("func_door", &[("movedir", "-90 0 0"), ("speed", "100"), ("wait", "-1")], "metal/metalwall048b", Contents::Solid), [150, 150, 160], "🚪"),
+    e("Toggled wall (brush)", Category::PortalLogic, Place::Box, Vec3::new(3.25, 3.25, 0.4), || brushed("func_brush", &[("Solidity", "0")], "metal/metalwall048b", Contents::Solid), [120, 120, 130], "◫"),
+    e("GLaDOS scene", Category::PortalLogic, Place::Out(0.5), P, || point("logic_choreographed_scene", &[("SceneFile", "")]), [255, 120, 120], "💬"),
+    e("Map light", Category::PortalLogic, Place::Out(0.5), P, || point("light", &[("_light", "255 255 255 200")]), [255, 245, 200], "💡"),
+    e("Map spot light", Category::PortalLogic, Place::Out(0.15), P, || point("light_spot", &[("_light", "255 255 255 400"), ("_cone", "45"), ("pitch", "-90")]), [255, 245, 220], "🔦"),
+    e("Landmark", Category::PortalLogic, Place::Out(0.5), P, || point("info_landmark", &[]), [80, 220, 120], "⚓"),
+    e("Level change", Category::PortalLogic, Place::Box, Vec3::new(3.0, 3.0, 3.0), || brushed("trigger_changelevel", &[("map", ""), ("landmark", "")], "tools/toolstrigger", Contents::Empty), [80, 220, 120], "⇥"),
+    e("Portal gun pickup", Category::PortalLogic, Place::Out(0.6), P, || point("weapon_portalgun", &[("CanFirePortal1", "1"), ("CanFirePortal2", "0")]), [240, 240, 240], "🔫"),
 ];
 
 /// The entry with this name.
@@ -271,13 +322,26 @@ pub fn place(entry: &Entry, doc: &LevelDoc, p: Vec3, n: Vec3, look: Vec3, grid: 
         Kind::Sun { .. } => o.face(flat * 0.6 - Vec3::Y),
         _ => {}
     }
-    if o.kind.is_box() {
+    if o.kind.is_box() || o.size != Vec3::ZERO {
         // Its corner on the grid along the surface.
         let lo = o.at - o.size * 0.5;
         let snapped = snap_along(lo, n, grid);
         o.at += snapped - lo;
     }
+    // A brush (a brush entity's) as big as the box it was placed as.
+    let size = std::mem::take(&mut o.size);
+    match &mut o.kind {
+        Kind::Brush(b) => *b = sized(b, size),
+        Kind::Entity { brushes, .. } if brushes.len() == 1 => brushes[0] = sized(&brushes[0], size),
+        _ => o.size = size,
+    }
     vec![o]
+}
+
+/// A box brush like `b` (its first face's material and texture scale), `size` across.
+fn sized(b: &Brush, size: Vec3) -> Brush {
+    let f = &b.faces[0];
+    box_brush(&Aabb::from_center_size(Vec3::ZERO, size.max(Vec3::splat(0.01))), &f.mat, b.contents, f.u.truncate().length(), f.noportal)
 }
 
 /// A white room 10 x 5 x 10 m inside, floor at `p`.

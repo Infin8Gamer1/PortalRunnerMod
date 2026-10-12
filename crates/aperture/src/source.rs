@@ -74,6 +74,30 @@ pub fn source_turn(pitch: f32, yaw: f32, roll: f32) -> glam::Quat {
     to_ours * r * to_ours.inverse()
 }
 
+/// Our turn as Source's angles (pitch, yaw, roll; degrees): [`source_turn`]'s other way.
+pub fn angles_of(q: glam::Quat) -> Vec3 {
+    let to_ours = glam::Quat::from_mat3(&glam::Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
+    let m = glam::Mat3::from_quat(to_ours.inverse() * q * to_ours);
+    // (Its columns are Source's forward, left and up.)
+    let (f, l, u) = (m.x_axis, m.y_axis, m.z_axis);
+    let flat = (f.x * f.x + f.y * f.y).sqrt();
+    let pitch = (-f.z).atan2(flat);
+    // Facing straight up or down, yaw and roll turn it the same way: no roll, and the yaw that
+    // leaves its left where it is.
+    let (yaw, roll) = if flat < 1e-4 { ((-l.x).atan2(l.y), 0.0) } else { (f.y.atan2(f.x), l.z.atan2(u.z)) };
+    Vec3::new(pitch.to_degrees(), yaw.to_degrees(), roll.to_degrees())
+}
+
+/// Our point in Source's space (inches, Z up), as an entity's key has it.
+pub fn source_point(p: Vec3) -> String {
+    let s = Vec3::new(-p.z, -p.x, p.y) / 0.0254;
+    let f = |x: f32| {
+        let x = (x * 1000.0).round() / 1000.0;
+        if x == 0.0 { "0".to_string() } else { format!("{x}") }
+    };
+    format!("{} {} {}", f(s.x), f(s.y), f(s.z))
+}
+
 /// A direction from Source's pitch and yaw (degrees).
 pub fn direction(pitch: f32, yaw: f32) -> Vec3 {
     let (p, y) = (pitch.to_radians(), yaw.to_radians());
@@ -272,22 +296,26 @@ pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level
 
 /// The same, GLaDOS speaking her scenes' lines.
 pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &str, scenes: &Scenes) -> Level {
+    level_from(name, title, &parse_solids(solids), parse_slopes(solids), &parse_entities(ents), scenes)
+}
+
+/// A map as a level, from its boxes (each brush model's bounds, and its brushes' boxes), its
+/// faces that take portals at a slant, and its entities.
+pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec<(usize, crate::level::Slope)>, ents: &[Entity], scenes: &Scenes) -> Level {
     let mut l = Level::new(title);
     l.source = Some(name.to_string());
-    let boxes = parse_solids(solids);
     let mut model_faces: HashMap<usize, Vec<crate::level::Slope>> = HashMap::new();
-    for (m, f) in parse_slopes(solids) {
+    for (m, f) in slopes {
         if m == 0 {
             l.slopes.push(f);
         } else if f.area() > 1.5 {
             model_faces.entry(m).or_default().push(f);
         }
     }
-    let ents = parse_entities(ents);
     let model_of = |e: &Entity| key(e, "model").and_then(|m| m.strip_prefix('*')).and_then(|m| m.parse::<usize>().ok());
     let bounds: HashMap<usize, Aabb> = boxes.iter().filter(|b| b.kind == "bounds").map(|b| (b.model, b.b)).collect();
     let mut model_boxes: HashMap<usize, Vec<Solid>> = HashMap::new();
-    for b in &boxes {
+    for b in boxes {
         if let Some(mat) = mat_of(&b.kind) {
             model_boxes.entry(b.model).or_default().push(Solid { b: b.b, mat });
         }
@@ -304,7 +332,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         .collect();
     // Entities a template makes: not there until it's told to make them.
     let mut templated = std::collections::HashSet::new();
-    for e in &ents {
+    for e in ents {
         if key(e, "classname") == Some("point_template") {
             for (k, v) in e {
                 if k.to_ascii_lowercase().starts_with("template") {
@@ -332,7 +360,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     };
 
     // The world.
-    for b in &boxes {
+    for b in boxes {
         if b.model != 0 {
             continue;
         }
@@ -366,7 +394,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     let mut spawned = false;
     let mut spawn_gun = Gun::NONE;
 
-    for e in &ents {
+    for e in ents {
         let class = key(e, "classname").unwrap_or("");
         let name = key(e, "targetname").unwrap_or("").to_string();
         let model = model_of(e);
@@ -532,7 +560,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                 let speed = if class == "func_tracktrain" { num(e, "startspeed", 0.0).max(num(e, "speed", 0.0)).max(64.0) * 0.0254 } else { speed };
                 // An elevator's floor is its model's (Portal's round elevator, 2.5 m across):
                 // a slab where that sits.
-                for p in &ents {
+                for p in ents {
                     let rides = key(p, "parentname").is_some_and(|n| !name.is_empty() && n.eq_ignore_ascii_case(&name));
                     if rides && key(p, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/round_elevator_body.mdl")) {
                         if let Some(o) = origin(p) {
@@ -906,6 +934,7 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
     // Falling out of the map: well below its lowest box.
     let lowest = l.solids.iter().map(|s| s.b.min.y).fold(f32::MAX, f32::min);
     l.kill_y = if lowest.is_finite() { lowest - 10.0 } else { -30.0 };
+    l.map_solids = l.solids.len();
     l
 }
 
@@ -919,6 +948,20 @@ mod tests {
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].iter().filter(|(k, _)| k == "OnTrigger").count(), 2);
         assert_eq!(key(&e[1], "classname"), Some("worldspawn"));
+    }
+
+    #[test]
+    fn angles_and_points_go_back_to_source() {
+        for (p, y, r) in [(0.0, 0.0, 0.0), (0.0, 90.0, 0.0), (-30.0, 135.0, 10.0), (45.0, -60.0, -20.0), (0.0, 180.0, 0.0), (-90.0, 0.0, 0.0), (-90.0, 180.0, 0.0), (90.0, 90.0, 0.0), (-90.0, 90.0, 180.0), (90.0, 0.0, 270.0)] {
+            let a = angles_of(source_turn(p, y, r));
+            let back = source_turn(a.x, a.y, a.z);
+            assert!(back.dot(source_turn(p, y, r)).abs() > 1.0 - 1e-6, "{p} {y} {r} came back as {a}");
+        }
+        let a = angles_of(source_turn(0.0, 90.0, 0.0));
+        assert!((a - Vec3::new(0.0, 90.0, 0.0)).length() < 1e-3, "{a}");
+        let p = Vec3::new(1.5, -2.25, 3.0);
+        let v: Vec<f32> = source_point(p).split(' ').map(|x| x.parse().unwrap()).collect();
+        assert!((to_ours(Vec3::new(v[0], v[1], v[2])) - p).length() < 1e-4);
     }
 
     #[test]
