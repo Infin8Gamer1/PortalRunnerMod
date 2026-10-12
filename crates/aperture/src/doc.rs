@@ -10,7 +10,8 @@
 use glam::{EulerRot, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-use faith_move::Aabb;
+use faith_move::climb::Ladder;
+use faith_move::{Aabb, Fixture};
 
 use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, MoverDef, Paint, PresetPortal, Sig, Solid, NO_MODEL};
 use crate::portal::PortalColor;
@@ -123,6 +124,23 @@ pub enum Kind {
     Portal { color: PortalColor },
     /// Indicator lights from here along `points` (from here), lit with `sig`.
     Wire { sig: Sig, points: Vec<Vec3> },
+    /// A zipline from here (its high end) down to here + `to`.
+    ZipLine { to: Vec3 },
+    /// A swing bar from here to here + `to`.
+    SwingPole { to: Vec3 },
+    /// A balance beam along the centre of its top, from here to here + `to`; with `solid`, the
+    /// beam itself (a black box under the line), else it's a block of its own.
+    Beam { to: Vec3, #[serde(default)] solid: bool },
+    /// Box: a door Faith barges or kicks open, swinging away from the way it faces.
+    BargeDoor,
+    /// Box: barbed wire (she stumbles in it).
+    BarbedWire,
+    /// Box: a soft landing (mattress, cardboard); with `solid`, the pad itself, else it marks
+    /// the top of a block.
+    SoftPad { #[serde(default)] solid: bool },
+    /// A ladder (or drainpipe) on a wall: its foot here, on the wall's face, facing out of the
+    /// wall; she climbs out `height` up.
+    Ladder { height: f32, #[serde(default)] pipe: bool, #[serde(default = "yes")] exit: bool },
     /// A Mirror's Edge static mesh, standing here, turned `yaw`; solid in the box `solid` (from
     /// here, not turned), which is drawn instead when the game isn't installed.
     MeProp { package: String, mesh: String, #[serde(default = "one")] scale: f32, #[serde(default)] solid: Option<(Vec3, Vec3)> },
@@ -149,7 +167,20 @@ impl Kind {
     pub fn is_box(&self) -> bool {
         matches!(
             self,
-            Kind::Block { .. } | Kind::Decor { .. } | Kind::Cut | Kind::Checkpoint { .. } | Kind::Exit | Kind::Hint { .. } | Kind::Door { .. } | Kind::Fizzler { .. } | Kind::Painted { .. } | Kind::Goo | Kind::Platform { .. }
+            Kind::Block { .. }
+                | Kind::Decor { .. }
+                | Kind::Cut
+                | Kind::Checkpoint { .. }
+                | Kind::Exit
+                | Kind::Hint { .. }
+                | Kind::Door { .. }
+                | Kind::Fizzler { .. }
+                | Kind::Painted { .. }
+                | Kind::Goo
+                | Kind::Platform { .. }
+                | Kind::BargeDoor
+                | Kind::BarbedWire
+                | Kind::SoftPad { .. }
         )
     }
 
@@ -158,7 +189,7 @@ impl Kind {
     pub fn turns(&self) -> Option<bool> {
         match self {
             Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } => Some(true),
-            Kind::Spawn | Kind::Turret | Kind::MeProp { .. } | Kind::Checkpoint { .. } => Some(false),
+            Kind::Spawn | Kind::Turret | Kind::MeProp { .. } | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(false),
             _ => None,
         }
     }
@@ -194,6 +225,13 @@ impl Kind {
             Kind::Platform { inputs, .. } => format!("Platform {}", inputs_label(inputs)),
             Kind::Portal { color } => format!("{color:?} portal"),
             Kind::Wire { sig, .. } => format!("Wire {sig}"),
+            Kind::ZipLine { .. } => "Zipline".into(),
+            Kind::SwingPole { .. } => "Swing pole".into(),
+            Kind::Beam { .. } => "Balance beam".into(),
+            Kind::BargeDoor => "Barge door".into(),
+            Kind::BarbedWire => "Barbed wire".into(),
+            Kind::SoftPad { .. } => "Soft landing".into(),
+            Kind::Ladder { pipe, .. } => if *pipe { "Drainpipe" } else { "Ladder" }.into(),
             Kind::MeProp { mesh, .. } => mesh.clone(),
         }
     }
@@ -223,6 +261,13 @@ impl Kind {
     }
 }
 
+/// A balance beam's own box: 30 cm wide and deep, under the line along its top.
+fn beam_box(at: Vec3, to: Vec3) -> Aabb {
+    let (a, b) = (at, at + to);
+    let w = Vec3::new(0.15, 0.0, 0.15);
+    Aabb::new(a.min(b) - w - Vec3::Y * 0.3, a.max(b) + w)
+}
+
 fn inputs_label(i: &Inputs) -> String {
     if i.all.is_empty() {
         return String::new();
@@ -240,13 +285,20 @@ impl Object {
         Object { kind, at, size, yaw: 0.0, pitch: 0.0 }
     }
 
+    pub fn with_size(mut self, size: Vec3) -> Self {
+        self.size = size;
+        self
+    }
+
     pub fn rotation(&self) -> Quat {
         Quat::from_euler(EulerRot::YXZ, self.yaw.to_radians(), self.pitch.to_radians(), 0.0)
     }
 
-    /// The way it faces.
+    /// The way it faces (exactly along an axis when it's meant to be: no rounding noise).
     pub fn dir(&self) -> Vec3 {
-        self.rotation() * Vec3::NEG_Z
+        let d = self.rotation() * Vec3::NEG_Z;
+        let d = Vec3::select(d.abs().cmplt(Vec3::splat(1e-6)), Vec3::ZERO, d);
+        d.normalize()
     }
 
     /// Turn it to face `dir`.
@@ -285,6 +337,17 @@ impl Object {
                     b = Aabb::new(b.min.min(q - 0.1), b.max.max(q + 0.1));
                 }
                 b
+            }
+            Kind::ZipLine { to } | Kind::SwingPole { to } => {
+                let (a, b) = (self.at, self.at + *to);
+                Aabb::new(a.min(b) - 0.1, a.max(b) + 0.1)
+            }
+            Kind::Beam { to, .. } => beam_box(self.at, *to),
+            Kind::Ladder { height, .. } => {
+                let n = self.dir();
+                let side = Vec3::Y.cross(n).normalize_or(Vec3::X);
+                let (lo, hi) = (self.at - side.abs() * 0.3, self.at + side.abs() * 0.3 + n * 0.3 + Vec3::Y * *height);
+                Aabb::new(lo.min(hi), lo.max(hi))
             }
             Kind::MeProp { solid: Some((lo, hi)), .. } => Aabb::new(self.at + *lo, self.at + *hi),
             Kind::MeProp { .. } => up(1.0, 1.0),
@@ -346,6 +409,8 @@ impl LevelDoc {
             match &o.kind {
                 Kind::Block { mat } => l.solids.push(Solid { b: o.bounds(), mat: *mat }),
                 Kind::MeProp { solid: Some(_), .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
+                Kind::Beam { solid: true, .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Black }),
+                Kind::SoftPad { solid: true } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
                 _ => {}
             }
         }
@@ -441,6 +506,15 @@ impl LevelDoc {
                     let pts: Vec<[f32; 3]> = std::iter::once(at).chain(points.iter().map(|p| at + *p)).map(|p| p.to_array()).collect();
                     l.wire(*sig, &pts);
                 }
+                Kind::ZipLine { to } => l.fixtures.push(Fixture::ZipLine { a: at, b: at + *to }),
+                Kind::SwingPole { to } => l.fixtures.push(Fixture::SwingPole { a: at, b: at + *to }),
+                Kind::Beam { to, .. } => l.fixtures.push(Fixture::Beam { a: at, b: at + *to }),
+                Kind::BargeDoor => l.fixtures.push(Fixture::Door { b: o.bounds(), n: -o.dir() }),
+                Kind::BarbedWire => l.fixtures.push(Fixture::BarbedWire { b: o.bounds() }),
+                Kind::SoftPad { .. } => l.fixtures.push(Fixture::SoftPad { b: o.bounds() }),
+                Kind::Ladder { height, pipe, exit } => {
+                    l.fixtures.push(Fixture::Ladder(Ladder { base: at, top: at.y + *height, normal: o.dir(), pipe: *pipe, exit: *exit }));
+                }
                 Kind::MeProp { package, mesh, scale, solid } => {
                     let stand_in = solid.map(|_| o.bounds());
                     l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, yaw: o.yaw.to_radians(), scale: *scale, stand_in });
@@ -461,7 +535,7 @@ impl LevelDoc {
         d.kill_y = l.kill_y;
         d.blue = l.gun.blue;
         d.orange = l.gun.orange;
-        let mut skipped = l.fixtures.len() + l.slopes.len() + l.lights.len();
+        let mut skipped = l.slopes.len() + l.lights.len();
         let boxed = |kind: Kind, b: &Aabb| Object::sized(kind, b.center(), b.size());
         let facing = |kind: Kind, at: Vec3, dir: Vec3| {
             let mut o = Object::new(kind, at);
@@ -486,6 +560,19 @@ impl LevelDoc {
         }
         if let Some(b) = &l.exit {
             push(&mut d, boxed(Kind::Exit, b));
+        }
+        for f in &l.fixtures {
+            let o = match f {
+                Fixture::ZipLine { a, b } => Object::new(Kind::ZipLine { to: *b - *a }, *a),
+                Fixture::SwingPole { a, b } => Object::new(Kind::SwingPole { to: *b - *a }, *a),
+                // (Its beam is one of the level's blocks already.)
+                Fixture::Beam { a, b } => Object::new(Kind::Beam { to: *b - *a, solid: false }, *a),
+                Fixture::Door { b, n } => facing(Kind::BargeDoor, b.center(), -*n).with_size(b.size()),
+                Fixture::BarbedWire { b } => boxed(Kind::BarbedWire, b),
+                Fixture::SoftPad { b } => boxed(Kind::SoftPad { solid: false }, b),
+                Fixture::Ladder(lad) => facing(Kind::Ladder { height: lad.top - lad.base.y, pipe: lad.pipe, exit: lad.exit }, lad.base, lad.normal),
+            };
+            push(&mut d, o);
         }
         for (b, text) in &l.hints {
             push(&mut d, boxed(Kind::Hint { text: text.to_string() }, b));
@@ -571,6 +658,9 @@ mod tests {
             let built = back.build();
             assert_eq!(built.solids.len(), level.solids.len(), "{name}: solids");
             assert_eq!(built.checkpoints.len(), level.checkpoints.len(), "{name}: checkpoints");
+            // (To the millimetre: a box's corners come back through its centre and size.)
+            let mm = |f: &[Fixture]| format!("{f:.3?}").replace("-0.000", "0.000");
+            assert_eq!(mm(&built.fixtures), mm(&level.fixtures), "{name}: fixtures");
             let spawn = (built.checkpoints[0].spawn - level.checkpoints[0].spawn).length();
             assert!(spawn < 1e-4, "{name}: spawn moved {spawn}");
             let movers = level.items.iter().filter(|i| matches!(i, Item::Mover(m) if m.model != NO_MODEL || m.boxes.len() != 1 || m.path.len() != 2)).count();

@@ -12,11 +12,12 @@ pub enum Category {
     Light,
     Gel,
     Gameplay,
+    Parkour,
     Props,
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Props];
+    pub const ALL: [Category; 7] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Parkour, Category::Props];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -25,6 +26,7 @@ impl Category {
             Category::Light => "Lasers & bridges",
             Category::Gel => "Gel",
             Category::Gameplay => "Gameplay",
+            Category::Parkour => "Parkour",
             Category::Props => "Mirror's Edge props",
         }
     }
@@ -134,6 +136,14 @@ pub static CATALOG: &[Entry] = &[
     e("Blue portal", Category::Gameplay, Place::Wall, P, || Kind::Portal { color: PortalColor::Blue }, [40, 140, 255], "⚪"),
     e("Orange portal", Category::Gameplay, Place::Wall, P, || Kind::Portal { color: PortalColor::Orange }, [255, 140, 30], "⚪"),
     e("Indicator wire", Category::Gameplay, Place::Out(0.01), P, || Kind::Wire { sig: 0, points: vec![Vec3::new(0.0, 0.0, -3.0)] }, [90, 160, 255], "⚡"),
+    e("Zipline", Category::Parkour, Place::Out(3.0), P, || Kind::ZipLine { to: Vec3::ZERO }, [230, 170, 60], "↘"),
+    e("Swing pole", Category::Parkour, Place::Out(2.4), P, || Kind::SwingPole { to: Vec3::ZERO }, [200, 200, 210], "➖"),
+    e("Balance beam", Category::Parkour, Place::Out(0.3), P, || Kind::Beam { to: Vec3::ZERO, solid: true }, [60, 60, 66], "➖"),
+    e("Ladder", Category::Parkour, Place::Wall, P, || Kind::Ladder { height: 4.0, pipe: false, exit: true }, [200, 60, 50], "⬆"),
+    e("Drainpipe", Category::Parkour, Place::Wall, P, || Kind::Ladder { height: 4.0, pipe: true, exit: true }, [150, 150, 160], "⬆"),
+    e("Barge door", Category::Parkour, Place::Upright, Vec3::new(1.4, 2.2, 0.1), || Kind::BargeDoor, [170, 120, 80], "🚪"),
+    e("Barbed wire", Category::Parkour, Place::Box, Vec3::new(2.0, 0.7, 0.4), || Kind::BarbedWire, [150, 150, 150], "〰"),
+    e("Soft landing", Category::Parkour, Place::Box, Vec3::new(3.0, 0.5, 3.0), || Kind::SoftPad { solid: true }, [80, 120, 200], "⬛"),
     prop("AC unit", || me("P_Ventilation", "S_ACUnit_05", [-0.44, 0.0, -0.42], [0.3, 1.44, 0.44])),
     prop("Air vent", || me("P_Ventilation", "S_AirVent_01", [-0.13, 0.0, -0.13], [0.13, 1.12, 0.13])),
     prop("Rooftop AC", || me("P_Ventilation", "S_ACRooftop_01", [-2.6, 0.0, -0.04], [0.04, 4.55, 4.24])),
@@ -248,6 +258,27 @@ pub fn place(entry: &Entry, doc: &LevelDoc, p: Vec3, n: Vec3, look: Vec3, grid: 
         Place::Out(d) => Object::new(kind, p + n * d),
         Place::Room => return room(p, grid),
     };
+    // Lines run the way the camera looks (a swing bar across it), from where it's dropped.
+    let flat = Vec3::new(look.x, 0.0, look.z).normalize_or(Vec3::NEG_Z);
+    let across = Vec3::Y.cross(flat);
+    match &mut o.kind {
+        Kind::ZipLine { to } => *to = flat * 10.0 - Vec3::Y * 2.5,
+        Kind::SwingPole { to } => {
+            *to = across * 3.0;
+            o.at -= across * 1.5;
+        }
+        Kind::Beam { to, .. } => *to = flat * 4.0,
+        Kind::BargeDoor => {
+            // Faith comes at it from the camera's side.
+            o.face(flat);
+            o.yaw = snap(o.yaw, 90.0);
+        }
+        Kind::Ladder { .. } => {
+            o.face(Vec3::new(n.x, 0.0, n.z));
+            o.pitch = 0.0;
+        }
+        _ => {}
+    }
     if o.kind.is_box() {
         // Its corner on the grid along the surface.
         let lo = o.at - o.size * 0.5;

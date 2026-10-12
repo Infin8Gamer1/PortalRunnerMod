@@ -67,6 +67,7 @@ pub fn draw(
     let ed = &mut *ed;
     let mut root = egui::Ui::new(ctx.clone(), "editor".into(), egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(ctx.viewport_rect()));
     ed.panels.clear();
+    ed.tiles.clear();
 
     // ---- toolbar
     let top = egui::Panel::top("editor_toolbar").show(&mut root, |ui| {
@@ -215,9 +216,10 @@ fn content(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, thumbs: &Has
         }
     });
     ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search"));
-    ui.weak("Drag into the view. Double-click: in front of you.");
+    ui.weak("Drag into the view, or click and then click in the view. Double-click: in front of you.");
     ui.separator();
     let search = state.search.to_lowercase();
+    let panel = ui.clip_rect();
     egui::ScrollArea::vertical().id_salt("content").show(ui, |ui| {
         for (ci, cat) in Category::ALL.iter().enumerate() {
             if state.category.is_some_and(|c| c != ci) {
@@ -234,14 +236,30 @@ fn content(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, thumbs: &Has
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                     for &i in row {
-                        let r = ui.dnd_drag_source(egui::Id::new(("catalog", i)), i, |ui| tile(ui, i, thumbs)).response;
+                        let armed = ed.armed == Some(i);
+                        let (rect, r) = ui.allocate_exact_size(TILE, egui::Sense::click_and_drag());
+                        tile(ui.painter(), rect, i, thumbs, armed);
                         if r.dragged() {
                             ed.drop = Some(i);
-                        }
-                        if r.double_clicked() {
+                            ed.armed = None;
+                            // Over the panel, the tile goes with the cursor; over the view, the
+                            // outline of where it would land shows instead.
+                            if let Some(p) = ui.ctx().pointer_latest_pos().filter(|p| panel.contains(*p)) {
+                                let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dragged tile")));
+                                tile(&painter, egui::Rect::from_center_size(p, TILE), i, thumbs, false);
+                            }
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        } else if r.double_clicked() {
+                            ed.armed = None;
                             ed.place_in_view(i);
+                        } else if r.clicked() {
+                            ed.armed = if armed { None } else { Some(i) };
+                            if ed.armed.is_some() {
+                                ed.status = format!("Click in the view to place {} (Shift: more than one, Esc: stop)", CATALOG[i].name);
+                            }
                         }
-                        r.on_hover_text(CATALOG[i].name);
+                        ed.tiles.push((i, r.rect));
+                        r.on_hover_cursor(egui::CursorIcon::Grab);
                     }
                 });
             }
@@ -250,13 +268,16 @@ fn content(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, thumbs: &Has
     });
 }
 
+const TILE: egui::Vec2 = egui::vec2(72.0, 88.0);
+
 /// A content browser tile: the material, or a coloured glyph, with the name under it.
-fn tile(ui: &mut egui::Ui, i: usize, thumbs: &HashMap<Mat, Thumb>) {
+fn tile(p: &egui::Painter, rect: egui::Rect, i: usize, thumbs: &HashMap<Mat, Thumb>, armed: bool) {
     let e = &CATALOG[i];
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 88.0), egui::Sense::hover());
-    let p = ui.painter();
     let img = egui::Rect::from_min_size(rect.min, egui::vec2(72.0, 64.0));
     p.rect_filled(rect, 4.0, egui::Color32::from_gray(38));
+    if armed {
+        p.rect_stroke(rect, 4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 190, 30)), egui::StrokeKind::Inside);
+    }
     let [r, g, b] = e.color;
     match e.mat.and_then(|m| thumbs.get(&m)) {
         Some(Thumb::Image(id)) => {
@@ -605,7 +626,36 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
                 ui.end_row();
             }
         }
-        Kind::Cut | Kind::Spawn | Kind::Exit | Kind::Lamp | Kind::Goo | Kind::Turret => {}
+        Kind::ZipLine { to } | Kind::SwingPole { to } => {
+            ui.label("To (from here)");
+            vec3(ui, to, 0.05);
+            ui.end_row();
+        }
+        Kind::Beam { to, solid } => {
+            ui.label("Along (from here)");
+            vec3(ui, to, 0.05);
+            ui.end_row();
+            ui.label("Its own beam");
+            ui.checkbox(solid, "").on_hover_text("Off: it runs along the top of a block");
+            ui.end_row();
+        }
+        Kind::SoftPad { solid } => {
+            ui.label("Its own pad");
+            ui.checkbox(solid, "").on_hover_text("Off: it marks the top of a block as soft");
+            ui.end_row();
+        }
+        Kind::Ladder { height, pipe, exit } => {
+            ui.label("Height");
+            ui.add(egui::DragValue::new(height).speed(0.05).range(0.5..=60.0).suffix(" m"));
+            ui.end_row();
+            ui.label("Drainpipe");
+            ui.checkbox(pipe, "");
+            ui.end_row();
+            ui.label("Climb out at the top");
+            ui.checkbox(exit, "");
+            ui.end_row();
+        }
+        Kind::Cut | Kind::Spawn | Kind::Exit | Kind::Lamp | Kind::Goo | Kind::Turret | Kind::BargeDoor | Kind::BarbedWire => {}
     }
     pick
 }

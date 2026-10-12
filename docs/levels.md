@@ -5,14 +5,19 @@ are made, each with a test that plays it through).
 
 ## The level editor
 
-**F4** in the game opens the editor (`PORTAL_EDIT=1` starts in it). The first time, it opens on
-a copy of the chamber you're in (Portal's own maps can't be edited: a new room instead).
+**F4** in the game, or **Level editor** in the main or pause menu, opens the editor
+(`PORTAL_EDIT=1` starts in it). The first time, it opens on a copy of the chamber you're in
+(Portal's own maps can't be edited: a new room instead). **New level** in the menus starts a
+new one: a white room with lamps and a start.
 
 - **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
-  (start, checkpoints, exit, hints, goo, platforms, lamps, portals, indicator wires) and
-  Mirror's Edge props. Drag one into the view: it lands on the surface under the cursor
+  (start, checkpoints, exit, hints, goo, platforms, lamps, portals, indicator wires), parkour
+  (ziplines, swing poles, balance beams, ladders, drainpipes, barge doors, barbed wire, soft
+  landings) and Mirror's Edge props. Drag one into the view, or click it and then click in
+  the view (Shift-click to place several; Esc stops): it lands on the surface under the cursor
   (a block rests on it, a laser or catcher faces out of it, a door stands across the way you're
-  looking), snapped to the grid. Double-click puts it where the middle of the view is.
+  looking, a ladder's foot goes down to the floor), snapped to the grid, and a green outline
+  shows where before you let go. Double-click puts it where the middle of the view is.
 - **The view**: hold the right mouse button to look round, with WASD to fly, Q/E down and up,
   Shift faster, the wheel for speed (without the button, the wheel moves in and out). Click
   to select; **W/E/R** move, rotate and scale it with the gizmo (scale sizes boxes). **F**
@@ -26,6 +31,11 @@ a copy of the chamber you're in (Portal's own maps can't be edited: a new room i
   comes back to the editor.
 - **File**: a new room or an empty level, open a level file, import any of the game's chambers
   (as its boxes and pieces, after the cuts), save (**Ctrl+S**).
+
+What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits
+on what it's dropped on, a default size, and the object it makes. Adding a kind of thing the
+level format doesn't have yet means a new `Kind` in `aperture::doc` (and how it builds into a
+`Level`), its fields in the details panel (`src/editor/ui.rs`), then its catalog entry.
 
 New sources (buttons, catchers, relays) get a signal of their own, and a door, bridge or
 platform placed after one listens to it: drop a button, then a door, and the button opens it.

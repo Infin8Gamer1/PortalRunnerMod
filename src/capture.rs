@@ -77,6 +77,21 @@ enum Act {
     TurretsOff,
     /// Do something in the level editor.
     Edit(fn(&mut crate::editor::Editor, &mut crate::menu::Menu)),
+    /// Work the mouse, as if by hand.
+    Mouse(Hand),
+}
+
+/// What the mouse does.
+#[derive(Clone, Copy)]
+enum Hand {
+    /// Go to the middle of the editor's content browser tile with this name.
+    ToTile(&'static str),
+    /// Go here, as a fraction of the window's size.
+    To(f32, f32),
+    Press,
+    Release,
+    /// Roll the wheel.
+    Scroll(f32),
 }
 
 fn fwd() -> MoveInput {
@@ -1102,6 +1117,85 @@ fn script(name: &str) -> Vec<Act> {
             Wait(90),
             Shot("editor_04_playing"),
         ],
+        // The level editor by mouse (PORTAL_EDIT=1): a cube dragged in from the content
+        // browser, a button clicked and then placed, the wheel over a panel and over the view,
+        // and the gizmo on a piece off to the side with the camera turned.
+        "editormouse" => {
+            vec![
+                Wait(90),
+                Edit(|ed, _| {
+                    ed.open(aperture::doc::LevelDoc::starter("Mouse"), None);
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+                }),
+                Wait(60),
+                Mouse(Hand::ToTile("Storage cube")),
+                Wait(2),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::To(0.3, 0.5)),
+                Wait(2),
+                Mouse(Hand::To(0.45, 0.6)),
+                Wait(2),
+                Mouse(Hand::To(0.55, 0.65)),
+                Wait(6),
+                Shot("mouse_01_dragging"),
+                Mouse(Hand::Release),
+                Wait(20),
+                Shot("mouse_02_dropped"),
+                Mouse(Hand::ToTile("Floor button")),
+                Wait(2),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::Release),
+                Wait(3),
+                Mouse(Hand::To(0.4, 0.75)),
+                Wait(6),
+                Shot("mouse_03_armed"),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::Release),
+                Wait(20),
+                Shot("mouse_04_placed"),
+                Edit(|ed, _| println!("capture: camera before scrolling {}", ed.cam.pos)),
+                Mouse(Hand::ToTile("Glass")),
+                Wait(2),
+                Mouse(Hand::Scroll(-3.0)),
+                Wait(5),
+                Edit(|ed, _| println!("capture: camera after scrolling over a panel {}", ed.cam.pos)),
+                Mouse(Hand::To(0.5, 0.5)),
+                Wait(2),
+                Mouse(Hand::Scroll(-3.0)),
+                Wait(5),
+                Edit(|ed, _| println!("capture: camera after scrolling over the view {}", ed.cam.pos)),
+                Edit(|ed, _| {
+                    ed.selected = ed.doc.objects.iter().position(|o| matches!(o.kind, aperture::doc::Kind::Cube { .. }));
+                    // The cube well off to the side of the view, the camera turned and tipped.
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(-2.0, 3.0, -2.0), yaw: 0.1, pitch: -0.45, speed: 8.0 };
+                }),
+                Wait(20),
+                Shot("mouse_05_gizmo_turned"),
+                Edit(|ed, _| println!("capture: objects {:?}", ed.doc.objects.iter().map(|o| o.kind.label()).collect::<Vec<_>>())),
+                // Mirror's Edge's parkour pieces: a ladder on the left wall, a zipline, a swing
+                // bar and a balance beam.
+                Edit(|ed, _| {
+                    use crate::editor::catalog::find;
+                    let look = Vec3::NEG_Z;
+                    ed.add(find("Ladder"), Vec3::new(-6.0, 1.0, -6.0), Vec3::X, look);
+                    ed.add(find("Zipline"), Vec3::new(4.0, 0.0, -3.0), Vec3::Y, look);
+                    ed.add(find("Swing pole"), Vec3::new(0.0, 0.0, -12.0), Vec3::Y, look);
+                    ed.add(find("Balance beam"), Vec3::new(-3.0, 0.0, -10.0), Vec3::Y, look);
+                    ed.selected = None;
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.5, -0.8), yaw: 0.0, pitch: -0.3, speed: 8.0 };
+                }),
+                Wait(30),
+                Shot("mouse_06_parkour"),
+                Edit(|ed, menu| ed.play(menu)),
+                Wait(30),
+                Menu(crate::menu::Screen::Title),
+                Wait(20),
+                Shot("mouse_07_title_menu"),
+            ]
+        }
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -1333,6 +1427,7 @@ pub fn run(
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     mut menu: ResMut<crate::menu::Menu>,
     mut editor: ResMut<crate::editor::Editor>,
+    mut mouse: MouseHand,
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
@@ -1429,6 +1524,7 @@ pub fn run(
         }
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Edit(f) => f(&mut editor, &mut menu),
+        Act::Mouse(m) => mouse.act(*m, &editor),
         Act::AtLight(k, of) => {
             let lights = &game.sim.level.lights;
             if !lights.is_empty() {
@@ -1490,4 +1586,54 @@ pub fn run(
         }
     }
     cap.step += 1;
+}
+
+/// The mouse, worked by a script: the messages the window system would send.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct MouseHand<'w, 's> {
+    windows: Query<'w, 's, (Entity, &'static mut Window), With<bevy::window::PrimaryWindow>>,
+    moved: MessageWriter<'w, bevy::window::CursorMoved>,
+    buttons: MessageWriter<'w, bevy::input::mouse::MouseButtonInput>,
+    wheel: MessageWriter<'w, bevy::input::mouse::MouseWheel>,
+    /// (What egui reads.)
+    events: MessageWriter<'w, bevy::window::WindowEvent>,
+}
+
+impl MouseHand<'_, '_> {
+    fn act(&mut self, m: Hand, editor: &crate::editor::Editor) {
+        use bevy::input::mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel};
+        use bevy::input::ButtonState;
+        let Ok((window, mut w)) = self.windows.single_mut() else { return };
+        let to = match m {
+            Hand::ToTile(name) => {
+                let i = crate::editor::catalog::find(name);
+                let Some((_, r)) = editor.tiles.iter().find(|(j, _)| *j == i) else {
+                    println!("capture: no tile {name} on screen");
+                    return;
+                };
+                Some(Vec2::new(r.center().x, r.center().y))
+            }
+            Hand::To(x, y) => Some(Vec2::new(x * w.width(), y * w.height())),
+            _ => None,
+        };
+        if let Some(p) = to {
+            let delta = w.cursor_position().map(|c| p - c);
+            w.set_cursor_position(Some(p));
+            let m = bevy::window::CursorMoved { window, position: p, delta };
+            self.moved.write(m.clone());
+            self.events.write(m.into());
+        }
+        let button = |state| MouseButtonInput { button: MouseButton::Left, state, window };
+        match m {
+            Hand::Press | Hand::Release => {
+                let b = button(if matches!(m, Hand::Press) { ButtonState::Pressed } else { ButtonState::Released });
+                self.buttons.write(b);
+                self.events.write(b.into());
+            }
+            Hand::Scroll(y) => {
+                self.wheel.write(MouseWheel { unit: MouseScrollUnit::Line, x: 0.0, y, window, phase: bevy::input::touch::TouchPhase::Moved });
+            }
+            _ => {}
+        }
+    }
 }

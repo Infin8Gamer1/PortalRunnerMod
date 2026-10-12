@@ -40,14 +40,14 @@ impl Plugin for EditorPlugin {
             .init_resource::<Editor>()
             .configure_sets(PostUpdate, TransformGizmoSystems.run_if(editing))
             .add_systems(Startup, setup)
-            .add_systems(Update, (gizmo_cameras, forward_gizmos))
+            .add_systems(Update, forward_gizmos)
             .add_systems(EguiPrimaryContextPass, ui::draw.run_if(editing));
     }
 }
 
 /// The editor's systems, run after the game's each frame (the camera is the editor's).
 pub fn systems() -> impl IntoScheduleConfigs<bevy::ecs::system::ScheduleSystem, ()> {
-    (toggle, fly, interact, rebuild, overlays, hide_game_views).chain()
+    (toggle, fly, interact, rebuild, overlays, hide_game_views, gizmo_cameras).chain()
 }
 
 pub fn editing(ed: Res<Editor>) -> bool {
@@ -96,6 +96,8 @@ pub struct Editor {
     pub status: String,
     /// The catalog entry being dragged out of the content browser.
     pub drop: Option<usize>,
+    /// The catalog entry clicked in the content browser: the next click in the view places it.
+    pub armed: Option<usize>,
     /// Where it would land.
     ghost: Vec<Object>,
     /// The next click in the view sets the selected faith plate's target.
@@ -108,6 +110,8 @@ pub struct Editor {
     pub save_name: String,
     /// Where the panels are (in the window's logical pixels), for drops.
     pub panels: Vec<egui::Rect>,
+    /// Where each content browser tile is (for the capture scripts to find).
+    pub tiles: Vec<(usize, egui::Rect)>,
     /// The proxy the gizmo moves.
     handle: Option<Entity>,
     ui_camera: Option<Entity>,
@@ -137,11 +141,13 @@ impl Default for Editor {
             grid: 0.25,
             status: String::new(),
             drop: None,
+            armed: None,
             ghost: Vec::new(),
             pick_target: false,
             before_drag: None,
             before_edit: None,
             panels: Vec::new(),
+            tiles: Vec::new(),
             handle: None,
             ui_camera: None,
             ui_sink: None,
@@ -228,7 +234,7 @@ impl Editor {
     /// Place a catalog entry at `p` on a surface facing `n`, seen looking along `look`.
     pub fn add(&mut self, entry: usize, p: Vec3, n: Vec3, look: Vec3) {
         let e = &catalog::CATALOG[entry];
-        let objs = catalog::place(e, &self.doc, p, n, look, self.grid);
+        let objs = place(&self.doc, entry, p, n, look, self.grid);
         let count = objs.len();
         self.change(|doc| doc.objects.extend(objs));
         self.selected = Some(self.doc.objects.len() - 1);
@@ -440,16 +446,20 @@ fn setup(mut commands: Commands, mut ed: ResMut<Editor>) {
 fn gizmo_cameras(
     mut commands: Commands,
     ed: Res<Editor>,
-    player: Query<(Entity, Ref<Msaa>, Option<&CameraMainTextureUsages>, Option<&Exposure>, Has<TransformGizmoCamera>), With<PlayerCamera>>,
-    mut cams: Query<(Entity, &RenderLayers, &mut Camera, Has<crate::graphics::OverlayCamera>), (With<Camera3d>, Without<PlayerCamera>)>,
+    player: Query<(Entity, Ref<Msaa>, Option<&CameraMainTextureUsages>, Option<&Exposure>, Has<TransformGizmoCamera>, &Projection), With<PlayerCamera>>,
+    mut cams: Query<(Entity, &RenderLayers, &mut Camera, &mut Projection, Has<crate::graphics::OverlayCamera>), (With<Camera3d>, Without<PlayerCamera>)>,
 ) {
-    let Ok((player, msaa, usages, exposure, marked)) = player.single() else { return };
+    let Ok((player, msaa, usages, exposure, marked, proj)) = player.single() else { return };
     if !marked {
         commands.entity(player).insert(TransformGizmoCamera);
     }
-    for (e, layers, mut cam, tagged) in &mut cams {
+    for (e, layers, mut cam, mut gizmo_proj, tagged) in &mut cams {
         if *layers != RenderLayers::layer(15) {
             continue;
+        }
+        // The same view as the player's camera, or the gizmo drifts off what it's on.
+        if ed.active {
+            *gizmo_proj = proj.clone();
         }
         if !tagged || msaa.is_changed() {
             let mut ec = commands.entity(e);
@@ -479,14 +489,33 @@ fn typing(contexts: &mut EguiContexts) -> bool {
     contexts.ctx_mut().is_ok_and(|c| c.egui_wants_keyboard_input())
 }
 
-fn over_ui(contexts: &mut EguiContexts) -> bool {
-    contexts.ctx_mut().is_ok_and(|c| c.is_pointer_over_egui() || c.egui_is_using_pointer())
+/// Whether the pointer is over a panel, or a menu or popup open over the view. (Not egui's own
+/// `is_pointer_over_egui`: the panels are on its background layer, which it doesn't count.)
+fn over_ui(ed: &Editor, window: &Window, contexts: &mut EguiContexts) -> bool {
+    let Some(c) = window.cursor_position() else { return false };
+    let pos = egui::pos2(c.x, c.y);
+    // (Tooltips aside: a tile being dragged is drawn on their layer.)
+    ed.over_panels(window) || contexts.ctx_mut().is_ok_and(|ctx| ctx.layer_id_at(pos).is_some_and(|l| !matches!(l.order, egui::Order::Background | egui::Order::Tooltip)))
 }
 
 /// F4: into the editor, or out to play what's being edited; F5: play.
 fn toggle(mut ed: ResMut<Editor>, keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, mut menu: ResMut<menu::Menu>, mut contexts: EguiContexts) {
     if std::mem::take(&mut ed.enter_next) {
         ed.enter(&mut game, &mut menu);
+        return;
+    }
+    // From the menu: the editor, on this level or a new one.
+    if let Some(new) = menu.edit.take() {
+        let unsaved = ed.started && ed.unsaved;
+        ed.enter(&mut game, &mut menu);
+        if new {
+            if unsaved {
+                ed.status = "There are unsaved changes: save them, then File > New room".into();
+            } else {
+                ed.open(LevelDoc::starter("Untitled"), None);
+                ed.status = "A new level: drag things in from Content, then File > Save".into();
+            }
+        }
         return;
     }
     if ed.active && typing(&mut contexts) {
@@ -523,7 +552,7 @@ fn fly(
         ed.looking = false;
         return;
     }
-    let over = over_ui(&mut contexts);
+    let over = windows.single().is_ok_and(|w| over_ui(&ed, w, &mut contexts));
     let dt = time.delta_secs().min(0.1);
     ed.looking = mouse.pressed(MouseButton::Right) && (ed.looking || (mouse.just_pressed(MouseButton::Right) && !over));
     if let Ok(mut c) = cursor.single_mut() {
@@ -640,6 +669,20 @@ fn pick(doc: &LevelDoc, o: Vec3, d: Vec3) -> Option<usize> {
     best.map(|(_, i)| i)
 }
 
+/// A catalog entry's objects where it's dropped; a ladder's foot goes down to the floor.
+fn place(doc: &LevelDoc, entry: usize, p: Vec3, n: Vec3, look: Vec3, grid: f32) -> Vec<Object> {
+    let mut objs = catalog::place(&catalog::CATALOG[entry], doc, p, n, look, grid);
+    for o in &mut objs {
+        if let Kind::Ladder { .. } = o.kind {
+            let (floor, up) = surface(doc, o.at + o.dir() * 0.3, Vec3::NEG_Y);
+            if up.y > 0.5 {
+                o.at.y = floor.y;
+            }
+        }
+    }
+    objs
+}
+
 /// Where a ray meets the level's surfaces (its blocks, else the ground), and the normal there.
 fn surface(doc: &LevelDoc, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
     let mut best: Option<(f32, Vec3)> = None;
@@ -682,9 +725,9 @@ fn interact(
         }
         return;
     }
-    let over = over_ui(&mut contexts);
-    let typing = typing(&mut contexts);
     let Ok(window) = windows.single() else { return };
+    let over = over_ui(&ed, window, &mut contexts);
+    let typing = typing(&mut contexts);
     let ray = cursor_ray(window, &ed.cam);
     let look = Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0) * Vec3::NEG_Z;
     settings.snap_translate = (ed.grid > 0.0).then_some(ed.grid);
@@ -693,17 +736,33 @@ fn interact(
     // ---- dragging something in from the browser
     // (egui holds the pointer while a tile's dragged: what matters is whether it's over a panel.)
     ed.ghost.clear();
+    let mut placed = false;
     if let Some(entry) = ed.drop {
         if let Some((o, d)) = ray.filter(|_| !ed.over_panels(window)) {
             let (p, n) = surface(&ed.doc, o, d);
             if mouse.pressed(MouseButton::Left) {
-                ed.ghost = catalog::place(&catalog::CATALOG[entry], &ed.doc, p, n, look, ed.grid);
+                ed.ghost = place(&ed.doc, entry, p, n, look, ed.grid);
             } else {
                 ed.add(entry, p, n, look);
             }
         }
         if !mouse.pressed(MouseButton::Left) {
             ed.drop = None;
+        }
+    } else if let Some(entry) = ed.armed {
+        // A tile clicked: it follows the cursor, and a click in the view puts it there.
+        if let Some((o, d)) = ray.filter(|_| !over) {
+            let (p, n) = surface(&ed.doc, o, d);
+            if mouse.just_pressed(MouseButton::Left) && gizmo.hovered_axis.is_none() {
+                ed.add(entry, p, n, look);
+                placed = true;
+                // Shift: place more of them.
+                if !(keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)) {
+                    ed.armed = None;
+                }
+            } else {
+                ed.ghost = place(&ed.doc, entry, p, n, look, ed.grid);
+            }
         }
     }
 
@@ -754,7 +813,7 @@ fn interact(
     }
 
     // ---- clicking in the view
-    if mouse.just_pressed(MouseButton::Left) && !over && ed.drop.is_none() && gizmo.hovered_axis.is_none() && !gizmo.active {
+    if mouse.just_pressed(MouseButton::Left) && !over && ed.drop.is_none() && ed.armed.is_none() && !placed && gizmo.hovered_axis.is_none() && !gizmo.active {
         if let Some((o, d)) = ray {
             if ed.pick_target {
                 ed.pick_target = false;
@@ -814,7 +873,11 @@ fn interact(
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
-        ed.selected = None;
+        if ed.armed.is_some() {
+            ed.armed = None;
+        } else {
+            ed.selected = None;
+        }
         ed.pick_target = false;
     }
 }
@@ -865,6 +928,16 @@ fn overlays(ed: Res<Editor>, mut gizmos: Gizmos) {
                 let pts: Vec<Vec3> = std::iter::once(o.at).chain(points.iter().map(|p| o.at + *p)).collect();
                 gizmos.linestrip(pts, Color::srgba(0.4, 0.6, 1.0, 0.8));
             }
+            Kind::ZipLine { to } => gizmos.line(o.at, o.at + *to, Color::srgb(0.95, 0.65, 0.2)),
+            Kind::SwingPole { to } | Kind::Beam { to, .. } => gizmos.line(o.at, o.at + *to, Color::srgba(0.9, 0.9, 0.95, 0.7)),
+            Kind::Ladder { height, .. } => {
+                let side = Vec3::Y.cross(o.dir()) * 0.25;
+                for s in [side, -side] {
+                    gizmos.line(o.at + s, o.at + s + Vec3::Y * *height, Color::srgb(0.9, 0.35, 0.25));
+                }
+                arrow(&mut gizmos, o.at + Vec3::Y * 0.5, o.dir(), 0.6, Color::srgb(0.9, 0.35, 0.25));
+            }
+            Kind::BarbedWire | Kind::SoftPad { solid: false } => cuboid(&mut gizmos, &b, Color::srgba(0.8, 0.8, 0.8, 0.5)),
             Kind::Platform { travel, .. } => {
                 let end = Aabb::new(b.min + *travel, b.max + *travel);
                 cuboid(&mut gizmos, &end, Color::srgba(0.6, 0.6, 0.7, 0.5));
@@ -904,8 +977,17 @@ fn overlays(ed: Res<Editor>, mut gizmos: Gizmos) {
             }
         }
     }
+    // (Bright: it's often over white panels.)
+    let green = Color::srgb(0.2, 1.0, 0.35);
     for g in &ed.ghost {
-        cuboid(&mut gizmos, &g.bounds(), Color::srgba(1.0, 1.0, 1.0, 0.8));
+        let b = g.bounds();
+        cuboid(&mut gizmos, &b, green);
+        let (lo, hi) = (b.min, Vec3::new(b.max.x, b.min.y, b.max.z));
+        gizmos.line(lo, hi, green);
+        gizmos.line(Vec3::new(lo.x, lo.y, hi.z), Vec3::new(hi.x, lo.y, lo.z), green);
+        if g.kind.turns() == Some(true) {
+            arrow(&mut gizmos, g.at, g.dir(), 0.8, green);
+        }
     }
 }
 

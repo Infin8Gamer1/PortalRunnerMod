@@ -184,8 +184,9 @@ VSync off.)
 
 ## Making levels
 
-**F4** opens the level editor on the chamber you're in: fly round it, drag walls, floors,
-puzzle pieces and Mirror's Edge props in from the content browser, move, turn and size them
+**F4** (or **Level editor** in the menu) opens the level editor on the chamber you're in, and
+**New level** in the menu starts a new one: fly round it, drag walls, floors, puzzle pieces,
+parkour pieces and Mirror's Edge props in from the content browser, move, turn and size them
 with the gizmo, wire buttons to doors in the details panel, and press **F5** to play it. Levels
 made there are saved as `.ron` files in `levels/` and listed after the game's chambers.
 

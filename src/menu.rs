@@ -34,6 +34,8 @@ pub struct Menu {
     /// The screens to go back to.
     back: Vec<Screen>,
     dirty: bool,
+    /// Open the level editor: on a new level (`true`) or the one being played.
+    pub edit: Option<bool>,
 }
 
 impl Menu {
@@ -55,6 +57,13 @@ impl Menu {
         self.dirty = true;
     }
 
+    /// Close, for the level editor (the mouse stays free).
+    fn close_to_editor(&mut self, new: bool) {
+        self.close();
+        self.start = false;
+        self.edit = Some(new);
+    }
+
     fn close(&mut self) {
         self.open = false;
         self.just_closed = true;
@@ -74,6 +83,8 @@ enum Action {
     Settings,
     Controls,
     MainMenu,
+    Edit,
+    NewLevel,
     Quit,
     Back,
     Load(usize),
@@ -140,6 +151,8 @@ fn items(menu: &Menu, game: &Game, progress: &Progress) -> Vec<Item> {
             vec![
                 a(if first { "Play" } else { "Continue" }, Action::Play),
                 a("Chambers", Action::Chambers),
+                a("New level", Action::NewLevel),
+                a("Level editor", Action::Edit),
                 a("Settings", Action::Settings),
                 a("Controls", Action::Controls),
                 a("Quit", Action::Quit),
@@ -149,6 +162,8 @@ fn items(menu: &Menu, game: &Game, progress: &Progress) -> Vec<Item> {
             a("Resume", Action::Resume),
             a("Restart chamber", Action::Restart),
             a("Chambers", Action::Chambers),
+            a("Edit this level", Action::Edit),
+            a("New level", Action::NewLevel),
             a("Settings", Action::Settings),
             a("Controls", Action::Controls),
             a("Main menu", Action::MainMenu),
@@ -178,7 +193,7 @@ pub fn setup(mut commands: Commands) {
         GlobalZIndex(10),
         if skip { Visibility::Hidden } else { Visibility::Visible },
     ));
-    commands.insert_resource(Menu { open: !skip, screen: Screen::Title, title: !skip, selected: 0, start: false, just_closed: false, back: vec![], dirty: true });
+    commands.insert_resource(Menu { open: !skip, screen: Screen::Title, title: !skip, selected: 0, start: false, just_closed: false, back: vec![], dirty: true, edit: None });
 }
 
 /// Rebuild the menu's contents when the screen changes.
@@ -440,6 +455,8 @@ pub fn update(
                 menu.title = true;
                 menu.go(Screen::Title, false);
             }
+            Some(Action::Edit) => menu.close_to_editor(false),
+            Some(Action::NewLevel) => menu.close_to_editor(true),
             Some(Action::Quit) => {
                 exit.write(AppExit::Success);
             }
