@@ -476,6 +476,16 @@ fn main() {
         }
         return;
     }
+    // `--check-props`: why any of the props library's materials have no texture.
+    if args.iter().any(|a| a == "--check-props") {
+        check_props(&games);
+        return;
+    }
+    // `--only-props`: just the props library for the level editor (`--props` redoes it all).
+    if args.iter().any(|a| a == "--only-props") {
+        prop_library(&games, &out, args.iter().any(|a| a == "--props"));
+        return;
+    }
     // One model, without rewriting the other extracted files. The pellet launcher's bind
     // pose isn't its closed mouth; `--only-launchers` writes it resting on `@idle_closed`.
     if args.iter().any(|a| a == "--only-launchers") {
@@ -740,8 +750,185 @@ fn main() {
             None => println!("  no scenes.image: GLaDOS stays quiet"),
         }
     }
+    // Every prop of both games, for the level editor (`--no-props` skips it: it's big).
+    if !args.iter().any(|a| a == "--no-props") {
+        prop_library(&games, &out, args.iter().any(|a| a == "--props"));
+    }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));
+    }
+}
+
+/// The level editor's props: every model under `models/props*` of Portal 2, and of Portal
+/// (its own, and the Half-Life 2 ones its maps use), as `props/<game>/<path under models/>.glb`,
+/// and `props/index.tsv`: a line each, `game<TAB>path<TAB>min x y z<TAB>max x y z<TAB>textured
+/// materials, of how many` (its bounds, ours). Models already written are kept (unless `redo`); a few threads at once.
+fn prop_library(games: &[Game], out: &Path, redo: bool) {
+    let dir = out.join("props");
+    let index_path = dir.join("index.tsv");
+    // What's there already, with its bounds.
+    let mut known: HashMap<(String, String), String> = HashMap::new();
+    if let Ok(text) = std::fs::read_to_string(&index_path) {
+        for line in text.lines() {
+            let mut f = line.splitn(3, '\t');
+            if let (Some(g), Some(p), Some(rest)) = (f.next(), f.next(), f.next()) {
+                known.insert((g.to_string(), p.to_string()), rest.to_string());
+            }
+        }
+    }
+    let mut jobs: Vec<(&Game, String)> = Vec::new();
+    for g in games {
+        let mut paths: Vec<String> = Vec::new();
+        // Portal's own archive (the first), not Half-Life 2's: of those, what its maps use.
+        let own = if g.name == "portal" { &g.vpks[..1.min(g.vpks.len())] } else { &g.vpks[..] };
+        for v in own {
+            paths.extend(v.paths().filter(|p| p.starts_with("models/props") && p.ends_with(".mdl")).map(String::from));
+        }
+        if g.name == "portal" {
+            let maps = out.join("models/map");
+            let mut stack = vec![maps.clone()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.extension().is_some_and(|x| x == "glb") {
+                        let rel = p.strip_prefix(&maps).unwrap().with_extension("");
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        if rel.starts_with("props") && !rel.contains("_skin") {
+                            paths.push(format!("models/{rel}.mdl"));
+                        }
+                    }
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        jobs.extend(paths.into_iter().map(|p| (g, p)));
+    }
+    let total = jobs.len();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(Vec::new());
+    let failed = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(12);
+    println!("  props for the level editor: {total} models ({threads} threads)");
+    // (Quiet about the models the reader panics on: they're counted.)
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((g, mdl)) = jobs.get(i) else { break };
+                let rel = mdl.trim_start_matches("models/").trim_end_matches(".mdl").to_string();
+                let file = dir.join(g.name).join(format!("{rel}.glb"));
+                if !redo && file.exists() {
+                    if let Some(b) = known.get(&(g.name.to_string(), rel.clone())) {
+                        results.lock().unwrap().push(format!("{}\t{rel}\t{b}", g.name));
+                        continue;
+                    }
+                }
+                // (Some models trip the reader up: a panic is one model lost, not the lot.)
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert_model_bounds(g, games, mdl, 0, 0.0, &[]))).unwrap_or_else(|_| Err("unreadable".into()));
+                match made {
+                    Ok((bytes, lo, hi, (textured, total))) => {
+                        let _ = std::fs::create_dir_all(file.parent().unwrap());
+                        if std::fs::write(&file, bytes).is_ok() {
+                            let v = |v: glam::Vec3| format!("{:.3} {:.3} {:.3}", v.x, v.y, v.z);
+                            results.lock().unwrap().push(format!("{}\t{rel}\t{}\t{}\t{textured} {total}", g.name, v(lo), v(hi)));
+                        }
+                    }
+                    Err(_) => {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                if i % 200 == 0 {
+                    println!("    {i} of {total}");
+                }
+            });
+        }
+    });
+    std::panic::set_hook(hook);
+    let mut lines = results.into_inner().unwrap();
+    lines.sort();
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(&index_path, lines.join("\n") + "\n").expect("write props index");
+    println!("  {} props ({} couldn't be read)", lines.len(), failed.into_inner());
+}
+
+/// Every material of the props library's models: how many get a texture, and why the rest
+/// don't (by reason, with a few of each).
+fn check_props(games: &[Game]) {
+    let mut reasons: HashMap<String, Vec<String>> = HashMap::new();
+    let (mut total, mut good) = (0, 0);
+    for g in games {
+        let own = if g.name == "portal" { &g.vpks[..1.min(g.vpks.len())] } else { &g.vpks[..] };
+        let mut paths: Vec<String> = own.iter().flat_map(|v| v.paths().filter(|p| p.starts_with("models/props") && p.ends_with(".mdl")).map(String::from)).collect();
+        paths.sort();
+        paths.dedup();
+        for mdl_path in paths {
+            let read = |p: &str| g.read(p).or_else(|| games.iter().find_map(|o| o.read(p)));
+            let stem = mdl_path.trim_end_matches(".mdl");
+            let (Some(mdl), Some(vvd), Some(vtx)) = (read(&mdl_path), read(&format!("{stem}.vvd")), read(&format!("{stem}.dx90.vtx"))) else { continue };
+            let parsed = std::panic::catch_unwind(|| -> Option<vmdl::Model> { Some(vmdl::Model::from_parts(vmdl::Mdl::read(&mdl).ok()?, vmdl::Vtx::read(&vtx).ok()?, vmdl::Vvd::read(&vvd).ok()?)) });
+            let Ok(Some(model)) = parsed else { continue };
+            let Some(skin) = model.skin_tables().next() else { continue };
+            let mut seen = std::collections::HashSet::new();
+            for mesh in model.meshes() {
+                let m = mesh.material_index();
+                if !seen.insert(m) {
+                    continue;
+                }
+                let Some(info) = skin.texture_info(m) else { continue };
+                let name = info.name.replace('\\', "/").to_ascii_lowercase();
+                total += 1;
+                match material_problem(&read, &name, &info.search_paths) {
+                    None => good += 1,
+                    Some(why) => reasons.entry(why).or_default().push(format!("{} {mdl_path}: {name}", g.name)),
+                }
+            }
+        }
+    }
+    println!("{good} of {total} materials have a texture");
+    let mut list: Vec<_> = reasons.into_iter().collect();
+    list.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
+    for (why, v) in list {
+        println!("  {} {why}", v.len());
+        for e in v.iter().take(6) {
+            println!("      {e}");
+        }
+    }
+}
+
+/// Why a material gets no texture from [`read_material`] (none: it does).
+fn material_problem(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_paths: &[String]) -> Option<String> {
+    let mut vmt_text = None;
+    for sp in search_paths.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()).chain(std::iter::once(String::new())) {
+        if let Some(vmt) = read(&format!("materials/{}{}.vmt", sp, name).replace("//", "/")) {
+            vmt_text = Some(String::from_utf8_lossy(&vmt).into_owned());
+            break;
+        }
+    }
+    let Some(mut text) = vmt_text else { return Some("no .vmt".into()) };
+    for _ in 0..3 {
+        if vmt_base_texture(&text).is_some() {
+            break;
+        }
+        let Some(inc) = vmt_value(&text, "include") else { break };
+        match read(&inc.replace('\\', "/").to_ascii_lowercase()) {
+            Some(b) => text = format!("{}\n{}", String::from_utf8_lossy(&b), text),
+            None => return Some("patch's include not found".into()),
+        }
+    }
+    let Some(base) = vmt_base_texture(&text) else {
+        return Some(format!("no $basetexture ({})", vmt_shader(&text)));
+    };
+    match base_image(read, &text, name) {
+        Some(_) => None,
+        None => match read(&format!("materials/{base}.vtf")) {
+            None => Some(format!("its .vtf not found ({base})")),
+            Some(vtf) => Some(format!("can't decode: {}", decode_vtf(&vtf).err().unwrap_or_default())),
+        },
     }
 }
 
@@ -896,24 +1083,56 @@ fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_path
     // blade out of every cage light.
     let additive = flag("$additive");
     let mut texture_png = None;
-    if let Some(base) = vmt_base_texture(&text) {
-        if let Some(vtf) = read(&format!("materials/{base}.vtf")) {
-            if let Ok(mut img) = decode_vtf(&vtf) {
-                if additive {
-                    for p in img.pixels_mut() {
-                        let bright = p[0].max(p[1]).max(p[2]) as u32;
-                        p[3] = (bright * p[3] as u32 / 255) as u8;
-                    }
-                }
-                let mut png = Vec::new();
-                if image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {
-                    texture_png = Some(png);
-                }
+    if let Some((_, mut img)) = base_image(read, &text, name) {
+        if additive {
+            for p in img.pixels_mut() {
+                let bright = p[0].max(p[1]).max(p[2]) as u32;
+                p[3] = (bright * p[3] as u32 / 255) as u8;
             }
+        }
+        let mut png = Vec::new();
+        if image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {
+            texture_png = Some(png);
         }
     }
     let emissive_png = texture_png.clone().filter(|_| additive);
-    glb::Material { texture_png, blend: flag("$translucent") || additive, mask: flag("$alphatest"), emissive_png, emissive_strength: 1.0, ..Default::default() }
+    // Without a texture: glass (a refracting material) is see-through, tinted as it tints;
+    // a black one is black.
+    let (color, glass) = match (texture_png.is_some(), vmt_shader(&text).as_str()) {
+        (false, "refract") => {
+            let tint = vmt_value(&text, "$refracttint").map(|v| parse_color(&v)).unwrap_or([0.85, 0.9, 0.95]);
+            (Some([tint[0], tint[1], tint[2], 0.3]), true)
+        }
+        (false, "black") => (Some([0.0, 0.0, 0.0, 1.0]), false),
+        _ => (None, false),
+    };
+    glb::Material { texture_png, color, blend: flag("$translucent") || additive || glass, mask: flag("$alphatest"), emissive_png, emissive_strength: 1.0, ..Default::default() }
+}
+
+/// A material's shader (the VMT's first word, lower-case).
+fn vmt_shader(text: &str) -> String {
+    text.trim_start().split(|c: char| c.is_whitespace() || c == '{').next().unwrap_or("").trim_matches('"').to_ascii_lowercase()
+}
+
+/// A VMT colour: `[r g b]` (0-1) or `{r g b}` (0-255), as linear 0-1.
+fn parse_color(v: &str) -> [f32; 3] {
+    let n: Vec<f32> = v.split(|c: char| c.is_whitespace() || "[]{}\"".contains(c)).filter_map(|x| x.parse().ok()).collect();
+    let scale = if v.contains('{') { 1.0 / 255.0 } else { 1.0 };
+    let c = |i: usize| (n.get(i).copied().unwrap_or(1.0) * scale).clamp(0.0, 1.0);
+    [c(0), c(1), c(2)]
+}
+
+/// A material's base texture (its path, decoded): the one it names, else the same with
+/// underscores for spaces, else one named as the material is (Portal 2 ships a few that name
+/// files it hasn't got).
+fn base_image(read: &dyn Fn(&str) -> Option<Vec<u8>>, text: &str, name: &str) -> Option<(String, image::RgbaImage)> {
+    let base = vmt_base_texture(text)?;
+    let mut tries = vec![base.clone(), base.replace(' ', "_"), name.to_string()];
+    tries.dedup();
+    tries.into_iter().find_map(|b| {
+        let vtf = read(&format!("materials/{b}.vtf"))?;
+        decode_vtf(&vtf).ok().map(|img| (b, img))
+    })
 }
 
 /// A VMT key's value (case-insensitive, quoted or not), anywhere in the file.
@@ -990,6 +1209,12 @@ fn root_turn(model: &vmdl::Model, p: [f32; 3]) -> [f32; 3] {
 /// Convert a model (with skin `skin`) to glTF: a part per bone that moves any of it, and the
 /// animations `anims` names ((the MDL's name, ours)) as keyframes on those parts.
 fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32, anims: &[(&str, &str)]) -> Result<Vec<u8>, String> {
+    convert_model_bounds(game, all, mdl_path, skin, turn_deg, anims).map(|(bytes, ..)| bytes)
+}
+
+/// [`convert_model`], the model's bounds (ours, as it rests), and how many of its materials
+/// have a look of their own (a texture, or glass's or black's colour) of how many.
+fn convert_model_bounds(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32, anims: &[(&str, &str)]) -> Result<(Vec<u8>, glam::Vec3, glam::Vec3, (usize, usize)), String> {
     // Source space to ours (see `convert_point`), then the extra turn.
     let to_ours = glam::Quat::from_rotation_z(turn_deg.to_radians()) * glam::Quat::from_mat3(&glam::Mat3::from_cols(glam::Vec3::NEG_Z, glam::Vec3::NEG_X, glam::Vec3::Y));
     let convert = |p: glam::Vec3| to_ours * (p * 0.0254);
@@ -1130,5 +1355,17 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
             glb::Part { name: names.get(b).cloned().unwrap_or_else(|| format!("bone{b}")), pivot: pivot_of(b).to_array(), verts, prims }
         })
         .collect();
-    Ok(glb::write(&out, &materials, &clips))
+    let (mut lo, mut hi) = (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN));
+    for part in &out {
+        for v in &part.verts {
+            let p = glam::Vec3::from(part.pivot) + glam::Vec3::from(v.0);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+    }
+    if lo.x > hi.x {
+        return Err("no vertices".into());
+    }
+    let looks = (materials.iter().filter(|m| m.texture_png.is_some() || m.color.is_some()).count(), materials.len());
+    Ok((glb::write(&out, &materials, &clips), lo, hi, looks))
 }

@@ -1,5 +1,86 @@
 # Making levels
 
+There are two ways: the level editor in the game, and Rust code (how the game's own chambers
+are made, each with a test that plays it through).
+
+## The level editor
+
+**F4** in the game, or **Level editor** in the main or pause menu, opens the editor
+(`PORTAL_EDIT=1` starts in it). The first time, it opens on a copy of the chamber you're in
+(Portal's own maps can't be edited: a new room instead). **New level** in the menus starts a
+new one: a white room with lamps and a start.
+
+- **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
+  (start, checkpoints, exit, hints, goo, platforms, portals, indicator wires), lights (point
+  and spot lights, a sun, ceiling lamps), parkour
+  (ziplines, swing poles, balance beams, ladders, drainpipes, barge doors, barbed wire, soft
+  landings), and **Props**: every prop model of Portal and Portal 2 (extracted into `props/`)
+  and every static mesh in Mirror's Edge's prop packages (from your install), by game and
+  folder, with pictures made the first time their tiles show (kept under `thumbs/`). A prop
+  lands with its front to the camera, resting on the surface, and is solid (a block round it)
+  unless you untick that. Props turn about all three axes and scale along each (the details
+  panel, or the gizmo: **R** scales along the prop's own axes; the toolbar's World/Local
+  switches what moving and turning go along). The details panel says how many of a prop's
+  materials have a texture (or, for glass and plain-coloured materials, a colour). Drag one into the view, or click it and then click in
+  the view (Shift-click to place several; Esc stops): it lands on the surface under the cursor
+  (a block rests on it, a laser or catcher faces out of it, a door stands across the way you're
+  looking, a ladder's foot goes down to the floor), snapped to the grid, and a green outline
+  shows where before you let go. Double-click puts it where the middle of the view is.
+- **The view**: hold the right mouse button to look round, with WASD to fly, Q/E down and up,
+  Shift faster, the wheel for speed (without the button, the wheel moves in and out). Click
+  to select; **W/E/R** move, rotate and scale it with the gizmo (scale sizes boxes). **F**
+  focuses on it, **Del** deletes it, **Ctrl+D** duplicates it, **Ctrl+Z / Ctrl+Y** undo and
+  redo. Something with a second point (a zipline's or swing pole's other end, a beam's, where a
+  faith plate lands, where a platform travels to) gets a second, smaller handle there: drag its
+  arrows to move that end along an axis, or its ring to move it about. Lines show what the
+  selection is wired to; outlines show what the game doesn't draw
+  (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
+- **Lights**: a point light shines all round, a spot light in a cone the way it faces (turn it
+  with the gizmo); each has a colour, an intensity in lumens (the ceiling lamps are 900,000), a
+  range, a size (bigger is softer) and shadows on or off. A sun replaces the level's (its
+  colour, brightness in lux, and the way it faces: where it stands doesn't matter). The
+  level's settings (nothing selected) can set its own ambient (fill) light. With ray-traced
+  lighting, which lights by what glows, each light is also a glowing bulb only the traced
+  light sees (a spot light's in a short black tube that shapes its cone).
+- **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
+  coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
+  unlit; and ray-traced lighting, on or off straight away (the game's setting too).
+- **Outliner** and **details** (right): every object; the selected one's position, size,
+  facing and settings (material, signal, what turns it on, cube kind, gel...). With nothing
+  selected, the level's name, intro line, indoors or out, and which portals the gun shoots.
+- **Play** (**F5**, or **F4**) plays the level from its start with the real simulation; **F4**
+  comes back to the editor.
+- **File**: a new room or an empty level, open a level file, import any of the game's chambers
+  (as its boxes and pieces, after the cuts), save (**Ctrl+S**).
+
+What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits
+on what it's dropped on, a default size, and the object it makes. Adding a kind of thing the
+level format doesn't have yet means a new `Kind` in `aperture::doc` (and how it builds into a
+`Level`), its fields in the details panel (`src/editor/ui.rs`), then its catalog entry.
+
+New sources (buttons, catchers, relays) get a signal of their own, and a door, bridge or
+platform placed after one listens to it: drop a button, then a door, and the button opens it.
+
+Levels are saved as RON in `levels/` (`PORTAL_LEVELS` to put them elsewhere): a list of objects,
+each a kind, where it is (a box's centre, a piece's point, as the builder methods below take),
+a box's size, and which way it faces (degrees). They're read when they're loaded, so a saved
+change shows the next time the level loads. `aperture::doc` has the format.
+
+```ron
+(
+    name: "My chamber",
+    objects: [
+        (kind: Block(mat: White), at: (0.0, -0.5, -8.0), size: (14.0, 1.0, 18.0)),
+        (kind: Spawn, at: (0.0, 0.0, -2.0)),
+        (kind: FloorButton(sig: 0, cube_only: false), at: (-3.0, 0.0, -6.0)),
+        (kind: Door(inputs: (all: [0])), at: (0.0, 1.5, -16.1), size: (3.0, 3.0, 0.2)),
+        (kind: Laser(inputs: ()), at: (-6.0, 2.0, -12.0), yaw: -90.0),
+    ],
+)
+```
+
+## In Rust
+
 A level is a function returning an `aperture::Level`, built with its builder methods. Add a
 file under `crates/aperture/src/levels/`, write the function, and list it in
 `levels::all()` (in `levels/mod.rs`): the game cycles through that list in order.

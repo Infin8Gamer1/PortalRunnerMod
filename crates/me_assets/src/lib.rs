@@ -86,6 +86,10 @@ pub struct MaterialSlot {
     pub normal: Option<Rgba>,
     /// Specular intensity map (grey-scale in practice).
     pub specular: Option<Rgba>,
+    /// Without a diffuse map: the colour its constants give it (linear RGB), if any, and
+    /// whether it glows (it has an emissive input).
+    pub color: Option<[f32; 3]>,
+    pub emissive: bool,
 }
 
 pub struct FaithArms {
@@ -250,21 +254,62 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
         .iter()
         .map(|&m| {
             let material = pkg.object_name(m).to_string();
-            let textures = all_textures(pkgs, pkg, m);
-            let read = |pick: &dyn Fn(&str) -> bool| {
-                let (tp, ti) = textures.iter().find(|(name, _, _)| pick(name)).map(|(_, p, i)| (p.clone(), *i))?;
-                texture::read_texture_export(&tp, &tp.exports[ti], max_texture).ok()
-            };
-            let mut diffuse = read(&|n| n.contains("diffuse") || n.ends_with("_d") || n.contains("_d_") || n.ends_with("_c"));
-            let normal = read(&|n| n.contains("normal") || n.ends_with("_n"));
-            let specular = read(&|n| (n.contains("spec") || n.ends_with("_s")) && !n.contains("tile"));
+            // (Flat textures only: a cube map is a reflection, not a look.)
+            let textures: Vec<_> = all_textures(pkgs, pkg, m).into_iter().filter(|(_, tp, ti)| tp.class_name(&tp.exports[*ti]) == "Texture2D").collect();
+            // The first of the textures `pick` takes that can be read.
+            let read = |pick: &dyn Fn(&str) -> bool| textures.iter().filter(|(name, _, _)| pick(name)).find_map(|(_, tp, ti)| texture::read_texture_export(tp, &tp.exports[*ti], max_texture).ok());
+            // A texture's suffix (`T_BoatLip_01_DA`: `da`).
+            let suffix = |n: &str| n.rsplit(' ').next().unwrap_or(n).rsplit('_').next().unwrap_or("").to_string();
+            let is_normal = |n: &str| n.contains("normal") || suffix(n) == "n";
+            let is_spec = |n: &str| (n.contains("spec") || suffix(n) == "s") && !n.contains("tile");
+            let mut diffuse = read(&|n| n.contains("diffuse") || matches!(suffix(n).as_str(), "d" | "da" | "dm" | "ds" | "c" | "col" | "diff" | "albedo") || n.contains("_d_"));
+            let normal = read(&is_normal);
+            let specular = read(&is_spec);
             if diffuse.is_none() {
-                // Anything that isn't a normal or specular map.
-                diffuse = read(&|n| !(n.contains("normal") || n.ends_with("_n") || n.contains("spec") || n.ends_with("_s") || n.contains("mask")));
+                // Anything that isn't a normal, specular, mask or emissive map.
+                diffuse = read(&|n| !(is_normal(n) || is_spec(n) || n.contains("mask") || matches!(suffix(n).as_str(), "m" | "e" | "em")));
             }
-            MaterialSlot { material, diffuse, normal, specular }
+            let (color, emissive) = if diffuse.is_none() { constant_color(pkgs, pkg, m) } else { (None, false) };
+            MaterialSlot { material, diffuse, normal, specular, color, emissive }
         })
         .collect()
+}
+
+/// A plain material's colour from its constants (its first Constant3Vector), and whether it
+/// has an emissive input, following an instance to its parent.
+fn constant_color(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> (Option<[f32; 3]>, bool) {
+    let mut next = Some((pkg.clone(), m));
+    for _ in 0..4 {
+        let Some((p, obj)) = next.take() else { break };
+        let Some((mp, mi)) = pkgs.resolve(&p, obj) else { break };
+        let Ok(props) = props::Props::read(&mp, &mp.exports[mi]) else { break };
+        if mp.class_name(&mp.exports[mi]) == "Material" {
+            let emissive = props.get("EmissiveColor").is_some();
+            let me_index = mi as i32 + 1;
+            let kids = || mp.exports.iter().filter(|e| e.outer == me_index);
+            let constant = kids().filter(|e| mp.class_name(e) == "MaterialExpressionConstant3Vector").find_map(|e| {
+                let c = props::Props::read(&mp, e).ok()?;
+                Some([c.f32(&mp, "R").unwrap_or(0.0), c.f32(&mp, "G").unwrap_or(0.0), c.f32(&mp, "B").unwrap_or(0.0)])
+            });
+            // A colour parameter's default (a LinearColor: four floats, or tagged R, G, B).
+            let parameter = || {
+                kids().filter(|e| mp.class_name(e) == "MaterialExpressionVectorParameter").find_map(|e| {
+                    let c = props::Props::read(&mp, e).ok()?;
+                    let t = c.get("DefaultValue")?;
+                    if t.size == 16 {
+                        let mut cur = package::Cursor::new(&mp.data, t.at);
+                        return Some([cur.f32().ok()?, cur.f32().ok()?, cur.f32().ok()?]);
+                    }
+                    let inner = props::Props::read_list(&mp, t.at, t.at + t.size, "LinearColor").ok()?;
+                    Some([inner.f32(&mp, "R")?, inner.f32(&mp, "G")?, inner.f32(&mp, "B")?])
+                })
+            };
+            let color = constant.or_else(parameter);
+            return (color, emissive);
+        }
+        next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    (None, false)
 }
 
 /// A material's textures: (name, lowercased with its parameter name, package, export).

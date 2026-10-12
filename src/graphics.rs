@@ -16,7 +16,7 @@ use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::math::cubic_splines::LinearSpline;
 use bevy::post_process::auto_exposure::{AutoExposure, AutoExposureCompensationCurve, AutoExposurePlugin};
 use bevy::post_process::bloom::Bloom;
-use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
+use bevy::core_pipeline::prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass};
 use bevy::light::DirectionalLightShadowMap;
 use bevy::prelude::*;
 use bevy::render::camera::{MipBias, TemporalJitter};
@@ -159,7 +159,7 @@ impl Plugin for GraphicsPlugin {
 struct Applied {
     window: Option<(i32, i32, bool)>,
     cameras: Option<(Aa, i32, i32)>,
-    shadows: Option<(i32, bool)>,
+    shadows: Option<(i32, bool, bool)>,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -169,7 +169,7 @@ fn apply(
     game: Res<Game>,
     mut applied: Local<Applied>,
     mut windows: Query<(&mut Window, Option<&bevy::window::OnMonitor>), With<PrimaryWindow>>,
-    main: Query<Entity, With<PlayerCamera>>,
+    main: Query<(Entity, Has<DeferredPrepass>), With<PlayerCamera>>,
     portals: Query<Entity, With<PortalCam>>,
     overlays: Query<Entity, (With<OverlayCamera>, Without<PlayerCamera>)>,
     new_cameras: Query<(), Added<Camera>>,
@@ -210,11 +210,16 @@ fn apply(
     let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
     let dlss = if dlss_on(&settings) { settings.dlss as i32 } else { 0 };
     let rr = ray_reconstruction(&settings);
+
     let auto = settings.auto_exposure > 0.5;
-    let cams = (aa, sharpen, ev * 100000 + fx * 100 + dlss * 2 + rr as i32 + (auto as i32) * 10_000_000);
+    // Ray-traced lighting just switched off: the cameras keep their deferred pass (and the
+    // traced light) a few frames more (see `raytrace::switch`). Till then they're set up as
+    // traced: MSAA can't go with a deferred pass (Bevy turns it off, and the overlays' then
+    // don't match), and the pass needs its prepasses.
+    let rt = crate::raytrace::active() || main.iter().any(|(_, deferred)| deferred);
+    let cams = (aa, sharpen, ev * 100000 + fx * 100 + dlss * 2 + rr as i32 + (auto as i32) * 10_000_000 + (rt as i32) * 100_000_000);
     // DLSS does the anti-aliasing itself. Ray-traced lighting needs TAA: it's what smooths
     // the traced light's grain over frames (and it can't take MSAA).
-    let rt = crate::raytrace::active();
     let aa = if dlss > 0 {
         Aa::Off
     } else if rt {
@@ -226,7 +231,7 @@ fn apply(
         applied.cameras = Some(cams);
         // Brighter is a lower exposure value.
         let exposure = Exposure { ev100: Exposure::EV100_BLENDER - settings.brightness };
-        for e in &main {
+        for (e, _) in &main {
             let mut ec = commands.entity(e);
             ec.remove::<(Fxaa, Smaa, TemporalAntiAliasing, TemporalJitter, MipBias, ContrastAdaptiveSharpening)>();
             // (The ray-traced lighting needs these prepasses.)
@@ -304,8 +309,8 @@ fn apply(
     // ---- the sun's shadows
     let quality = settings.shadows.round() as i32;
     let outdoor = !game.sim.level.indoor;
-    if applied.shadows != Some((quality, outdoor)) {
-        applied.shadows = Some((quality, outdoor));
+    if applied.shadows != Some((quality, outdoor, rt)) {
+        applied.shadows = Some((quality, outdoor, rt));
         shadow_map.size = match quality {
             1 => 1024,
             3 => 4096,

@@ -3,9 +3,11 @@
 //! traced against the chamber on the GPU every frame. Nothing is baked: a cube carried under a
 //! lamp shades the floor, and a red wall tints the light it bounces.
 //!
-//! It needs a GPU with hardware ray tracing, and it's chosen at startup (the `ray_tracing`
-//! setting): Solari draws everything deferred, which can't be switched on the fly. Without it
-//! the game lights itself as before (lamps, sun shadows, an ambient fill).
+//! It needs a GPU with hardware ray tracing, and it's the `ray_tracing` setting, switched on
+//! the fly: Solari is always there (idle without a camera asking for it), and switching moves
+//! every material between deferred (what Solari needs) and forward drawing, scales what glows
+//! to physical units or back, and puts the cameras' traced light and the traced scene on or
+//! off. Without it the game lights itself as before (lamps, sun shadows, an ambient fill).
 //!
 //! What it takes:
 //! - Every lit, opaque mesh in the world is put in the ray-traced scene ([`RaytracingMesh3d`])
@@ -18,12 +20,12 @@
 //! - The player's camera and the first portal views trace; deeper portal views are lit the
 //!   ordinary (deferred) way, and the first-person arms and gun draw forward over the top.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::camera::visibility::{RenderLayers, VisibilitySystems};
 use bevy::camera::CameraMainTextureUsages;
-use bevy::core_pipeline::prepass::{DeferredPrepass, DepthPrepass};
+use bevy::core_pipeline::prepass::{DeferredPrepass, DeferredPrepassDoubleBuffer, DepthPrepass, DepthPrepassDoubleBuffer};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::material::OpaqueRendererMethod;
@@ -54,49 +56,143 @@ const SKY_RADIUS: f32 = 900.0;
 /// take the triangle the sun is in).
 const SUN_HOLE: f32 = 0.1;
 
-static WANTED: AtomicBool = AtomicBool::new(false);
-static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// The materials whose emission has been scaled to physical units (each only once): by how
+/// much, and how exposure took it before (to put it back when the lighting's switched off).
+#[derive(Resource, Default)]
+pub struct ScaledEmissive(pub HashMap<AssetId<StandardMaterial>, (f32, f32)>);
 
-/// Whether the lighting is ray traced (asked for at startup, and the GPU can).
+static WANTED: AtomicBool = AtomicBool::new(false);
+static SUPPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the lighting is ray traced (it's wanted, and the GPU can).
 pub fn active() -> bool {
-    ACTIVE.load(Ordering::Relaxed)
+    WANTED.load(Ordering::Relaxed) && SUPPORTED.load(Ordering::Relaxed)
 }
 
-/// The setting as shown: a change waits for a restart.
+/// The lighting follows the setting (`PORTAL_NORT=1` keeps it off).
+fn follow_setting(settings: Res<crate::settings::Settings>) {
+    if settings.is_changed() {
+        WANTED.store(settings.ray_tracing >= 0.5 && std::env::var_os("PORTAL_NORT").is_none(), Ordering::Relaxed);
+    }
+}
+
+/// The setting as shown.
 pub fn label(v: f32) -> String {
     let on = v >= 0.5;
-    let name = if on { "On" } else { "Off" };
-    if on != WANTED.load(Ordering::Relaxed) {
-        format!("{name} (after restart)")
-    } else if on && !active() {
-        format!("{name} (no GPU support)")
-    } else {
-        name.to_string()
-    }
+    if on && !SUPPORTED.load(Ordering::Relaxed) { "On (no GPU support)".into() } else if on { "On".into() } else { "Off".into() }
 }
 
-/// Add ray-traced lighting to the app, if it's wanted (before the renderer starts).
+/// Add ray-traced lighting to the app (before the renderer starts): always, so it can be
+/// switched on later; on from the start if it's `wanted`.
 pub fn add(app: &mut App, wanted: bool) {
     WANTED.store(wanted, Ordering::Relaxed);
-    if !wanted {
-        return;
-    }
     app.add_plugins(SolariPlugins)
         .init_resource::<RtMeshes>()
+        .init_resource::<ScaledEmissive>()
         .add_systems(Startup, check_support)
-        .add_systems(Update, (cameras, forward_overlays, emissive_materials, sky_dome).run_if(active))
+        .add_systems(Update, (follow_setting, forward_overlays, switch, (cameras, emissive_materials, sky_dome).run_if(active)).chain())
         .add_systems(PostUpdate, register_meshes.after(VisibilitySystems::VisibilityPropagate).run_if(active));
 }
 
-/// The plugins only start if the GPU has what they need; if not, back to forward rendering.
+/// Whether the GPU has what the traced light needs; drawing as the lighting wants.
 fn check_support(mut commands: Commands, device: Option<Res<RenderDevice>>) {
     let ok = device.is_some_and(|d| d.features().contains(SolariPlugins::required_wgpu_features()));
-    ACTIVE.store(ok, Ordering::Relaxed);
-    if ok {
-        info!("Ray-traced lighting on");
-    } else {
+    SUPPORTED.store(ok, Ordering::Relaxed);
+    if !ok && WANTED.load(Ordering::Relaxed) {
         warn!("Ray-traced lighting asked for, but this GPU can't: lighting the ordinary way");
+    } else if active() {
+        info!("Ray-traced lighting on");
+    }
+    // (Solari's plugin made drawing deferred: forward unless the light's traced.)
+    if !active() {
         commands.insert_resource(DefaultOpaqueRendererMethod::forward());
+    }
+}
+
+/// Ray-traced lighting switched on or off while running: materials drawn deferred (what
+/// Solari needs) or forward, what glows scaled to physical units or back, the cameras' traced
+/// light and the traced scene put on or taken off. Coming on, the cameras get theirs (from
+/// `cameras`) the same frame, so nothing deferred meets a view that can't draw it; going off,
+/// they keep theirs until every mesh draws forward again. (`cameras`, `emissive_materials`,
+/// `sky_dome` and `register_meshes` put the rest back.)
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn switch(
+    mut commands: Commands,
+    mut was: Local<Option<bool>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scaled: ResMut<ScaledEmissive>,
+    player: Query<Entity, With<PlayerCamera>>,
+    portals: Query<Entity, With<PortalCam>>,
+    traced: Query<Entity, With<RaytracingMesh3d>>,
+    domes: Query<Entity, With<SkyDome>>,
+    mut drawn: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    mut redo: Local<u8>,
+    mut off_in: Local<Option<u8>>,
+) {
+    // Each mesh's drawing is set up once, by how its material draws: for a few frames after a
+    // switch, every mesh is set up again (as the materials are prepared again).
+    if *redo > 0 {
+        *redo -= 1;
+        for mut m in &mut drawn {
+            m.set_changed();
+        }
+    }
+    // Going off: the cameras' traced light and deferred passes, once nothing draws deferred.
+    if let Some(n) = off_in.as_mut() {
+        if active() {
+            *off_in = None;
+        } else if *n > 0 {
+            *n -= 1;
+        } else {
+            *off_in = None;
+            // (The player's anti-aliasing is the graphics settings' business: they put back what
+            // they want once the deferred pass has gone.) The traced light's double buffers go
+            // too: they bring their passes back with them in the renderer (a deferred pass there
+            // every frame for nothing, and with MSAA, a crash).
+            for e in &player {
+                commands.entity(e).remove::<(SolariLighting, DeferredPrepass, DeferredPrepassDoubleBuffer, DepthPrepassDoubleBuffer)>().insert(CameraMainTextureUsages::default());
+            }
+            for e in &portals {
+                commands.entity(e).remove::<(SolariLighting, DepthPrepass, DeferredPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass, DeferredPrepassDoubleBuffer, DepthPrepassDoubleBuffer, bevy::anti_alias::taa::TemporalAntiAliasing)>().insert(CameraMainTextureUsages::default());
+            }
+        }
+    }
+    let now = active();
+    let Some(before) = *was else {
+        // (At startup it's already as it should be.)
+        *was = Some(now);
+        return;
+    };
+    if before == now {
+        return;
+    }
+    *was = Some(now);
+    info!("Ray-traced lighting {}", if now { "on" } else { "off" });
+    commands.insert_resource(if now { DefaultOpaqueRendererMethod::deferred() } else { DefaultOpaqueRendererMethod::forward() });
+    // Every material prepared again, to draw the new way (marked changed: just looking at it
+    // isn't), and every mesh set up again.
+    let ids: Vec<_> = materials.ids().collect();
+    for id in ids {
+        if let Some(m) = materials.get_mut(id) {
+            m.into_inner();
+        }
+    }
+    *redo = 4;
+    if now {
+        return;
+    }
+    *off_in = Some(8);
+    for (id, (scale, weight)) in scaled.0.drain() {
+        if let Some(mut m) = materials.get_mut(id) {
+            m.emissive = LinearRgba::from_vec3(m.emissive.to_vec3() / scale);
+            m.emissive_exposure_weight = weight;
+        }
+    }
+    for e in &traced {
+        commands.entity(e).remove::<RaytracingMesh3d>();
+    }
+    for e in &domes {
+        commands.entity(e).despawn();
     }
 }
 
@@ -128,7 +224,7 @@ fn cameras(
 }
 
 /// The arms and the gun are drawn by overlay cameras with no deferred pass: their materials
-/// draw forward.
+/// draw forward (always: the lighting can be switched to deferred at any time).
 fn forward_overlays(
     q: Query<(&MeshMaterial3d<StandardMaterial>, &RenderLayers), Added<MeshMaterial3d<StandardMaterial>>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -152,23 +248,25 @@ fn emissive_materials(
     mats: Option<Res<crate::chamber::ChamberMats>>,
     lamps: Option<Res<crate::source_map::Lamps>>,
     scorches: Option<Res<crate::chamber::ScorchMats>>,
-    mut done: Local<HashSet<AssetId<StandardMaterial>>>,
+    mut done: ResMut<ScaledEmissive>,
 ) {
+    let done = &mut done.0;
     let lamp = mats.map(|m| m.lamp.id());
     let is_lamp = |id: AssetId<StandardMaterial>| Some(id) == lamp || lamps.as_ref().is_some_and(|l| l.0.contains(&id));
     let todo: Vec<_> = materials
         .iter()
-        .filter(|(id, m)| !done.contains(id) && m.emissive.to_vec3() != Vec3::ZERO)
+        .filter(|(id, m)| !done.contains_key(id) && m.emissive.to_vec3() != Vec3::ZERO)
         .map(|(id, _)| id)
         .collect();
     for id in todo {
-        done.insert(id);
         // Bounce marks set their own glow every frame, already scaled.
         if scorches.as_ref().is_some_and(|s| s.0.contains(&id)) {
+            done.insert(id, (1.0, 1.0));
             continue;
         }
         if let Some(mut m) = materials.get_mut(id) {
             let scale = EMISSIVE_SCALE * if is_lamp(id) { LAMP_BOOST } else { 1.0 };
+            done.insert(id, (scale, m.emissive_exposure_weight));
             m.emissive = LinearRgba::from_vec3(m.emissive.to_vec3() * scale);
             m.emissive_exposure_weight = 1.0;
         }
@@ -189,7 +287,8 @@ fn sky_dome(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut built: Local<Option<u64>>,
 ) {
-    if *built == Some(game.loads) {
+    // (Built for this level, and there when it should be: switched off, it went.)
+    if *built == Some(game.loads) && (game.sim.level.indoor || !domes.is_empty()) {
         return;
     }
     // The sun is placed with the level; wait for its transform to follow.
@@ -346,3 +445,4 @@ fn register_meshes(
         }
     }
 }
+

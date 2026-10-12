@@ -75,6 +75,29 @@ enum Act {
     RocketsOn,
     /// Retire every turret (so she can stand in their sight).
     TurretsOff,
+    /// Do something in the level editor.
+    Edit(fn(&mut crate::editor::Editor, &mut crate::menu::Menu)),
+    /// Work the mouse, as if by hand.
+    Mouse(Hand),
+    /// Ray-traced lighting on or off (the setting, not saved).
+    RayTracing(bool),
+}
+
+/// What the mouse does.
+#[derive(Clone, Copy)]
+enum Hand {
+    /// Go to the middle of the editor's content browser tile with this name.
+    ToTile(&'static str),
+    /// Go to the `n`th prop tile showing.
+    ToProp(usize),
+    /// Go to the selection's end handle: an arrow (0-2), or its ring (3).
+    ToEnd(usize),
+    /// Go here, as a fraction of the window's size.
+    To(f32, f32),
+    Press,
+    Release,
+    /// Roll the wheel.
+    Scroll(f32),
 }
 
 fn fwd() -> MoveInput {
@@ -1073,6 +1096,279 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("menu_controls"),
             ]
         }
+        // The level editor (start it with PORTAL_EDIT=1): the chamber it opens on, a new room
+        // with pieces dropped in and wired up, then playing it.
+        "editor" => vec![
+            Wait(120),
+            Shot("editor_01_opened"),
+            Edit(|ed, _| ed.open(aperture::doc::LevelDoc::starter("Demo"), None)),
+            Wait(60),
+            Shot("editor_02_new_room"),
+            Edit(|ed, _| {
+                use crate::editor::catalog::find;
+                let look = Vec3::NEG_Z;
+                ed.add_entry(find("Floor button"), Vec3::new(-3.0, 0.0, -6.0), Vec3::Y, look);
+                ed.add_entry(find("Storage cube"), Vec3::new(3.0, 0.0, -5.0), Vec3::Y, look);
+                ed.add_entry(find("Cut (doorway)"), Vec3::new(0.0, 1.5, -16.0), Vec3::Z, look);
+                ed.add_entry(find("Door"), Vec3::new(0.0, 0.0, -16.3), Vec3::Y, look);
+                ed.add_entry(find("Laser emitter"), Vec3::new(-6.0, 2.0, -12.0), Vec3::X, look);
+                ed.add_entry(find("Faith plate"), Vec3::new(3.0, 0.0, -11.0), Vec3::Y, look);
+                ed.add_entry(find("Black stripe"), Vec3::new(0.0, 0.0, -9.0), Vec3::Y, look);
+                ed.selected = ed.doc.objects.iter().position(|o| matches!(o.kind, aperture::doc::Kind::Door { .. }));
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+            }),
+            Wait(90),
+            Shot("editor_03_pieces"),
+            Edit(|ed, menu| ed.play(menu)),
+            Wait(90),
+            Shot("editor_04_playing"),
+        ],
+        // The level editor by mouse (PORTAL_EDIT=1): a cube dragged in from the content
+        // browser, a button clicked and then placed, the wheel over a panel and over the view,
+        // and the gizmo on a piece off to the side with the camera turned.
+        "editormouse" => {
+            vec![
+                Wait(90),
+                Edit(|ed, _| {
+                    ed.open(aperture::doc::LevelDoc::starter("Mouse"), None);
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+                }),
+                Wait(60),
+                Mouse(Hand::ToTile("Storage cube")),
+                Wait(2),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::To(0.3, 0.5)),
+                Wait(2),
+                Mouse(Hand::To(0.45, 0.6)),
+                Wait(2),
+                Mouse(Hand::To(0.55, 0.65)),
+                Wait(6),
+                Shot("mouse_01_dragging"),
+                Mouse(Hand::Release),
+                Wait(20),
+                Shot("mouse_02_dropped"),
+                Mouse(Hand::ToTile("Floor button")),
+                Wait(2),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::Release),
+                Wait(3),
+                Mouse(Hand::To(0.4, 0.75)),
+                Wait(6),
+                Shot("mouse_03_armed"),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::Release),
+                Wait(20),
+                Shot("mouse_04_placed"),
+                Edit(|ed, _| println!("capture: camera before scrolling {}", ed.cam.pos)),
+                Mouse(Hand::ToTile("Glass")),
+                Wait(2),
+                Mouse(Hand::Scroll(-3.0)),
+                Wait(5),
+                Edit(|ed, _| println!("capture: camera after scrolling over a panel {}", ed.cam.pos)),
+                Mouse(Hand::To(0.5, 0.5)),
+                Wait(2),
+                Mouse(Hand::Scroll(-3.0)),
+                Wait(5),
+                Edit(|ed, _| println!("capture: camera after scrolling over the view {}", ed.cam.pos)),
+                Edit(|ed, _| {
+                    ed.selected = ed.doc.objects.iter().position(|o| matches!(o.kind, aperture::doc::Kind::Cube { .. }));
+                    // The cube well off to the side of the view, the camera turned and tipped.
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(-2.0, 3.0, -2.0), yaw: 0.1, pitch: -0.45, speed: 8.0 };
+                }),
+                Wait(20),
+                Shot("mouse_05_gizmo_turned"),
+                Edit(|ed, _| println!("capture: objects {:?}", ed.doc.objects.iter().map(|o| o.kind.label()).collect::<Vec<_>>())),
+                // Mirror's Edge's parkour pieces: a ladder on the left wall, a zipline, a swing
+                // bar and a balance beam.
+                Edit(|ed, _| {
+                    use crate::editor::catalog::find;
+                    let look = Vec3::NEG_Z;
+                    ed.add_entry(find("Ladder"), Vec3::new(-6.0, 1.0, -6.0), Vec3::X, look);
+                    ed.add_entry(find("Zipline"), Vec3::new(4.0, 0.0, -3.0), Vec3::Y, look);
+                    ed.add_entry(find("Swing pole"), Vec3::new(0.0, 0.0, -12.0), Vec3::Y, look);
+                    ed.add_entry(find("Balance beam"), Vec3::new(-3.0, 0.0, -10.0), Vec3::Y, look);
+                    ed.selected = None;
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.5, -0.8), yaw: 0.0, pitch: -0.3, speed: 8.0 };
+                }),
+                Wait(30),
+                Shot("mouse_06_parkour"),
+                Edit(|ed, menu| ed.play(menu)),
+                Wait(30),
+                Menu(crate::menu::Screen::Title),
+                Wait(20),
+                Shot("mouse_07_title_menu"),
+            ]
+        }
+        // The level editor's props (PORTAL_EDIT=1): Portal 2's and Mirror's Edge's with their
+        // pictures, one of each dragged in; then a zipline's end dragged by its handle.
+        "editorprops" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                ed.open(aperture::doc::LevelDoc::starter("Props"), None);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+                ed.tab = Some(crate::editor::catalog::Category::Props);
+                ed.prop_game = 1;
+                ed.prop_folder = Some("props_lab".into());
+            }),
+            Wait(400),
+            Shot("props_01_portal2"),
+            Mouse(Hand::ToProp(2)),
+            Wait(2),
+            Mouse(Hand::Press),
+            Wait(2),
+            Mouse(Hand::To(0.4, 0.55)),
+            Wait(2),
+            Mouse(Hand::To(0.45, 0.62)),
+            Wait(6),
+            Shot("props_02_dragging"),
+            Mouse(Hand::Release),
+            Wait(60),
+            Shot("props_03_placed"),
+            Edit(|ed, _| {
+                ed.prop_game = 2;
+                ed.prop_folder = Some("P_Rooftops".into());
+            }),
+            Wait(500),
+            Shot("props_04_mirrors_edge"),
+            Mouse(Hand::ToProp(0)),
+            Wait(2),
+            Mouse(Hand::Press),
+            Wait(2),
+            Mouse(Hand::To(0.55, 0.6)),
+            Wait(2),
+            Mouse(Hand::To(0.6, 0.7)),
+            Wait(6),
+            Mouse(Hand::Release),
+            Wait(60),
+            Shot("props_05_me_placed"),
+            Edit(|ed, _| {
+                use crate::editor::catalog::find;
+                ed.add_entry(find("Zipline"), Vec3::new(-4.0, 0.0, -3.0), Vec3::Y, Vec3::NEG_Z);
+            }),
+            Wait(30),
+            Shot("props_06_zipline_handles"),
+            Mouse(Hand::ToEnd(0)),
+            Wait(3),
+            Mouse(Hand::Press),
+            Wait(2),
+            Mouse(Hand::To(0.75, 0.6)),
+            Wait(4),
+            Mouse(Hand::To(0.8, 0.62)),
+            Wait(6),
+            Mouse(Hand::Release),
+            Wait(30),
+            Shot("props_07_zipline_end_moved"),
+            Edit(|ed, _| println!("capture: objects {:?}", ed.doc.objects.iter().map(|o| format!("{} at {} {:?}", o.kind.label(), o.at, o.kind)).filter(|s| !s.contains("block") && !s.contains("Lamp")).collect::<Vec<_>>())),
+        ],
+        // The level editor's view options and props turned and scaled every way (PORTAL_EDIT=1).
+        "editorview" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                use aperture::doc::{Kind, Object};
+                ed.open(aperture::doc::LevelDoc::starter("View"), None);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 3.0, -1.5), yaw: 0.0, pitch: -0.4, speed: 8.0 };
+                let bounds = Some((Vec3::new(-0.278, 0.001, -0.124), Vec3::new(0.278, 0.783, 0.124)));
+                let radio = Object::new(Kind::Model { path: "props/portal2/props/radio_reference.glb".into(), scale: Vec3::ONE, bounds, solid: true }, Vec3::new(-1.5, 0.0, -6.0));
+                let mut big = radio.clone();
+                big.at = Vec3::new(1.5, 1.0, -6.0);
+                big.pitch = 30.0;
+                big.roll = 20.0;
+                big.yaw = 45.0;
+                if let Kind::Model { scale, .. } = &mut big.kind {
+                    *scale = Vec3::new(3.0, 1.5, 2.0);
+                }
+                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false }, Vec3::new(0.0, 0.0, -11.0));
+                ed.doc.objects.extend([radio, big, cistern]);
+                ed.selected = Some(ed.doc.objects.len() - 2);
+                ed.rebuild_now();
+            }),
+            Wait(90),
+            Shot("view_01_props_turned_and_scaled"),
+            Edit(|ed, _| ed.selected = Some(ed.doc.objects.len() - 1)),
+            Wait(10),
+            Shot("view_02_me_prop_selected"),
+            Edit(|ed, _| {
+                ed.view.collision = true;
+                ed.view.meshes = false;
+            }),
+            Wait(120),
+            Shot("view_03_collision_only"),
+            Edit(|ed, _| {
+                ed.view.collision = false;
+                ed.view.meshes = true;
+                ed.view.unlit = true;
+            }),
+            Wait(60),
+            Shot("view_04_unlit"),
+            Edit(|ed, _| ed.view.unlit = false),
+            Wait(30),
+            Shot("view_05_lit_again"),
+        ],
+        // Ray-traced lighting switched off and on again while playing: a chamber, a rooftop
+        // outdoors, one of Portal's maps.
+        "rtswitch" => {
+            let mut v = Vec::new();
+            let maps: [(usize, u32, [&'static str; 3]); 3] = [
+                (1, 120, ["rt_chamber_1_on", "rt_chamber_2_off", "rt_chamber_3_on_again"]),
+                (7, 120, ["rt_rooftop_1_on", "rt_rooftop_2_off", "rt_rooftop_3_on_again"]),
+                (11, 240, ["rt_portal_map_1_on", "rt_portal_map_2_off", "rt_portal_map_3_on_again"]),
+            ];
+            for (map, wait, [on, off, again]) in maps {
+                v.extend([Map(map), Wait(wait), Shot(on), RayTracing(false), Wait(90), Shot(off), RayTracing(true), Wait(150), Shot(again)]);
+            }
+            v
+        }
+        // The level editor's lights (PORTAL_EDIT=1): a dark room with a red point light and a
+        // blue spot light, then blocks outdoors under an orange sun; each traced and not.
+        "editorlights" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                use aperture::doc::{Ambient, Kind, LevelDoc, Object};
+                let mut d = LevelDoc::starter("Lights");
+                d.objects.retain(|o| o.kind != Kind::Lamp);
+                d.ambient = Some(Ambient { color: Vec3::ONE, brightness: 20.0 });
+                d.objects.push(Object::new(Kind::PointLight { color: Vec3::new(1.0, 0.15, 0.1), intensity: 400_000.0, range: 15.0, radius: 0.1, shadows: false }, Vec3::new(-3.5, 1.5, -9.0)));
+                let mut spot = Object::new(Kind::SpotLight { color: Vec3::new(0.2, 0.5, 1.0), intensity: 1_500_000.0, range: 20.0, radius: 0.1, angle: 25.0, soft: 0.3, shadows: true }, Vec3::new(3.0, 5.8, -9.0));
+                spot.pitch = -90.0;
+                d.objects.push(spot);
+                d.objects.push(Object::sized(Kind::Block { mat: aperture::Mat::White }, Vec3::new(3.0, 0.5, -9.0), Vec3::new(1.0, 1.0, 1.0)));
+                ed.open(d, None);
+                ed.selected = Some(ed.doc.objects.len() - 2);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 3.5, -1.0), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+            }),
+            Wait(150),
+            Shot("lights_1_room_traced"),
+            RayTracing(false),
+            Wait(90),
+            Shot("lights_2_room_not_traced"),
+            RayTracing(true),
+            Wait(30),
+            Edit(|ed, _| {
+                use aperture::doc::{Kind, LevelDoc, Object};
+                use aperture::Mat;
+                let mut d = LevelDoc::new("Sun");
+                d.indoor = false;
+                d.objects.push(Object::sized(Kind::Block { mat: Mat::White }, Vec3::new(0.0, -0.5, -10.0), Vec3::new(30.0, 1.0, 30.0)));
+                for (x, z) in [(-4.0, -8.0), (2.0, -12.0), (5.0, -6.0)] {
+                    d.objects.push(Object::sized(Kind::Block { mat: Mat::Black }, Vec3::new(x, 1.0, z), Vec3::new(1.5, 2.0, 1.5)));
+                }
+                d.objects.push(Object::new(Kind::Spawn, Vec3::new(0.0, 0.0, 2.0)));
+                let mut sun = Object::new(Kind::Sun { color: Vec3::new(1.0, 0.55, 0.25), illuminance: 9000.0 }, Vec3::new(0.0, 6.0, -10.0));
+                sun.face(Vec3::new(1.0, -0.45, -0.6));
+                d.objects.push(sun);
+                ed.open(d, None);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 5.0, 4.0), yaw: 0.0, pitch: -0.45, speed: 8.0 };
+            }),
+            Wait(150),
+            Shot("lights_3_sun_traced"),
+            RayTracing(false),
+            Wait(90),
+            Shot("lights_4_sun_not_traced"),
+            RayTracing(true),
+        ],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -1303,6 +1599,9 @@ pub fn run(
     mut exit: MessageWriter<AppExit>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     mut menu: ResMut<crate::menu::Menu>,
+    mut editor: ResMut<crate::editor::Editor>,
+    mut mouse: MouseHand,
+    mut settings: ResMut<crate::settings::Settings>,
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
@@ -1398,6 +1697,9 @@ pub fn run(
             cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
         Act::Menu(screen) => menu.open_at(*screen),
+        Act::Edit(f) => f(&mut editor, &mut menu),
+        Act::Mouse(m) => mouse.act(*m, &editor),
+        Act::RayTracing(on) => settings.ray_tracing = if *on { 1.0 } else { 0.0 },
         Act::AtLight(k, of) => {
             let lights = &game.sim.level.lights;
             if !lights.is_empty() {
@@ -1459,4 +1761,68 @@ pub fn run(
         }
     }
     cap.step += 1;
+}
+
+/// The mouse, worked by a script: the messages the window system would send.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct MouseHand<'w, 's> {
+    windows: Query<'w, 's, (Entity, &'static mut Window), With<bevy::window::PrimaryWindow>>,
+    moved: MessageWriter<'w, bevy::window::CursorMoved>,
+    buttons: MessageWriter<'w, bevy::input::mouse::MouseButtonInput>,
+    wheel: MessageWriter<'w, bevy::input::mouse::MouseWheel>,
+    /// (What egui reads.)
+    events: MessageWriter<'w, bevy::window::WindowEvent>,
+}
+
+impl MouseHand<'_, '_> {
+    fn act(&mut self, m: Hand, editor: &crate::editor::Editor) {
+        use bevy::input::mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel};
+        use bevy::input::ButtonState;
+        let Ok((window, mut w)) = self.windows.single_mut() else { return };
+        let to = match m {
+            Hand::ToTile(name) => {
+                let i = crate::editor::catalog::find(name);
+                let Some((_, r)) = editor.tiles.iter().find(|(j, _)| *j == crate::editor::Pick::Entry(i)) else {
+                    println!("capture: no tile {name} on screen");
+                    return;
+                };
+                Some(Vec2::new(r.center().x, r.center().y))
+            }
+            Hand::ToProp(n) => {
+                let Some((_, r)) = editor.tiles.iter().filter(|(p, _)| matches!(p, crate::editor::Pick::Prop(_))).nth(n) else {
+                    println!("capture: no prop tile {n} on screen");
+                    return;
+                };
+                Some(Vec2::new(r.center().x, r.center().y))
+            }
+            Hand::ToEnd(axis) => {
+                let Some(p) = editor.end_handle_on_screen(&w, axis) else {
+                    println!("capture: no end handle");
+                    return;
+                };
+                Some(p)
+            }
+            Hand::To(x, y) => Some(Vec2::new(x * w.width(), y * w.height())),
+            _ => None,
+        };
+        if let Some(p) = to {
+            let delta = w.cursor_position().map(|c| p - c);
+            w.set_cursor_position(Some(p));
+            let m = bevy::window::CursorMoved { window, position: p, delta };
+            self.moved.write(m.clone());
+            self.events.write(m.into());
+        }
+        let button = |state| MouseButtonInput { button: MouseButton::Left, state, window };
+        match m {
+            Hand::Press | Hand::Release => {
+                let b = button(if matches!(m, Hand::Press) { ButtonState::Pressed } else { ButtonState::Released });
+                self.buttons.write(b);
+                self.events.write(b.into());
+            }
+            Hand::Scroll(y) => {
+                self.wheel.write(MouseWheel { unit: MouseScrollUnit::Line, x: 0.0, y, window, phase: bevy::input::touch::TouchPhase::Moved });
+            }
+            _ => {}
+        }
+    }
 }

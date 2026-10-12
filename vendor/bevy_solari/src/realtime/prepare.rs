@@ -61,6 +61,9 @@ pub struct SolariLightingResources {
     pub world_cache_active_cells_count: Buffer,
     pub world_cache_active_cells_dispatch: Buffer,
     pub view_size: UVec2,
+    /// Whether they were made with DLSS ray reconstruction's textures (Portal Runner patch:
+    /// made again when that changes).
+    pub dlss_rr: bool,
 }
 
 pub fn prepare_solari_lighting_resources(
@@ -89,6 +92,8 @@ pub fn prepare_solari_lighting_resources(
     for query_item in &query {
         #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
         let (entity, camera, solari_lighting_resources, resolution_override) = query_item;
+        #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))]
+        let has_dlss_rr = false;
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
         let (entity, camera, solari_lighting_resources, resolution_override, has_dlss_rr) =
             query_item;
@@ -100,7 +105,9 @@ pub fn prepare_solari_lighting_resources(
             view_size = *resolution_override;
         }
 
-        if solari_lighting_resources.map(|r| r.view_size) == Some(view_size) {
+        // Portal Runner patch: also when DLSS ray reconstruction has come or gone (its textures
+        // are made with the rest), so it can be switched on a running camera.
+        if solari_lighting_resources.map(|r| (r.view_size, r.dlss_rr)) == Some((view_size, has_dlss_rr)) {
             continue;
         }
 
@@ -244,6 +251,7 @@ pub fn prepare_solari_lighting_resources(
             world_cache_active_cells_count,
             world_cache_active_cells_dispatch,
             view_size,
+            dlss_rr: has_dlss_rr,
         });
 
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
