@@ -13,7 +13,7 @@ use crate::geom;
 use crate::portal::PortalColor;
 
 /// What a box is made of: what it looks like, and whether portals stick to it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Mat {
     /// White panels: portals go here.
     White,
@@ -79,9 +79,11 @@ pub type Sig = usize;
 
 /// What turns something on: every listed signal on (none listed: always on), or with
 /// `invert`, not that.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Inputs {
+    #[serde(default)]
     pub all: Vec<Sig>,
+    #[serde(default)]
     pub invert: bool,
 }
 
@@ -108,7 +110,7 @@ impl Inputs {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CubeKind {
     /// Weighted storage cube.
     Storage,
@@ -119,7 +121,7 @@ pub enum CubeKind {
 }
 
 /// Portal 2's paints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Paint {
     /// Repulsion gel (blue): bounce.
     Bounce,
@@ -334,6 +336,15 @@ pub struct Level {
     pub lamps: Vec<Vec3>,
     /// Mirror's Edge's props, for dressing (drawn from the player's install when it's there).
     pub me_props: Vec<MeProp>,
+    /// Models from the extracted props library (the level editor's): drawn only (a block
+    /// stands for its collision, if it has one).
+    pub models: Vec<ModelProp>,
+    /// Point and spot lights placed in the level (the level editor's).
+    pub placed_lights: Vec<PlacedLight>,
+    /// The sun as the level wants it (else as indoors or outdoors has it).
+    pub sun: Option<SunLight>,
+    /// The fill light everywhere, as the level wants it (colour, brightness).
+    pub ambient: Option<(Vec3, f32)>,
     /// One of Portal's own maps (its name, `testchmb_a_00`): drawn from its faces, not
     /// [`Level::solids`]' boxes.
     pub source: Option<String>,
@@ -421,13 +432,49 @@ pub struct MeProp {
     /// The package (`P_Ventilation`) and the StaticMesh in it (`S_ACUnit_05`).
     pub package: &'static str,
     pub mesh: &'static str,
-    /// Where its origin goes, and its turn about the vertical (radians).
+    /// Where its origin goes, how it's turned, and how it's scaled along its own axes.
     pub at: Vec3,
-    pub yaw: f32,
-    pub scale: f32,
+    pub turn: glam::Quat,
+    pub scale: Vec3,
     /// A solid that blocks where it stands and stands in for it without the game (its box
     /// is hidden when the prop is drawn).
     pub stand_in: Option<Aabb>,
+}
+
+/// A light placed in the level: a point light, or a spot light pointing `dir`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedLight {
+    pub at: Vec3,
+    /// Colour (sRGB, 0-1).
+    pub color: Vec3,
+    /// Luminous power (lumens; a spot light's as if it shone all round).
+    pub intensity: f32,
+    /// How far it reaches (metres), and how big the light itself is.
+    pub range: f32,
+    pub radius: f32,
+    /// A spot light's direction and its cone: outer and inner half-angles (radians).
+    pub spot: Option<(Vec3, f32, f32)>,
+    pub shadows: bool,
+}
+
+/// The sun: the way its light goes, its colour (sRGB, 0-1) and how bright (lux).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunLight {
+    pub dir: Vec3,
+    pub color: Vec3,
+    pub illuminance: f32,
+}
+
+/// A model from the extracted props: `path` under the extracted folder (`props/portal2/...glb`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelProp {
+    pub path: String,
+    /// Where its origin goes, how it's turned, and how it's scaled along its own axes.
+    pub at: Vec3,
+    pub turn: glam::Quat,
+    pub scale: Vec3,
+    /// The block that stands for it (not drawn while it is).
+    pub solid: Option<Aabb>,
 }
 
 impl Level {
@@ -449,6 +496,10 @@ impl Level {
             indoor: true,
             lamps: Vec::new(),
             me_props: Vec::new(),
+            models: Vec::new(),
+            placed_lights: Vec::new(),
+            sun: None,
+            ambient: None,
             source: None,
             lights: Vec::new(),
             grill_edges: Vec::new(),
@@ -471,7 +522,7 @@ impl Level {
     /// A Mirror's Edge prop: `mesh` from `package`, its origin at `at`, turned `yaw_deg` (see
     /// [`MeProp`]).
     pub fn me_prop(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32) -> &mut Self {
-        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), yaw: yaw_deg.to_radians(), scale: 1.0, stand_in: None });
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in: None });
         self
     }
 
@@ -481,7 +532,7 @@ impl Level {
     pub fn me_prop_solid(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32, a: [f32; 3], b: [f32; 3]) -> &mut Self {
         self.solid(Mat::Prop, a, b);
         let stand_in = Some(Aabb::new(Vec3::from(a).min(Vec3::from(b)), Vec3::from(a).max(Vec3::from(b))));
-        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), yaw: yaw_deg.to_radians(), scale: 1.0, stand_in });
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in });
         self
     }
 

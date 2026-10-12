@@ -10,7 +10,7 @@ use glam::{Mat3, Quat, Vec2, Vec3};
 
 use faith_move::Aabb;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PortalColor {
     Blue,
     Orange,

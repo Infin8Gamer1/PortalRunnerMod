@@ -37,11 +37,29 @@ pub struct StandIn(pub usize);
 /// The game's packages (not thread-safe: they share what they've opened).
 pub struct MePackages(Packages);
 
-type Parts = Vec<(Handle<Mesh>, Handle<StandardMaterial>)>;
+pub type Parts = Vec<(Handle<Mesh>, Handle<StandardMaterial>)>;
+
+/// What a mesh's materials found: how many have a texture, how many only a plain colour, how
+/// many have no material at all (a level's placement gives them one), of how many, and the
+/// names of those with nothing.
+#[derive(Clone, Default)]
+pub struct MeLooks {
+    pub textured: usize,
+    pub plain: usize,
+    pub unset: usize,
+    pub total: usize,
+    pub missing: Vec<String>,
+    /// Its box (ours, from its origin).
+    pub bounds: Option<(Vec3, Vec3)>,
+}
 
 #[derive(Resource, Default)]
 pub struct MePropCache {
     meshes: HashMap<(&'static str, &'static str), Option<Parts>>,
+    /// Each mesh's box (ours, from its origin), once it's been read.
+    bounds: HashMap<(&'static str, &'static str), (Vec3, Vec3)>,
+    /// What each mesh's materials found (`package.mesh`), once it's been read.
+    looks: HashMap<String, MeLooks>,
     /// The level these were spawned for (Game::loads), and what of it got drawn.
     level: u64,
     drawn: Vec<bool>,
@@ -92,8 +110,14 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
             let tex = slot.diffuse.as_ref().map(|t| images.add(image_from(t)));
             let normal_map = slot.normal.as_ref().map(|t| images.add(normal_image(t)));
             let rough = slot.specular.as_ref().map(|t| images.add(roughness_image(t)));
+            // Without a texture: its constant colour (glowing, if it's a light's), else grey.
+            let plain = slot.color.map(|[r, g, b]| Color::linear_rgb(r, g, b));
             let mat = materials.add(StandardMaterial {
-                base_color: if tex.is_some() { Color::WHITE } else { Color::srgb(0.55, 0.55, 0.56) },
+                base_color: if tex.is_some() { Color::WHITE } else { plain.unwrap_or(Color::srgb(0.55, 0.55, 0.56)) },
+                emissive: match (plain, slot.emissive) {
+                    (Some(c), true) => c.to_linear() * 4.0,
+                    _ => LinearRgba::BLACK,
+                },
                 base_color_texture: tex,
                 perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
                 metallic_roughness_texture: rough,
@@ -117,17 +141,62 @@ fn get(
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
 ) -> Option<Parts> {
-    cache
-        .meshes
-        .entry(key)
-        .or_insert_with(|| match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, 512) {
-            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images)),
+    if !cache.meshes.contains_key(&key) {
+        let made = match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, 512) {
+            Ok((mesh, slots)) => {
+                let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+                for p in &mesh.positions {
+                    let p = Vec3::from(ue(*p));
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+                if lo.x <= hi.x {
+                    cache.bounds.insert(key, (lo, hi));
+                }
+                let mut looks = MeLooks { total: slots.len(), bounds: (lo.x <= hi.x).then_some((lo, hi)), ..default() };
+                for s in &slots {
+                    if s.diffuse.is_some() {
+                        looks.textured += 1;
+                    } else if s.color.is_some() {
+                        looks.plain += 1;
+                    } else if s.material == "None" {
+                        looks.unset += 1;
+                    } else {
+                        looks.missing.push(s.material.clone());
+                    }
+                }
+                cache.looks.insert(format!("{}.{}", key.0, key.1), looks);
+                Some(build(&mesh, &slots, meshes, materials, images))
+            }
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{}: {e}", key.0, key.1);
                 None
             }
-        })
-        .clone()
+        };
+        cache.meshes.insert(key, made);
+    }
+    cache.meshes.get(&key).cloned().flatten()
+}
+
+impl MePropCache {
+    /// What a mesh's materials found, if it's been read.
+    pub fn looks(&self, package: &str, mesh: &str) -> Option<&MeLooks> {
+        self.looks.get(&format!("{package}.{mesh}"))
+    }
+}
+
+/// A mesh's parts and its box (ours, from its origin), read once (the level editor's
+/// thumbnails).
+pub fn parts_and_bounds(
+    key: (&'static str, &'static str),
+    cache: &mut MePropCache,
+    pkgs: &mut MePackages,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) -> Option<(Parts, (Vec3, Vec3))> {
+    let parts = get(key, cache, pkgs, meshes, materials, images)?;
+    Some((parts, *cache.bounds.get(&key)?))
 }
 
 fn place(commands: &mut Commands, parts: &Parts, tf: Transform) {
@@ -157,7 +226,7 @@ pub fn spawn_for_level(
         cache.drawn = vec![false; level.me_props.len()];
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get((p.package, p.mesh), cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
-                place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(Quat::from_rotation_y(p.yaw)).with_scale(Vec3::splat(p.scale)));
+                place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale));
                 cache.drawn[k] = true;
             }
         }

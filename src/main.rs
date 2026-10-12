@@ -8,6 +8,7 @@ mod audio;
 mod body3p;
 mod capture;
 mod chamber;
+mod editor;
 mod extracted;
 mod fonts;
 mod graphics;
@@ -17,6 +18,8 @@ mod hud;
 mod me_props;
 mod me_viewmodel;
 mod menu;
+mod model_props;
+mod placed_lights;
 mod portal_audio;
 mod portal_render;
 mod progress;
@@ -86,6 +89,7 @@ fn main() {
     .add_plugins(portal_render::PortalRenderPlugin)
     .add_plugins(speed_fx::SpeedFxPlugin)
     .add_plugins(graphics::GraphicsPlugin)
+    .add_plugins(editor::EditorPlugin)
     .add_systems(PostUpdate, props::aim_turret_guns.after(bevy::app::AnimationSystems).before(bevy::transform::TransformSystems::Propagate))
     .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .init_resource::<source_map::MapMats>()
@@ -100,6 +104,7 @@ fn main() {
             fonts::setup,
             settings::setup,
             setup_world,
+            editor::add_levels,
             chamber::setup,
             load_first_level,
             hud::setup,
@@ -117,10 +122,12 @@ fn main() {
     );
     let game = (
         switch_level,
-        play,
+        play.run_if(editor::idle),
         speed_fx::update,
-        (chamber::update, chamber::scroll_goo, source_map::sync, source_map::move_models, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
+        (chamber::update, chamber::scroll_goo, source_map::sync, source_map::bulbs, source_map::move_models, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
         me_props::spawn_for_level,
+        model_props::spawn_for_level,
+        placed_lights::spawn_for_level,
         (
             props::tag_parts,
             props::animate,
@@ -137,7 +144,7 @@ fn main() {
         viewmodel::animate,
         me_viewmodel::animate,
         body3p::animate,
-        portal_roll,
+        portal_roll.run_if(editor::idle),
         menu::title_camera,
         portal_render::update,
         gun::update,
@@ -149,7 +156,7 @@ fn main() {
         .chain();
     // Ray-traced lighting is chosen at startup (PORTAL_NORT=1 turns it off for this run).
     raytrace::add(&mut app, settings::Settings::load().ray_tracing > 0.5 && std::env::var_os("PORTAL_NORT").is_none());
-    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), menu::update, cursor_lock, game).chain());
+    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), menu::update.run_if(editor::idle), cursor_lock.run_if(editor::idle), game, editor::systems()).chain());
     app.run();
 }
 
@@ -309,6 +316,15 @@ fn light_for(
             l.shadow_maps_enabled = !raytrace::active();
             *tf = Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y);
         }
+        l.color = Color::WHITE;
+        // A sun of the level's own (the level editor's).
+        if let Some(s) = &level.sun {
+            l.illuminance = s.illuminance;
+            l.color = Color::srgb(s.color.x, s.color.y, s.color.z);
+            let dir = s.dir.normalize_or(Vec3::NEG_Y);
+            let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+            *tf = Transform::from_translation(-dir * 60.0).looking_to(dir, up);
+        }
     }
     if level.indoor {
         clear.0 = Color::srgb(0.04, 0.04, 0.05);
@@ -318,6 +334,10 @@ fn light_for(
         clear.0 = Color::srgb(0.62, 0.78, 0.93);
         ambient.brightness = 650.0;
         ambient.color = Color::srgb(0.85, 0.92, 1.0);
+    }
+    if let Some((c, brightness)) = level.ambient {
+        ambient.color = Color::srgb(c.x, c.y, c.z);
+        ambient.brightness = brightness;
     }
     // PORTAL_DEBUG_VOID=1: where nothing's drawn shows magenta (a hole in a map).
     if std::env::var_os("PORTAL_DEBUG_VOID").is_some() {
@@ -428,10 +448,11 @@ fn switch_level(
     settings: Res<settings::Settings>,
     mut progress: ResMut<progress::Progress>,
     menu: Res<menu::Menu>,
+    editor: Res<editor::Editor>,
 ) {
     let n = game.levels.len();
     let mut to = game.pending.take();
-    let keys_on = !menu.open;
+    let keys_on = !menu.open && !editor.active;
     let mut keyed = false;
     if keys_on && keys.just_pressed(KeyCode::KeyM) {
         to = Some((game.level_index + 1) % n);
@@ -476,7 +497,8 @@ fn switch_level(
     g.flash = None;
     g.reaction_hinted = false;
     let name = g.levels[i].0.to_string();
-    if progress.last.as_ref() != Some(&name) {
+    // (Not the editor's level: it's gone next time.)
+    if progress.last.as_ref() != Some(&name) && Some(i) != editor.slot() {
         progress.last = Some(name);
         progress.save();
     }
@@ -497,6 +519,7 @@ fn play(
     mut progress: ResMut<progress::Progress>,
     mut virtual_time: ResMut<Time<Virtual>>,
     mut render: ResMut<portal_render::PortalRender>,
+    editor: Res<editor::Editor>,
 ) {
     let dt = time.delta_secs().min(0.05);
     let game = &mut *game;
@@ -662,7 +685,8 @@ fn play(
             SimEvent::PortalsCleared => game.flash = Some(("PORTALS CLEARED".into(), 0.0)),
             SimEvent::LevelComplete => {
                 let t = game.timer;
-                let pb = progress.finished(&game.levels[game.level_index].0, t);
+                // (A test run in the editor isn't a time.)
+                let pb = Some(game.level_index) != editor.slot() && progress.finished(&game.levels[game.level_index].0, t);
                 progress.save();
                 game.last_time = Some(t);
                 game.flash = Some((format!("CHAMBER COMPLETE  {}{}", hud::fmt_time(t), if pb { "  - NEW BEST" } else { "" }), -2.0));
