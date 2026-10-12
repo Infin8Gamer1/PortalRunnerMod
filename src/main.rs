@@ -19,6 +19,7 @@ mod me_props;
 mod me_viewmodel;
 mod menu;
 mod model_props;
+mod placed_lights;
 mod portal_audio;
 mod portal_render;
 mod progress;
@@ -126,6 +127,7 @@ fn main() {
         (chamber::update, chamber::scroll_goo, source_map::sync, source_map::bulbs, source_map::move_models, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
         me_props::spawn_for_level,
         model_props::spawn_for_level,
+        placed_lights::spawn_for_level,
         (
             props::tag_parts,
             props::animate,
@@ -314,6 +316,15 @@ fn light_for(
             l.shadow_maps_enabled = !raytrace::active();
             *tf = Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y);
         }
+        l.color = Color::WHITE;
+        // A sun of the level's own (the level editor's).
+        if let Some(s) = &level.sun {
+            l.illuminance = s.illuminance;
+            l.color = Color::srgb(s.color.x, s.color.y, s.color.z);
+            let dir = s.dir.normalize_or(Vec3::NEG_Y);
+            let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+            *tf = Transform::from_translation(-dir * 60.0).looking_to(dir, up);
+        }
     }
     if level.indoor {
         clear.0 = Color::srgb(0.04, 0.04, 0.05);
@@ -323,6 +334,10 @@ fn light_for(
         clear.0 = Color::srgb(0.62, 0.78, 0.93);
         ambient.brightness = 650.0;
         ambient.color = Color::srgb(0.85, 0.92, 1.0);
+    }
+    if let Some((c, brightness)) = level.ambient {
+        ambient.color = Color::srgb(c.x, c.y, c.z);
+        ambient.brightness = brightness;
     }
     // PORTAL_DEBUG_VOID=1: where nothing's drawn shows magenta (a hole in a map).
     if std::env::var_os("PORTAL_DEBUG_VOID").is_some() {

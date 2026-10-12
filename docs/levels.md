@@ -11,7 +11,8 @@ are made, each with a test that plays it through).
 new one: a white room with lamps and a start.
 
 - **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
-  (start, checkpoints, exit, hints, goo, platforms, lamps, portals, indicator wires), parkour
+  (start, checkpoints, exit, hints, goo, platforms, portals, indicator wires), lights (point
+  and spot lights, a sun, ceiling lamps), parkour
   (ziplines, swing poles, balance beams, ladders, drainpipes, barge doors, barbed wire, soft
   landings), and **Props**: every prop model of Portal and Portal 2 (extracted into `props/`)
   and every static mesh in Mirror's Edge's prop packages (from your install), by game and
@@ -34,6 +35,13 @@ new one: a white room with lamps and a start.
   arrows to move that end along an axis, or its ring to move it about. Lines show what the
   selection is wired to; outlines show what the game doesn't draw
   (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
+- **Lights**: a point light shines all round, a spot light in a cone the way it faces (turn it
+  with the gizmo); each has a colour, an intensity in lumens (the ceiling lamps are 900,000), a
+  range, a size (bigger is softer) and shadows on or off. A sun replaces the level's (its
+  colour, brightness in lux, and the way it faces: where it stands doesn't matter). The
+  level's settings (nothing selected) can set its own ambient (fill) light. With ray-traced
+  lighting, which lights by what glows, each light is also a glowing bulb only the traced
+  light sees (a spot light's in a short black tube that shapes its cone).
 - **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
   coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
   unlit; and ray-traced lighting, on or off straight away (the game's setting too).

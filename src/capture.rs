@@ -1321,6 +1321,54 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // The level editor's lights (PORTAL_EDIT=1): a dark room with a red point light and a
+        // blue spot light, then blocks outdoors under an orange sun; each traced and not.
+        "editorlights" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                use aperture::doc::{Ambient, Kind, LevelDoc, Object};
+                let mut d = LevelDoc::starter("Lights");
+                d.objects.retain(|o| o.kind != Kind::Lamp);
+                d.ambient = Some(Ambient { color: Vec3::ONE, brightness: 20.0 });
+                d.objects.push(Object::new(Kind::PointLight { color: Vec3::new(1.0, 0.15, 0.1), intensity: 400_000.0, range: 15.0, radius: 0.1, shadows: false }, Vec3::new(-3.5, 1.5, -9.0)));
+                let mut spot = Object::new(Kind::SpotLight { color: Vec3::new(0.2, 0.5, 1.0), intensity: 1_500_000.0, range: 20.0, radius: 0.1, angle: 25.0, soft: 0.3, shadows: true }, Vec3::new(3.0, 5.8, -9.0));
+                spot.pitch = -90.0;
+                d.objects.push(spot);
+                d.objects.push(Object::sized(Kind::Block { mat: aperture::Mat::White }, Vec3::new(3.0, 0.5, -9.0), Vec3::new(1.0, 1.0, 1.0)));
+                ed.open(d, None);
+                ed.selected = Some(ed.doc.objects.len() - 2);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 3.5, -1.0), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+            }),
+            Wait(150),
+            Shot("lights_1_room_traced"),
+            RayTracing(false),
+            Wait(90),
+            Shot("lights_2_room_not_traced"),
+            RayTracing(true),
+            Wait(30),
+            Edit(|ed, _| {
+                use aperture::doc::{Kind, LevelDoc, Object};
+                use aperture::Mat;
+                let mut d = LevelDoc::new("Sun");
+                d.indoor = false;
+                d.objects.push(Object::sized(Kind::Block { mat: Mat::White }, Vec3::new(0.0, -0.5, -10.0), Vec3::new(30.0, 1.0, 30.0)));
+                for (x, z) in [(-4.0, -8.0), (2.0, -12.0), (5.0, -6.0)] {
+                    d.objects.push(Object::sized(Kind::Block { mat: Mat::Black }, Vec3::new(x, 1.0, z), Vec3::new(1.5, 2.0, 1.5)));
+                }
+                d.objects.push(Object::new(Kind::Spawn, Vec3::new(0.0, 0.0, 2.0)));
+                let mut sun = Object::new(Kind::Sun { color: Vec3::new(1.0, 0.55, 0.25), illuminance: 9000.0 }, Vec3::new(0.0, 6.0, -10.0));
+                sun.face(Vec3::new(1.0, -0.45, -0.6));
+                d.objects.push(sun);
+                ed.open(d, None);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 5.0, 4.0), yaw: 0.0, pitch: -0.45, speed: 8.0 };
+            }),
+            Wait(150),
+            Shot("lights_3_sun_traced"),
+            RayTracing(false),
+            Wait(90),
+            Shot("lights_4_sun_not_traced"),
+            RayTracing(true),
+        ],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.

@@ -339,6 +339,12 @@ pub struct Level {
     /// Models from the extracted props library (the level editor's): drawn only (a block
     /// stands for its collision, if it has one).
     pub models: Vec<ModelProp>,
+    /// Point and spot lights placed in the level (the level editor's).
+    pub placed_lights: Vec<PlacedLight>,
+    /// The sun as the level wants it (else as indoors or outdoors has it).
+    pub sun: Option<SunLight>,
+    /// The fill light everywhere, as the level wants it (colour, brightness).
+    pub ambient: Option<(Vec3, f32)>,
     /// One of Portal's own maps (its name, `testchmb_a_00`): drawn from its faces, not
     /// [`Level::solids`]' boxes.
     pub source: Option<String>,
@@ -435,6 +441,30 @@ pub struct MeProp {
     pub stand_in: Option<Aabb>,
 }
 
+/// A light placed in the level: a point light, or a spot light pointing `dir`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedLight {
+    pub at: Vec3,
+    /// Colour (sRGB, 0-1).
+    pub color: Vec3,
+    /// Luminous power (lumens; a spot light's as if it shone all round).
+    pub intensity: f32,
+    /// How far it reaches (metres), and how big the light itself is.
+    pub range: f32,
+    pub radius: f32,
+    /// A spot light's direction and its cone: outer and inner half-angles (radians).
+    pub spot: Option<(Vec3, f32, f32)>,
+    pub shadows: bool,
+}
+
+/// The sun: the way its light goes, its colour (sRGB, 0-1) and how bright (lux).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunLight {
+    pub dir: Vec3,
+    pub color: Vec3,
+    pub illuminance: f32,
+}
+
 /// A model from the extracted props: `path` under the extracted folder (`props/portal2/...glb`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelProp {
@@ -467,6 +497,9 @@ impl Level {
             lamps: Vec::new(),
             me_props: Vec::new(),
             models: Vec::new(),
+            placed_lights: Vec::new(),
+            sun: None,
+            ambient: None,
             source: None,
             lights: Vec::new(),
             grill_edges: Vec::new(),

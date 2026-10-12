@@ -12,12 +12,13 @@ pub enum Category {
     Light,
     Gel,
     Gameplay,
+    Lights,
     Parkour,
     Props,
 }
 
 impl Category {
-    pub const ALL: [Category; 7] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Parkour, Category::Props];
+    pub const ALL: [Category; 8] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Lights, Category::Parkour, Category::Props];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -26,6 +27,7 @@ impl Category {
             Category::Light => "Lasers & bridges",
             Category::Gel => "Gel",
             Category::Gameplay => "Gameplay",
+            Category::Lights => "Lights",
             Category::Parkour => "Parkour",
             Category::Props => "Props",
         }
@@ -124,7 +126,10 @@ pub static CATALOG: &[Entry] = &[
     e("Hint", Category::Gameplay, Place::Box, Vec3::new(4.0, 3.0, 4.0), || Kind::Hint { text: "A hint".into() }, [180, 120, 230], "?"),
     e("Goo", Category::Gameplay, Place::Sunk, Vec3::new(4.0, 1.0, 4.0), || Kind::Goo, [110, 130, 40], "☠"),
     e("Moving platform", Category::Gameplay, Place::Box, Vec3::new(3.0, 0.5, 3.0), || Kind::Platform { travel: Vec3::new(0.0, 0.0, -6.0), speed: 2.0, inputs: Inputs::always() }, [60, 60, 66], "🔀"),
-    e("Lamp", Category::Gameplay, Place::Out(0.05), P, || Kind::Lamp, [255, 245, 200], "💡"),
+    e("Point light", Category::Lights, Place::Out(0.5), P, || Kind::PointLight { color: Vec3::new(1.0, 0.95, 0.85), intensity: 300_000.0, range: 15.0, radius: 0.1, shadows: false }, [255, 235, 180], "💡"),
+    e("Spot light", Category::Lights, Place::Out(0.15), P, || Kind::SpotLight { color: Vec3::new(1.0, 0.97, 0.92), intensity: 800_000.0, range: 25.0, radius: 0.1, angle: 30.0, soft: 0.3, shadows: false }, [255, 245, 220], "🔦"),
+    e("Sun", Category::Lights, Place::Out(3.0), P, || Kind::Sun { color: Vec3::new(1.0, 0.96, 0.9), illuminance: 10_000.0 }, [255, 210, 90], "☀"),
+    e("Ceiling lamp", Category::Lights, Place::Out(0.05), P, || Kind::Lamp, [255, 245, 200], "⬜"),
     e("Blue portal", Category::Gameplay, Place::Wall, P, || Kind::Portal { color: PortalColor::Blue }, [40, 140, 255], "⚪"),
     e("Orange portal", Category::Gameplay, Place::Wall, P, || Kind::Portal { color: PortalColor::Orange }, [255, 140, 30], "⚪"),
     e("Indicator wire", Category::Gameplay, Place::Out(0.01), P, || Kind::Wire { sig: 0, points: vec![Vec3::new(0.0, 0.0, -3.0)] }, [90, 160, 255], "⚡"),
@@ -260,6 +265,10 @@ pub fn place(entry: &Entry, doc: &LevelDoc, p: Vec3, n: Vec3, look: Vec3, grid: 
             o.face(Vec3::new(n.x, 0.0, n.z));
             o.pitch = 0.0;
         }
+        // A spot light shines out of what it's on; the sun down at a slant, the way the camera
+        // looks.
+        Kind::SpotLight { .. } => o.face(axis(n)),
+        Kind::Sun { .. } => o.face(flat * 0.6 - Vec3::Y),
         _ => {}
     }
     if o.kind.is_box() {

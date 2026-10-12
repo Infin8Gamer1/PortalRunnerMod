@@ -1234,6 +1234,33 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
                 arrow(&mut gizmos, o.at + Vec3::Y * 0.5, o.dir(), 0.6, Color::srgb(0.9, 0.35, 0.25));
             }
             Kind::BarbedWire | Kind::SoftPad { solid: false } => cuboid(&mut gizmos, &b, Color::srgba(0.8, 0.8, 0.8, 0.5)),
+            // Lights in their own colour: a point light's bulb (and, selected, how far it
+            // reaches), a spot light's cone, the sun's way.
+            Kind::PointLight { color, range, .. } => {
+                let c = Color::srgb(color.x, color.y, color.z);
+                gizmos.sphere(Isometry3d::from_translation(o.at), 0.15, c);
+                if ed.selected == Some(i) {
+                    gizmos.sphere(Isometry3d::from_translation(o.at), *range, c.with_alpha(0.25));
+                }
+            }
+            Kind::SpotLight { color, range, angle, .. } => {
+                let c = Color::srgb(color.x, color.y, color.z);
+                let reach = if ed.selected == Some(i) { *range } else { range.min(2.0) };
+                let (dir, rot) = (o.dir(), o.rotation());
+                let r = reach * angle.clamp(1.0, 89.0).to_radians().tan();
+                let end = o.at + dir * reach;
+                gizmos.circle(Isometry3d::new(end, rot), r, c);
+                for k in 0..8 {
+                    let a = k as f32 * std::f32::consts::TAU / 8.0;
+                    gizmos.line(o.at, end + rot * Vec3::new(a.cos() * r, a.sin() * r, 0.0), c.with_alpha(0.6));
+                }
+                gizmos.sphere(Isometry3d::from_translation(o.at), 0.12, c);
+            }
+            Kind::Sun { color, .. } => {
+                let c = Color::srgb(color.x, color.y, color.z);
+                gizmos.circle(Isometry3d::new(o.at, o.rotation()), 0.4, c);
+                arrow(&mut gizmos, o.at, o.dir(), 2.5, c);
+            }
             Kind::Platform { travel, .. } => {
                 let end = Aabb::new(b.min + *travel, b.max + *travel);
                 cuboid(&mut gizmos, &end, Color::srgba(0.6, 0.6, 0.7, 0.5));

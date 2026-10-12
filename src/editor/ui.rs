@@ -548,6 +548,20 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
                     ui.checkbox(&mut ed.doc.orange, "orange");
                 });
                 ui.end_row();
+                ui.label("Ambient light");
+                ui.vertical(|ui| {
+                    let mut own = ed.doc.ambient.is_some();
+                    if ui.checkbox(&mut own, "the level's own").on_hover_text("The fill light everywhere (else as indoors or outdoors has it)").changed() {
+                        ed.doc.ambient = own.then_some(aperture::doc::Ambient { color: Vec3::new(0.92, 0.95, 1.0), brightness: if ed.doc.indoor { 520.0 } else { 650.0 } });
+                    }
+                    if let Some(a) = &mut ed.doc.ambient {
+                        ui.horizontal(|ui| {
+                            color_field(ui, &mut a.color);
+                            ui.add(egui::DragValue::new(&mut a.brightness).speed(5.0).range(0.0..=20_000.0)).on_hover_text("Brightness (the game's indoors is 520)");
+                        });
+                    }
+                });
+                ui.end_row();
             });
             ui.add_space(8.0);
             ui.weak(format!("{} objects. Click one in the view or the outliner to edit it.", ed.doc.objects.len()));
@@ -683,6 +697,34 @@ fn inputs(ui: &mut egui::Ui, inp: &mut Inputs, newest: usize) {
             }
         });
     });
+    ui.end_row();
+}
+
+/// A colour (sRGB, 0-1), picked.
+fn color_field(ui: &mut egui::Ui, color: &mut Vec3) {
+    let mut c = color.to_array();
+    if ui.color_edit_button_rgb(&mut c).changed() {
+        *color = Vec3::from(c);
+    }
+}
+
+/// A light's colour, power, reach, size and shadows.
+fn light_fields(ui: &mut egui::Ui, color: &mut Vec3, intensity: &mut f32, range: &mut f32, radius: &mut f32, shadows: &mut bool) {
+    ui.label("Colour");
+    color_field(ui, color);
+    ui.end_row();
+    ui.label("Intensity");
+    let speed = (*intensity * 0.01).max(10.0);
+    ui.add(egui::DragValue::new(intensity).speed(speed).range(0.0..=100_000_000.0).suffix(" lm")).on_hover_text("Luminous power: the ceiling lamps are 900,000");
+    ui.end_row();
+    ui.label("Range");
+    ui.add(egui::DragValue::new(range).speed(0.1).range(0.5..=500.0).suffix(" m")).on_hover_text("How far it reaches");
+    ui.end_row();
+    ui.label("Size");
+    ui.add(egui::DragValue::new(radius).speed(0.01).range(0.0..=5.0).suffix(" m")).on_hover_text("The light's own radius: bigger is softer");
+    ui.end_row();
+    ui.label("Shadows");
+    ui.checkbox(shadows, "").on_hover_text("Casts shadows (with ray-traced lighting, everything does)");
     ui.end_row();
 }
 
@@ -857,6 +899,25 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             ui.label(path.as_str());
             ui.end_row();
             prop_fields(ui, scale, bounds, solid);
+        }
+        Kind::PointLight { color, intensity, range, radius, shadows } => light_fields(ui, color, intensity, range, radius, shadows),
+        Kind::SpotLight { color, intensity, range, radius, angle, soft, shadows } => {
+            light_fields(ui, color, intensity, range, radius, shadows);
+            ui.label("Cone");
+            ui.add(egui::DragValue::new(angle).speed(0.5).range(1.0..=89.0).suffix("°")).on_hover_text("How far out from its middle it shines");
+            ui.end_row();
+            ui.label("Soft edge");
+            ui.add(egui::Slider::new(soft, 0.0..=1.0)).on_hover_text("How much of the cone fades out to its edge");
+            ui.end_row();
+        }
+        Kind::Sun { color, illuminance } => {
+            ui.label("Colour");
+            color_field(ui, color);
+            ui.end_row();
+            ui.label("Brightness");
+            let speed = (*illuminance * 0.01).max(1.0);
+            ui.add(egui::DragValue::new(illuminance).speed(speed).range(0.0..=200_000.0).suffix(" lux")).on_hover_text("Indoors the game's is 2,500; outdoors, 11,000. It's the level's only sun: where it's placed doesn't matter, which way it faces does");
+            ui.end_row();
         }
         Kind::ZipLine { to } | Kind::SwingPole { to } => {
             ui.label("To (from here)");

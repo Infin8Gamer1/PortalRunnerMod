@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use faith_move::climb::Ladder;
 use faith_move::{Aabb, Fixture};
 
-use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, ModelProp, MoverDef, Paint, PresetPortal, Sig, Solid, NO_MODEL};
+use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, ModelProp, MoverDef, Paint, PlacedLight, PresetPortal, Sig, Solid, SunLight, NO_MODEL};
 use crate::portal::PortalColor;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -31,6 +31,16 @@ pub struct LevelDoc {
     pub orange: bool,
     #[serde(default)]
     pub objects: Vec<Object>,
+    /// The fill light everywhere, if the level sets its own (else as indoors or outdoors has it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient: Option<Ambient>,
+}
+
+/// The fill light everywhere: its colour (sRGB, 0-1) and brightness.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Ambient {
+    pub color: Vec3,
+    pub brightness: f32,
 }
 
 fn yes() -> bool {
@@ -177,6 +187,14 @@ pub enum Kind {
     /// A ladder (or drainpipe) on a wall: its foot here, on the wall's face, facing out of the
     /// wall; she climbs out `height` up.
     Ladder { height: f32, #[serde(default)] pipe: bool, #[serde(default = "yes")] exit: bool },
+    /// A light shining all round from here: its colour (sRGB, 0-1), power (lumens), reach and
+    /// size (metres), and whether it casts shadows.
+    PointLight { color: Vec3, intensity: f32, range: f32, #[serde(default = "light_radius")] radius: f32, #[serde(default)] shadows: bool },
+    /// A light shining the way it faces, in a cone `angle` degrees out from its middle, its
+    /// edge softened over `soft` of that (0-1); else as a point light.
+    SpotLight { color: Vec3, intensity: f32, range: f32, #[serde(default = "light_radius")] radius: f32, angle: f32, #[serde(default = "spot_soft")] soft: f32, #[serde(default)] shadows: bool },
+    /// The level's sun, shining the way it faces: its colour (sRGB, 0-1) and brightness (lux).
+    Sun { color: Vec3, illuminance: f32 },
     /// A Mirror's Edge static mesh, standing here, turned `yaw`. `bounds` is its box (from here,
     /// before it's turned or scaled); with `solid`, that's a block too (turned with it a quarter
     /// at a time), drawn instead when the game isn't installed.
@@ -184,6 +202,14 @@ pub enum Kind {
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
     Model { path: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+}
+
+fn light_radius() -> f32 {
+    0.1
+}
+
+fn spot_soft() -> f32 {
+    0.2
 }
 
 fn gel_rate() -> f32 {
@@ -223,7 +249,7 @@ impl Kind {
     /// How it can be turned, if which way it faces matters.
     pub fn turns(&self) -> Option<Turns> {
         match self {
-            Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } => Some(Turns::Aim),
+            Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } | Kind::SpotLight { .. } | Kind::Sun { .. } => Some(Turns::Aim),
             Kind::MeProp { .. } | Kind::Model { .. } => Some(Turns::Free),
             Kind::Spawn | Kind::Turret | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(Turns::Yaw),
             _ => None,
@@ -261,6 +287,9 @@ impl Kind {
             Kind::Platform { inputs, .. } => format!("Platform {}", inputs_label(inputs)),
             Kind::Portal { color } => format!("{color:?} portal"),
             Kind::Wire { sig, .. } => format!("Wire {sig}"),
+            Kind::PointLight { .. } => "Point light".into(),
+            Kind::SpotLight { .. } => "Spot light".into(),
+            Kind::Sun { .. } => "Sun".into(),
             Kind::ZipLine { .. } => "Zipline".into(),
             Kind::SwingPole { .. } => "Swing pole".into(),
             Kind::Beam { .. } => "Balance beam".into(),
@@ -434,7 +463,7 @@ impl Object {
 
 impl LevelDoc {
     pub fn new(name: &str) -> Self {
-        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new() }
+        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None }
     }
 
     /// A white room to start from: floor, walls, ceiling, a lamp grid and the start.
@@ -582,6 +611,17 @@ impl LevelDoc {
                     let pts: Vec<[f32; 3]> = std::iter::once(at).chain(points.iter().map(|p| at + *p)).map(|p| p.to_array()).collect();
                     l.wire(*sig, &pts);
                 }
+                Kind::PointLight { color, intensity, range, radius, shadows } => {
+                    l.placed_lights.push(PlacedLight { at, color: *color, intensity: *intensity, range: *range, radius: *radius, spot: None, shadows: *shadows });
+                }
+                Kind::SpotLight { color, intensity, range, radius, angle, soft, shadows } => {
+                    let outer = angle.clamp(1.0, 89.0).to_radians();
+                    let spot = Some((o.dir(), outer, outer * (1.0 - soft.clamp(0.0, 1.0))));
+                    l.placed_lights.push(PlacedLight { at, color: *color, intensity: *intensity, range: *range, radius: *radius, spot, shadows: *shadows });
+                }
+                Kind::Sun { color, illuminance } => {
+                    l.sun.get_or_insert(SunLight { dir: o.dir(), color: *color, illuminance: *illuminance });
+                }
                 Kind::ZipLine { to } => l.fixtures.push(Fixture::ZipLine { a: at, b: at + *to }),
                 Kind::SwingPole { to } => l.fixtures.push(Fixture::SwingPole { a: at, b: at + *to }),
                 Kind::Beam { to, .. } => l.fixtures.push(Fixture::Beam { a: at, b: at + *to }),
@@ -603,6 +643,7 @@ impl LevelDoc {
         }
         let (at, yaw) = spawn.unwrap_or((Vec3::ZERO, 0.0));
         l.spawn(at.to_array(), yaw);
+        l.ambient = self.ambient.map(|a| (a.color, a.brightness));
         l
     }
 
@@ -701,6 +742,20 @@ impl LevelDoc {
             }
             push(&mut d, o);
         }
+        for p in &l.placed_lights {
+            let o = match p.spot {
+                None => Object::new(Kind::PointLight { color: p.color, intensity: p.intensity, range: p.range, radius: p.radius, shadows: p.shadows }, p.at),
+                Some((dir, outer, inner)) => {
+                    let soft = if outer > 0.0 { 1.0 - inner / outer } else { 0.0 };
+                    facing(Kind::SpotLight { color: p.color, intensity: p.intensity, range: p.range, radius: p.radius, angle: outer.to_degrees(), soft, shadows: p.shadows }, p.at, dir)
+                }
+            };
+            push(&mut d, o);
+        }
+        if let Some(sun) = &l.sun {
+            push(&mut d, facing(Kind::Sun { color: sun.color, illuminance: sun.illuminance }, Vec3::new(0.0, 10.0, 0.0), sun.dir));
+        }
+        d.ambient = l.ambient.map(|(color, brightness)| Ambient { color, brightness });
         for m in &l.models {
             let mut o = Object::new(Kind::Model { path: m.path.clone(), scale: m.scale, bounds: None, solid: false }, m.at);
             o.set_rotation(m.turn);
@@ -818,6 +873,33 @@ mod tests {
         let old = "(name: \"Old\", objects: [(kind: MeProp(package: \"P_Rooftops\", mesh: \"S_Cistern_01\", scale: 2.0), at: (0.0, 0.0, 0.0))])";
         let d = LevelDoc::from_ron(old).unwrap();
         assert!(matches!(d.objects[0].kind, Kind::MeProp { scale, .. } if scale == Vec3::splat(2.0)));
+    }
+
+    /// Lights, the sun and the ambient light build into the level, and read back from it.
+    #[test]
+    fn lights_build_and_read_back() {
+        let mut d = LevelDoc::starter("T");
+        d.objects.push(Object::new(Kind::PointLight { color: Vec3::new(1.0, 0.2, 0.1), intensity: 400_000.0, range: 15.0, radius: 0.1, shadows: true }, Vec3::new(-3.0, 1.5, -9.0)));
+        let mut spot = Object::new(Kind::SpotLight { color: Vec3::new(0.2, 0.5, 1.0), intensity: 1_000_000.0, range: 20.0, radius: 0.1, angle: 25.0, soft: 0.4, shadows: false }, Vec3::new(3.0, 5.8, -9.0));
+        spot.pitch = -90.0;
+        d.objects.push(spot);
+        let mut sun = Object::new(Kind::Sun { color: Vec3::new(1.0, 0.6, 0.3), illuminance: 9000.0 }, Vec3::ZERO);
+        sun.face(Vec3::new(1.0, -1.0, 0.0));
+        d.objects.push(sun);
+        d.ambient = Some(Ambient { color: Vec3::ONE, brightness: 30.0 });
+        assert_eq!(LevelDoc::from_ron(&d.to_ron()).unwrap(), d);
+        let l = d.build();
+        assert_eq!(l.placed_lights.len(), 2);
+        let s = l.placed_lights[1].spot.unwrap();
+        assert!((s.0 - Vec3::NEG_Y).length() < 1e-4 && (s.1 - 25f32.to_radians()).abs() < 1e-5 && (s.2 - 15f32.to_radians()).abs() < 1e-4);
+        assert!((l.sun.unwrap().dir - Vec3::new(1.0, -1.0, 0.0).normalize()).length() < 1e-4);
+        assert_eq!(l.ambient, Some((Vec3::ONE, 30.0)));
+        let (back, _) = LevelDoc::from_level(&l);
+        assert_eq!(back.objects.iter().filter(|o| matches!(o.kind, Kind::PointLight { .. } | Kind::SpotLight { .. } | Kind::Sun { .. })).count(), 3);
+        assert_eq!(back.ambient, d.ambient);
+        let rebuilt = back.build();
+        assert_eq!(rebuilt.placed_lights.len(), 2);
+        assert!((rebuilt.placed_lights[1].spot.unwrap().2 - s.2).abs() < 1e-4);
     }
 
     #[test]
