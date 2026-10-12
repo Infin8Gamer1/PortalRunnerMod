@@ -653,8 +653,6 @@ fn cable_mesh(ropes: &[aperture::rope::Rope]) -> Mesh {
     mesh
 }
 
-/// Brush models (and props parented to them) follow their movers: doors slide, elevators
-/// ride, walls come and go.
 /// A map light's bulb (see [`bulbs`]).
 #[derive(Component)]
 pub struct Bulb;
@@ -698,6 +696,8 @@ pub fn bulbs(
     }
 }
 
+/// Brush models (and props parented to them) follow their movers: doors slide, elevators
+/// ride, walls come and go.
 pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform, Has<MapSprite>, &mut Visibility), Without<MapModel>>) {
     let movers = &game.sim.movers;
     for (p, mut tf, sprite, mut vis) in &mut props {

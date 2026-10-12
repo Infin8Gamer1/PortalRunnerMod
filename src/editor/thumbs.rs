@@ -117,10 +117,25 @@ pub fn run(
     mut me_cache: ResMut<MePropCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    ed: Res<super::Editor>,
 ) {
     let thumbs = &mut *thumbs;
     let Some(cam) = thumbs.camera else { return };
     let wanted = std::mem::take(&mut thumbs.wanted);
+    // Only while editing, lit (unlit, the pictures would be flat colour): else the camera's off,
+    // and a picture not yet taken is dropped (it's made again when its tile shows). One taken
+    // is kept: it arrives anyway.
+    if !ed.active || ed.view.unlit {
+        if let Some(job) = thumbs.job.take_if(|j| !j.shot) {
+            commands.entity(job.root).despawn();
+        }
+        if let Ok((mut c, _)) = cams.get_mut(cam) {
+            if c.is_active {
+                c.is_active = false;
+            }
+        }
+        return;
+    }
     // ---- the picture under way
     if let Some(job) = &mut thumbs.job {
         job.frames += 1;
@@ -151,6 +166,9 @@ pub fn run(
             } else if job.frames > 900 {
                 thumbs.failed.insert(job.prop);
                 commands.entity(job.root).despawn();
+                if let Ok((mut c, _)) = cams.get_mut(cam) {
+                    c.is_active = false;
+                }
                 thumbs.job = None;
             }
         } else if ready {

@@ -49,7 +49,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<thumbs::Thumbs>()
             .configure_sets(PostUpdate, TransformGizmoSystems.run_if(editing))
             .add_systems(Startup, (setup, thumbs::setup))
-            .add_systems(Update, (forward_gizmos, library::load, thumbs::run.run_if(|ed: Res<Editor>| ed.active && !ed.view.unlit), unlit, me_bounds.run_if(editing)))
+            .add_systems(Update, (forward_gizmos, library::load, thumbs::run, unlit, me_bounds.run_if(editing)))
             .add_systems(EguiPrimaryContextPass, ui::draw.run_if(editing));
     }
 }
@@ -314,6 +314,9 @@ impl Editor {
     pub fn add(&mut self, lib: &Library, pick: Pick, p: Vec3, n: Vec3, look: Vec3) {
         let objs = place(&self.doc, lib, pick, p, n, look, self.grid);
         let count = objs.len();
+        if count == 0 {
+            return;
+        }
         self.change(|doc| doc.objects.extend(objs));
         self.selected = Some(self.doc.objects.len() - 1);
         let name = match pick {
@@ -1052,7 +1055,10 @@ fn interact(
             Some(obj) => {
                 if let Ok(mut tf) = handles.get_mut(h) {
                     tf.translation = obj.at;
-                    tf.rotation = if obj.kind.turns().is_some() { obj.rotation() } else { Quat::IDENTITY };
+                    // (A box is sized along the world's axes, whichever way it faces: scaled
+                    // unturned, or its handles would size it along the wrong ones.)
+                    let sized = obj.kind.is_box() && settings.mode == TransformGizmoMode::Scale;
+                    tf.rotation = if obj.kind.turns().is_some() && !sized { obj.rotation() } else { Quat::IDENTITY };
                     tf.scale = match &obj.kind {
                         _ if obj.kind.is_box() => obj.size,
                         Kind::MeProp { scale, .. } | Kind::Model { scale, .. } => *scale,
@@ -1087,8 +1093,9 @@ fn interact(
         }
     }
 
-    // ---- keys
-    if typing || ed.looking {
+    // ---- keys (not while something's being dragged: an undo or a delete then would leave
+    // the drag holding the wrong document)
+    if typing || ed.looking || gizmo.active || ed.end_drag.is_some() {
         return;
     }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
