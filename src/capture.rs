@@ -1187,7 +1187,7 @@ fn script(name: &str) -> Vec<Act> {
         "nativeeditor" => vec![
             Wait(60),
             Edit(|ed, _| {
-                let files = crate::source_map::native_files(crate::extracted::find_root().as_deref());
+                let files = crate::source_map::native_files();
                 if let Some((p, _)) = files.into_iter().find(|(_, m)| m == "testchmb_a_00") {
                     if let Ok(d) = crate::editor::read_doc(&p) {
                         ed.open(d, Some(p));

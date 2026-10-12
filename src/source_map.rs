@@ -76,10 +76,10 @@ pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
         .collect()
 }
 
-/// The game's own copies of Portal's maps (`levels/portal/` in the extracted folder, made by
-/// `portal_extract`), in the maps' order: each one's file and map.
-pub fn native_files(root: Option<&Path>) -> Vec<(PathBuf, String)> {
-    let Some(dir) = root.map(|r| r.join("levels").join("portal")) else { return Vec::new() };
+/// The game's own copies of Portal's maps (`levels/portal/`, made by `portal_extract
+/// --port-maps`), in the maps' order: each one's file and map.
+pub fn native_files() -> Vec<(PathBuf, String)> {
+    let dir = crate::editor::levels_dir().join("portal");
     MAPS.iter().map(|(name, _)| (dir.join(format!("{name}.ron")), name.to_string())).filter(|(p, _)| p.is_file()).collect()
 }
 

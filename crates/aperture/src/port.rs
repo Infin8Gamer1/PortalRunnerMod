@@ -422,6 +422,26 @@ mod tests {
         format!("{:?}", std::mem::discriminant(i))
     }
 
+    /// The copies kept in the repository (`levels/portal/`) read, and build into a level with
+    /// its logic and a start, without the extracted files.
+    #[test]
+    fn the_committed_copies_build() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/portal");
+        let mut n = 0;
+        for (map, title) in MAPS {
+            let Ok(text) = std::fs::read_to_string(dir.join(format!("{map}.ron"))) else { continue };
+            let doc = LevelDoc::from_ron(&text).unwrap_or_else(|e| panic!("{map}: {e}"));
+            assert_eq!(doc.map.as_deref(), Some(*map));
+            assert_eq!(doc.name, native_title(title), "{map}");
+            let l = doc.build();
+            assert!(l.io.as_ref().is_some_and(|io| !io.ents.is_empty()), "{map}: no logic");
+            assert!(!l.solids.is_empty() && !l.checkpoints.is_empty(), "{map}");
+            assert!(l.art.as_ref().is_some_and(|a| !a.faces.is_empty()), "{map}: nothing drawn");
+            n += 1;
+        }
+        assert_eq!(n, MAPS.len(), "a map's copy is missing from levels/portal");
+    }
+
     /// Each extracted map's copy, saved and read back, makes the level the map makes: the same
     /// boxes, pieces, logic, lights and start.
     #[test]

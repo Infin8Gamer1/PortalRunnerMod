@@ -58,8 +58,8 @@ one: a white room with lamps and a start.
 
 ### Portal's maps, natively
 
-`portal_extract` makes each of Portal's maps into a level file (`levels/portal/` in the
-extracted folder): its **native chamber**, in the Chambers menu's second folder and under
+Each of Portal's maps is a level file in the repository (`levels/portal/`, made by
+`portal_extract -- --port-maps` from the extracted map): its **native chamber**, in the Chambers menu's second folder and under
 **File > Open a Portal chamber**. It's made the way the map was built, and plays as it does
 (the same boxes, pieces and logic: the solution tests play every chamber on it too):
 
@@ -85,9 +85,11 @@ Portal's white panels, concrete, black metal, glass, light panels and tool textu
 relays, timers, map-start, counters, cases, triggers, sliding doors and toggled walls (brush
 entities), GLaDOS scenes, Portal's lights, landmarks, level changes and the portal gun.
 
-Saving one writes its file in the extracted folder. Running the extractor again remakes the
-native chambers but keeps one that's been changed (`levels/portal/written.txt` knows each as
-it was written); delete it to have it made again. A native chamber's level change leads to
+The files hold the maps' layouts, not their assets: materials, models and scenes are named,
+and drawn from the extracted folder. Saving one writes its file in `levels/portal/` (commit it
+to keep the change). `--port-maps` remakes the native chambers from the extracted maps (when the
+converter's improved) but keeps one that's been changed (`levels/portal/written.txt` knows each
+as it was written); delete it to have it made again. A native chamber's level change leads to
 the next map's native chamber.
 
 What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits

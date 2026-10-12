@@ -424,7 +424,7 @@ impl Editor {
             match (0..game.levels.len()).find(|&j| game.groups[j] == crate::LevelGroup::PortalNative && game.source_names[j] == game.source_names[i]) {
                 Some(j) => j,
                 None => {
-                    self.status = "No copy of this map to edit: run the extractor (cargo run --release -p portal_extract). Starting a new level".into();
+                    self.status = "No copy of this map to edit in levels/portal (cargo run --release -p portal_extract -- --port-maps makes it). Starting a new level".into();
                     self.open(LevelDoc::starter("Untitled"), None);
                     return false;
                 }
@@ -567,7 +567,7 @@ fn doc_name(path: &Path) -> String {
 /// Portal's maps (startup).
 pub fn add_levels(mut game: ResMut<Game>, mut ed: ResMut<Editor>) {
     let before = game.levels.len();
-    for (path, map) in crate::source_map::native_files(crate::extracted::find_root().as_deref()) {
+    for (path, map) in crate::source_map::native_files() {
         let name = doc_name(&path);
         ed.files.push((game.levels.len(), path.clone()));
         game.levels.push((name, file_level(path)));

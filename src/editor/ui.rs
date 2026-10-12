@@ -219,9 +219,9 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
             }
         });
         ui.menu_button("Open a Portal chamber", |ui| {
-            let files = crate::source_map::native_files(crate::extracted::find_root().as_deref());
+            let files = crate::source_map::native_files();
             if files.is_empty() {
-                ui.weak("None yet: run the extractor (cargo run --release -p portal_extract)");
+                ui.weak("None in levels/portal (cargo run --release -p portal_extract -- --port-maps makes them)");
             }
             for (p, map) in files {
                 let title = aperture::port::MAPS.iter().find(|(m, _)| *m == map).map(|(_, t)| aperture::port::native_title(t)).unwrap_or(map);

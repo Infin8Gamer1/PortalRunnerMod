@@ -755,8 +755,9 @@ fn main() {
             None => println!("  no scenes.image: GLaDOS stays quiet"),
         }
     }
-    // The game's own copies of the maps, to play and edit (`levels/portal/`).
-    if maps_dir.is_some() && !args.iter().any(|a| a == "--no-maps") {
+    // The game's own copies of the maps, to play and edit (`levels/portal/` in the repository:
+    // made again only when asked, `--port-maps`).
+    if maps_dir.is_some() && !args.iter().any(|a| a == "--no-maps") && args.iter().any(|a| a == "--port-maps") {
         port_maps(&out);
     }
     // Every prop of both games, for the level editor (`--no-props` skips it: it's big).
@@ -1061,12 +1062,14 @@ fn fingerprint(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// The game's own copy of each extracted map, as a level file (`levels/portal/<map>.ron`,
-/// `aperture::port`). A copy that's been changed since it was written (in the level editor)
-/// is kept: `levels/portal/written.txt` has each one's fingerprint as written. Delete it to
-/// have it made again.
+/// The game's own copy of each extracted map, as a level file in the repository
+/// (`levels/portal/<map>.ron`, `aperture::port`): the map's layout, naming the assets it uses
+/// (which stay in the extracted folder). A copy that's been changed since it was written (in
+/// the level editor) is kept: `levels/portal/written.txt` has each one's fingerprint as
+/// written. Delete it to have it made again.
 fn port_maps(out: &Path) {
-    let (maps, dir) = (out.join("maps"), out.join("levels").join("portal"));
+    let maps = out.join("maps");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/portal");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }

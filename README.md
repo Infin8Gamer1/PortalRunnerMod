@@ -8,9 +8,12 @@ the game's own code). On top of that she carries the Aperture Science Handheld P
 blue and orange portals, momentum through them, cubes, buttons, doors, emancipation grills,
 aerial faith plates, hard light bridges, lasers and Portal 2's gels.
 
-A personal project, not for distribution. Nothing from Portal, Portal 2 or Mirror's Edge is in
-this repository: the game reads Mirror's Edge's files from your install at startup, and copies
-what it uses from Portal and Portal 2 out of your installs with the extractor below.
+A personal project, not for distribution. None of Portal's, Portal 2's or Mirror's Edge's
+assets (models, textures, sounds) are in this repository: the game reads Mirror's Edge's files
+from your install at startup, and copies what it uses from Portal and Portal 2 out of your
+installs with the extractor below. What is here is the layout of Portal's maps as the game's
+own level files (`levels/portal/`: brushes, entities and their logic, naming the assets they
+use), so changes to them can be kept.
 
 ## Run it
 
@@ -148,11 +151,12 @@ tip over when a cube hits them, you run into them, or you kick them (Mirror's Ed
 The escape's rocket turrets lock on and fire slow rockets: put a portal in front of one and
 send it into the glass, the tubes or GLaDOS.
 
-The extractor also makes each map into a **native chamber**: a level file of the game's own
-(`assets/extracted/levels/portal/`, made from the map's brushes, entities, props and overlays by
-`aperture::port`) that plays and looks as the map does, and opens in the level editor, every
-brush, entity and wire of it there to change. Running the extractor again remakes them, but
-keeps one you've edited and saved (delete it to have it made again).
+Each map is also a **native chamber**: a level file of the game's own, kept in the repository
+(`levels/portal/`, made from the map's brushes, entities, props and overlays by `aperture::port`),
+that plays and looks as the map does (drawn with the extracted assets it names), and opens in the
+level editor, every brush, entity and wire of it there to change. `cargo run --release -p
+portal_extract -- --port-maps` makes them again from the extracted maps, but keeps one that's
+been edited (delete it to have it made again).
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
