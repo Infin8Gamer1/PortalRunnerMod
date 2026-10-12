@@ -1,6 +1,6 @@
 //! The editor's panels (egui): the toolbar, the content browser, the outliner and the details.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::gizmos::transform_gizmo::{TransformGizmoMode, TransformGizmoSettings};
 use bevy::prelude::*;
@@ -10,7 +10,9 @@ use aperture::doc::{Kind, LevelDoc};
 use aperture::{CubeKind, Inputs, Mat, Paint, PortalColor};
 
 use super::catalog::{Category, CATALOG};
-use super::Editor;
+use super::library::{Library, GAMES};
+use super::thumbs::Thumbs;
+use super::{Editor, Pick};
 use crate::chamber::ChamberMats;
 use crate::{menu, Game};
 
@@ -19,14 +21,16 @@ const CUBES: [CubeKind; 3] = [CubeKind::Storage, CubeKind::Companion, CubeKind::
 const PAINTS: [Paint; 4] = [Paint::Bounce, Paint::Speed, Paint::Portal, Paint::Water];
 const GRIDS: [f32; 6] = [0.0, 0.125, 0.25, 0.5, 1.0, 2.0];
 
-/// The browser's tab and search, the outliner's filter.
+/// The browser's search, the outliner's filter.
 #[derive(Default)]
 pub struct UiState {
-    category: Option<usize>,
     search: String,
     filter: String,
     /// The selection the outliner last showed (to scroll to a new one).
     shown: Option<usize>,
+    /// What the props browser lists (and for what).
+    prop_list: Vec<usize>,
+    prop_key: Option<(usize, Option<String>, String, usize)>,
 }
 
 /// A material's look for its tile: its texture, else its colour.
@@ -46,7 +50,16 @@ pub fn draw(
     materials: Res<Assets<StandardMaterial>>,
     mut thumbs: Local<HashMap<Mat, Thumb>>,
     mut state: Local<UiState>,
+    lib: Res<Library>,
+    mut prop_thumbs: ResMut<Thumbs>,
+    mut prop_textures: Local<HashMap<usize, egui::TextureId>>,
 ) -> Result {
+    // The props' pictures made since last time, for egui.
+    for (i, h) in &prop_thumbs.ready {
+        if !prop_textures.contains_key(i) {
+            prop_textures.insert(*i, contexts.add_image(EguiTextureHandle::Strong(h.clone())));
+        }
+    }
     if let Some(m) = &mats {
         for mat in MATS {
             if thumbs.contains_key(&mat) {
@@ -90,7 +103,9 @@ pub fn draw(
 
     // ---- content browser
     let left = egui::Panel::left("editor_content").resizable(true).default_size(330.0).size_range(200.0..=700.0).show(&mut root, |ui| {
-        content(ui, ed, &mut state, &thumbs);
+        let Thumbs { wanted, failed, .. } = &mut *prop_thumbs;
+        let mut props = PropThumbs { textures: &prop_textures, wanted, failed };
+        content(ui, ed, &mut state, &thumbs, &lib, &mut props);
     });
     ed.panels.push(left.response.rect);
 
@@ -203,26 +218,30 @@ fn grid_name(g: f32) -> String {
     if g <= 0.0 { "off".into() } else { format!("{g} m") }
 }
 
-fn content(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, thumbs: &HashMap<Mat, Thumb>) {
+fn content(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, thumbs: &HashMap<Mat, Thumb>, lib: &Library, props: &mut PropThumbs) {
     ui.heading("Content");
     ui.horizontal_wrapped(|ui| {
-        if ui.selectable_label(state.category.is_none(), "All").clicked() {
-            state.category = None;
+        if ui.selectable_label(ed.tab.is_none(), "All").clicked() {
+            ed.tab = None;
         }
-        for (i, c) in Category::ALL.iter().enumerate() {
-            if ui.selectable_label(state.category == Some(i), c.name()).clicked() {
-                state.category = Some(i);
+        for c in Category::ALL {
+            if ui.selectable_label(ed.tab == Some(c), c.name()).clicked() {
+                ed.tab = Some(c);
             }
         }
     });
     ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search"));
     ui.weak("Drag into the view, or click and then click in the view. Double-click: in front of you.");
     ui.separator();
-    let search = state.search.to_lowercase();
     let panel = ui.clip_rect();
+    if ed.tab == Some(Category::Props) {
+        props_browser(ui, ed, state, lib, props, panel);
+        return;
+    }
+    let search = state.search.to_lowercase();
     egui::ScrollArea::vertical().id_salt("content").show(ui, |ui| {
-        for (ci, cat) in Category::ALL.iter().enumerate() {
-            if state.category.is_some_and(|c| c != ci) {
+        for cat in Category::ALL.iter() {
+            if ed.tab.is_some_and(|c| c != *cat) {
                 continue;
             }
             let entries: Vec<usize> = (0..CATALOG.len()).filter(|&i| CATALOG[i].category == *cat && (search.is_empty() || CATALOG[i].name.to_lowercase().contains(&search))).collect();
@@ -231,49 +250,163 @@ fn content(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, thumbs: &Has
             }
             ui.label(egui::RichText::new(cat.name()).strong());
             // (Rows by hand: a drag source doesn't wrap in a wrapping layout.)
-            let per_row = ((ui.available_width() + 6.0) / 78.0).floor().max(1.0) as usize;
+            let per_row = ((ui.available_width() + 6.0) / (TILE.x + 6.0)).floor().max(1.0) as usize;
             for row in entries.chunks(per_row) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                     for &i in row {
-                        let armed = ed.armed == Some(i);
+                        let pick = Pick::Entry(i);
+                        let armed = ed.armed == Some(pick);
                         let (rect, r) = ui.allocate_exact_size(TILE, egui::Sense::click_and_drag());
                         tile(ui.painter(), rect, i, thumbs, armed);
-                        if r.dragged() {
-                            ed.drop = Some(i);
-                            ed.armed = None;
-                            // Over the panel, the tile goes with the cursor; over the view, the
-                            // outline of where it would land shows instead.
-                            if let Some(p) = ui.ctx().pointer_latest_pos().filter(|p| panel.contains(*p)) {
-                                let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dragged tile")));
-                                tile(&painter, egui::Rect::from_center_size(p, TILE), i, thumbs, false);
-                            }
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                        } else if r.double_clicked() {
-                            ed.armed = None;
-                            ed.place_in_view(i);
-                        } else if r.clicked() {
-                            ed.armed = if armed { None } else { Some(i) };
-                            if ed.armed.is_some() {
-                                ed.status = format!("Click in the view to place {} (Shift: more than one, Esc: stop)", CATALOG[i].name);
-                            }
-                        }
-                        ed.tiles.push((i, r.rect));
-                        r.on_hover_cursor(egui::CursorIcon::Grab);
+                        tile_input(ui, ed, lib, pick, &r, CATALOG[i].name, panel, |p, rect| tile(p, rect, i, thumbs, false));
+                        ed.tiles.push((pick, r.rect));
                     }
                 });
             }
             ui.add_space(6.0);
         }
+        if ed.tab.is_none() {
+            ui.weak("Portal's, Portal 2's and Mirror's Edge's props are under Props.");
+        }
     });
 }
 
-const TILE: egui::Vec2 = egui::vec2(72.0, 88.0);
+/// The props' pictures as egui knows them, and the ones the browser is showing.
+pub struct PropThumbs<'a> {
+    pub textures: &'a HashMap<usize, egui::TextureId>,
+    pub wanted: &'a mut Vec<usize>,
+    /// The ones whose pictures couldn't be made.
+    pub failed: &'a HashSet<usize>,
+}
+
+/// Every prop, by game and folder: only the rows on screen are laid out (and only their
+/// pictures asked for).
+fn props_browser(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, lib: &Library, props: &mut PropThumbs, panel: egui::Rect) {
+    if !lib.loaded {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Reading the props...");
+        });
+        return;
+    }
+    ui.horizontal(|ui| {
+        for (g, name) in GAMES.iter().enumerate() {
+            if ui.selectable_label(ed.prop_game == g, *name).clicked() && ed.prop_game != g {
+                ed.prop_game = g;
+                ed.prop_folder = None;
+            }
+        }
+    });
+    let folders = &lib.folders[ed.prop_game];
+    egui::ComboBox::from_id_salt("prop_folder").width(ui.available_width() - 8.0).selected_text(ed.prop_folder.clone().unwrap_or_else(|| "All folders".into())).show_ui(ui, |ui| {
+        ui.selectable_value(&mut ed.prop_folder, None, "All folders");
+        for f in folders {
+            ui.selectable_value(&mut ed.prop_folder, Some(f.clone()), f);
+        }
+    });
+    // What's listed, worked out again only when what picks it changes.
+    let key = (ed.prop_game, ed.prop_folder.clone(), state.search.to_lowercase(), lib.props.len());
+    if state.prop_key.as_ref() != Some(&key) {
+        state.prop_list = (0..lib.props.len())
+            .filter(|&i| {
+                let p = &lib.props[i];
+                p.game == key.0 && key.1.as_ref().is_none_or(|f| p.folder == *f) && (key.2.is_empty() || p.name.to_lowercase().contains(&key.2) || p.folder.to_lowercase().contains(&key.2))
+            })
+            .collect();
+        state.prop_key = Some(key);
+    }
+    if state.prop_list.is_empty() {
+        ui.weak(match ed.prop_game {
+            2 => "No Mirror's Edge props: the game wasn't found (set FAITH_ME_DIR or me_path.txt).",
+            _ if lib.props.iter().all(|p| p.game == 2) => "No Portal props yet: run cargo run --release -p portal_extract -- --only-props",
+            _ => "Nothing matches.",
+        });
+        return;
+    }
+    ui.weak(format!("{} props", state.prop_list.len()));
+    let per_row = ((ui.available_width() + 6.0) / (TILE.x + 6.0)).floor().max(1.0) as usize;
+    let rows = state.prop_list.len().div_ceil(per_row);
+    let list = &state.prop_list;
+    egui::ScrollArea::vertical().id_salt("props").show_rows(ui, TILE.y + 6.0, rows, |ui, range| {
+        for row in range {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                for &i in list.iter().skip(row * per_row).take(per_row) {
+                    let pick = Pick::Prop(i);
+                    let armed = ed.armed == Some(pick);
+                    let tex = props.textures.get(&i).copied();
+                    let name = &lib.props[i].name;
+                    let failed = tex.is_none() && props.failed.contains(&i);
+                    let (rect, r) = ui.allocate_exact_size(TILE, egui::Sense::click_and_drag());
+                    prop_tile(ui.painter(), rect, name, tex, armed, failed);
+                    if tex.is_none() {
+                        props.wanted.push(i);
+                    }
+                    ed.tiles.push((pick, r.rect));
+                    let r = r.on_hover_text(format!("{name}\n{}", lib.props[i].folder));
+                    tile_input(ui, ed, lib, pick, &r, name, panel, |p, rect| prop_tile(p, rect, name, tex, false, failed));
+                }
+            });
+        }
+    });
+}
+
+/// A tile's clicks and drags: dragged into the view, clicked and then the view clicked, or
+/// double-clicked (in front of the camera). `paint` draws it following the cursor.
+#[allow(clippy::too_many_arguments)]
+fn tile_input(ui: &egui::Ui, ed: &mut Editor, lib: &Library, pick: Pick, r: &egui::Response, name: &str, panel: egui::Rect, paint: impl Fn(&egui::Painter, egui::Rect)) {
+    let armed = ed.armed == Some(pick);
+    if r.dragged() {
+        ed.drop = Some(pick);
+        ed.armed = None;
+        // Over the panel, the tile goes with the cursor; over the view, the outline of where it
+        // would land shows instead.
+        if let Some(p) = ui.ctx().pointer_latest_pos().filter(|p| panel.contains(*p)) {
+            paint(&ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dragged tile"))), egui::Rect::from_center_size(p, TILE));
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if r.double_clicked() {
+        ed.armed = None;
+        ed.place_in_view(lib, pick);
+    } else if r.clicked() {
+        ed.armed = if armed { None } else { Some(pick) };
+        if ed.armed.is_some() {
+            ed.status = format!("Click in the view to place {name} (Shift: more than one, Esc: stop)");
+        }
+    }
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+}
+
+/// A prop's tile: its picture (a placeholder until it's made), its name under it.
+fn prop_tile(p: &egui::Painter, rect: egui::Rect, name: &str, tex: Option<egui::TextureId>, armed: bool, failed: bool) {
+    let img = egui::Rect::from_min_size(rect.min, egui::vec2(TILE.x, TILE.x));
+    p.rect_filled(rect, 4.0, egui::Color32::from_gray(38));
+    match tex {
+        Some(id) => {
+            p.image(id, img.shrink(3.0), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        None => {
+            p.rect_filled(img.shrink(3.0), 3.0, egui::Color32::from_gray(30));
+            p.text(img.center(), egui::Align2::CENTER_CENTER, if failed { "?" } else { "…" }, egui::FontId::proportional(20.0), egui::Color32::from_gray(90));
+        }
+    }
+    if armed {
+        p.rect_stroke(rect, 4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 190, 30)), egui::StrokeKind::Inside);
+    }
+    let label = egui::Rect::from_min_max(egui::pos2(rect.min.x + 2.0, img.max.y), egui::pos2(rect.max.x - 2.0, rect.max.y));
+    let galley = p.layout(name.to_string(), egui::FontId::proportional(10.0), egui::Color32::from_gray(210), label.width());
+    p.with_clip_rect(label).galley(egui::pos2(label.center().x - galley.size().x * 0.5, label.min.y + 1.0), galley, egui::Color32::WHITE);
+}
+
+const TILE: egui::Vec2 = egui::vec2(76.0, 102.0);
 
 /// A content browser tile: the material, or a coloured glyph, with the name under it.
 fn tile(p: &egui::Painter, rect: egui::Rect, i: usize, thumbs: &HashMap<Mat, Thumb>, armed: bool) {
     let e = &CATALOG[i];
-    let img = egui::Rect::from_min_size(rect.min, egui::vec2(72.0, 64.0));
+    let img = egui::Rect::from_min_size(rect.min, egui::vec2(TILE.x, TILE.x));
     p.rect_filled(rect, 4.0, egui::Color32::from_gray(38));
     if armed {
         p.rect_stroke(rect, 4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 190, 30)), egui::StrokeKind::Inside);
@@ -468,6 +601,22 @@ fn inputs(ui: &mut egui::Ui, inp: &mut Inputs, newest: usize) {
     ui.end_row();
 }
 
+/// A prop's scale, and whether it's solid (a block the size of its box).
+fn prop_fields(ui: &mut egui::Ui, scale: &mut f32, bounds: &Option<(Vec3, Vec3)>, solid: &mut bool) {
+    ui.label("Scale");
+    ui.add(egui::DragValue::new(scale).speed(0.01).range(0.05..=20.0));
+    ui.end_row();
+    ui.label("Solid");
+    ui.add_enabled(bounds.is_some(), egui::Checkbox::without_text(solid)).on_hover_text("A block the size of its box stops Faith and cubes");
+    ui.end_row();
+    if let Some((lo, hi)) = bounds {
+        let size = (*hi - *lo) * *scale;
+        ui.label("Size");
+        ui.label(format!("{:.2} x {:.2} x {:.2} m", size.x, size.y, size.z));
+        ui.end_row();
+    }
+}
+
 /// The fields of what it is; true if the faith plate's target is to be picked in the view.
 fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
     let mut pick = false;
@@ -601,30 +750,17 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             });
             ui.end_row();
         }
-        Kind::MeProp { package, mesh, scale, solid } => {
-            ui.label("Package");
-            ui.text_edit_singleline(package);
+        Kind::MeProp { package, mesh, scale, bounds, solid } => {
+            ui.label("Mirror's Edge");
+            ui.label(format!("{package} / {mesh}"));
             ui.end_row();
-            ui.label("Mesh");
-            ui.text_edit_singleline(mesh);
+            prop_fields(ui, scale, bounds, solid);
+        }
+        Kind::Model { path, scale, bounds, solid } => {
+            ui.label("Model");
+            ui.label(path.as_str());
             ui.end_row();
-            ui.label("Scale");
-            ui.add(egui::DragValue::new(scale).speed(0.01).range(0.05..=20.0));
-            ui.end_row();
-            ui.label("Solid");
-            let mut on = solid.is_some();
-            if ui.checkbox(&mut on, "").changed() {
-                *solid = on.then_some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.0, 0.5)));
-            }
-            ui.end_row();
-            if let Some((lo, hi)) = solid {
-                ui.label("Box from");
-                vec3(ui, lo, 0.02);
-                ui.end_row();
-                ui.label("to");
-                vec3(ui, hi, 0.02);
-                ui.end_row();
-            }
+            prop_fields(ui, scale, bounds, solid);
         }
         Kind::ZipLine { to } | Kind::SwingPole { to } => {
             ui.label("To (from here)");

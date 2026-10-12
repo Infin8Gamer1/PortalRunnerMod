@@ -336,6 +336,9 @@ pub struct Level {
     pub lamps: Vec<Vec3>,
     /// Mirror's Edge's props, for dressing (drawn from the player's install when it's there).
     pub me_props: Vec<MeProp>,
+    /// Models from the extracted props library (the level editor's): drawn only (a block
+    /// stands for its collision, if it has one).
+    pub models: Vec<ModelProp>,
     /// One of Portal's own maps (its name, `testchmb_a_00`): drawn from its faces, not
     /// [`Level::solids`]' boxes.
     pub source: Option<String>,
@@ -432,6 +435,17 @@ pub struct MeProp {
     pub stand_in: Option<Aabb>,
 }
 
+/// A model from the extracted props: `path` under the extracted folder (`props/portal2/...glb`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelProp {
+    pub path: String,
+    pub at: Vec3,
+    pub yaw: f32,
+    pub scale: f32,
+    /// The block that stands for it (not drawn while it is).
+    pub solid: Option<Aabb>,
+}
+
 impl Level {
     pub fn new(name: &'static str) -> Self {
         Level {
@@ -451,6 +465,7 @@ impl Level {
             indoor: true,
             lamps: Vec::new(),
             me_props: Vec::new(),
+            models: Vec::new(),
             source: None,
             lights: Vec::new(),
             grill_edges: Vec::new(),

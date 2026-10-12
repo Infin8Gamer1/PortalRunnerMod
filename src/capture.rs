@@ -86,6 +86,10 @@ enum Act {
 enum Hand {
     /// Go to the middle of the editor's content browser tile with this name.
     ToTile(&'static str),
+    /// Go to the `n`th prop tile showing.
+    ToProp(usize),
+    /// Go to the selection's end handle: an arrow (0-2), or its ring (3).
+    ToEnd(usize),
     /// Go here, as a fraction of the window's size.
     To(f32, f32),
     Press,
@@ -1101,13 +1105,13 @@ fn script(name: &str) -> Vec<Act> {
             Edit(|ed, _| {
                 use crate::editor::catalog::find;
                 let look = Vec3::NEG_Z;
-                ed.add(find("Floor button"), Vec3::new(-3.0, 0.0, -6.0), Vec3::Y, look);
-                ed.add(find("Storage cube"), Vec3::new(3.0, 0.0, -5.0), Vec3::Y, look);
-                ed.add(find("Cut (doorway)"), Vec3::new(0.0, 1.5, -16.0), Vec3::Z, look);
-                ed.add(find("Door"), Vec3::new(0.0, 0.0, -16.3), Vec3::Y, look);
-                ed.add(find("Laser emitter"), Vec3::new(-6.0, 2.0, -12.0), Vec3::X, look);
-                ed.add(find("Faith plate"), Vec3::new(3.0, 0.0, -11.0), Vec3::Y, look);
-                ed.add(find("Black stripe"), Vec3::new(0.0, 0.0, -9.0), Vec3::Y, look);
+                ed.add_entry(find("Floor button"), Vec3::new(-3.0, 0.0, -6.0), Vec3::Y, look);
+                ed.add_entry(find("Storage cube"), Vec3::new(3.0, 0.0, -5.0), Vec3::Y, look);
+                ed.add_entry(find("Cut (doorway)"), Vec3::new(0.0, 1.5, -16.0), Vec3::Z, look);
+                ed.add_entry(find("Door"), Vec3::new(0.0, 0.0, -16.3), Vec3::Y, look);
+                ed.add_entry(find("Laser emitter"), Vec3::new(-6.0, 2.0, -12.0), Vec3::X, look);
+                ed.add_entry(find("Faith plate"), Vec3::new(3.0, 0.0, -11.0), Vec3::Y, look);
+                ed.add_entry(find("Black stripe"), Vec3::new(0.0, 0.0, -9.0), Vec3::Y, look);
                 ed.selected = ed.doc.objects.iter().position(|o| matches!(o.kind, aperture::doc::Kind::Door { .. }));
                 ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
             }),
@@ -1180,10 +1184,10 @@ fn script(name: &str) -> Vec<Act> {
                 Edit(|ed, _| {
                     use crate::editor::catalog::find;
                     let look = Vec3::NEG_Z;
-                    ed.add(find("Ladder"), Vec3::new(-6.0, 1.0, -6.0), Vec3::X, look);
-                    ed.add(find("Zipline"), Vec3::new(4.0, 0.0, -3.0), Vec3::Y, look);
-                    ed.add(find("Swing pole"), Vec3::new(0.0, 0.0, -12.0), Vec3::Y, look);
-                    ed.add(find("Balance beam"), Vec3::new(-3.0, 0.0, -10.0), Vec3::Y, look);
+                    ed.add_entry(find("Ladder"), Vec3::new(-6.0, 1.0, -6.0), Vec3::X, look);
+                    ed.add_entry(find("Zipline"), Vec3::new(4.0, 0.0, -3.0), Vec3::Y, look);
+                    ed.add_entry(find("Swing pole"), Vec3::new(0.0, 0.0, -12.0), Vec3::Y, look);
+                    ed.add_entry(find("Balance beam"), Vec3::new(-3.0, 0.0, -10.0), Vec3::Y, look);
                     ed.selected = None;
                     ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.5, -0.8), yaw: 0.0, pitch: -0.3, speed: 8.0 };
                 }),
@@ -1196,6 +1200,67 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("mouse_07_title_menu"),
             ]
         }
+        // The level editor's props (PORTAL_EDIT=1): Portal 2's and Mirror's Edge's with their
+        // pictures, one of each dragged in; then a zipline's end dragged by its handle.
+        "editorprops" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                ed.open(aperture::doc::LevelDoc::starter("Props"), None);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+                ed.tab = Some(crate::editor::catalog::Category::Props);
+                ed.prop_game = 1;
+                ed.prop_folder = Some("props_lab".into());
+            }),
+            Wait(400),
+            Shot("props_01_portal2"),
+            Mouse(Hand::ToProp(2)),
+            Wait(2),
+            Mouse(Hand::Press),
+            Wait(2),
+            Mouse(Hand::To(0.4, 0.55)),
+            Wait(2),
+            Mouse(Hand::To(0.45, 0.62)),
+            Wait(6),
+            Shot("props_02_dragging"),
+            Mouse(Hand::Release),
+            Wait(60),
+            Shot("props_03_placed"),
+            Edit(|ed, _| {
+                ed.prop_game = 2;
+                ed.prop_folder = Some("P_Rooftops".into());
+            }),
+            Wait(500),
+            Shot("props_04_mirrors_edge"),
+            Mouse(Hand::ToProp(0)),
+            Wait(2),
+            Mouse(Hand::Press),
+            Wait(2),
+            Mouse(Hand::To(0.55, 0.6)),
+            Wait(2),
+            Mouse(Hand::To(0.6, 0.7)),
+            Wait(6),
+            Mouse(Hand::Release),
+            Wait(60),
+            Shot("props_05_me_placed"),
+            Edit(|ed, _| {
+                use crate::editor::catalog::find;
+                ed.add_entry(find("Zipline"), Vec3::new(-4.0, 0.0, -3.0), Vec3::Y, Vec3::NEG_Z);
+            }),
+            Wait(30),
+            Shot("props_06_zipline_handles"),
+            Mouse(Hand::ToEnd(0)),
+            Wait(3),
+            Mouse(Hand::Press),
+            Wait(2),
+            Mouse(Hand::To(0.75, 0.6)),
+            Wait(4),
+            Mouse(Hand::To(0.8, 0.62)),
+            Wait(6),
+            Mouse(Hand::Release),
+            Wait(30),
+            Shot("props_07_zipline_end_moved"),
+            Edit(|ed, _| println!("capture: objects {:?}", ed.doc.objects.iter().map(|o| format!("{} at {} {:?}", o.kind.label(), o.at, o.kind)).filter(|s| !s.contains("block") && !s.contains("Lamp")).collect::<Vec<_>>())),
+        ],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -1607,11 +1672,25 @@ impl MouseHand<'_, '_> {
         let to = match m {
             Hand::ToTile(name) => {
                 let i = crate::editor::catalog::find(name);
-                let Some((_, r)) = editor.tiles.iter().find(|(j, _)| *j == i) else {
+                let Some((_, r)) = editor.tiles.iter().find(|(j, _)| *j == crate::editor::Pick::Entry(i)) else {
                     println!("capture: no tile {name} on screen");
                     return;
                 };
                 Some(Vec2::new(r.center().x, r.center().y))
+            }
+            Hand::ToProp(n) => {
+                let Some((_, r)) = editor.tiles.iter().filter(|(p, _)| matches!(p, crate::editor::Pick::Prop(_))).nth(n) else {
+                    println!("capture: no prop tile {n} on screen");
+                    return;
+                };
+                Some(Vec2::new(r.center().x, r.center().y))
+            }
+            Hand::ToEnd(axis) => {
+                let Some(p) = editor.end_handle_on_screen(&w, axis) else {
+                    println!("capture: no end handle");
+                    return;
+                };
+                Some(p)
             }
             Hand::To(x, y) => Some(Vec2::new(x * w.width(), y * w.height())),
             _ => None,

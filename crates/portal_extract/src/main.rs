@@ -476,6 +476,11 @@ fn main() {
         }
         return;
     }
+    // `--only-props`: just the props library for the level editor (`--props` redoes it all).
+    if args.iter().any(|a| a == "--only-props") {
+        prop_library(&games, &out, args.iter().any(|a| a == "--props"));
+        return;
+    }
     // One model, without rewriting the other extracted files. The pellet launcher's bind
     // pose isn't its closed mouth; `--only-launchers` writes it resting on `@idle_closed`.
     if args.iter().any(|a| a == "--only-launchers") {
@@ -740,9 +745,110 @@ fn main() {
             None => println!("  no scenes.image: GLaDOS stays quiet"),
         }
     }
+    // Every prop of both games, for the level editor (`--no-props` skips it: it's big).
+    if !args.iter().any(|a| a == "--no-props") {
+        prop_library(&games, &out, args.iter().any(|a| a == "--props"));
+    }
     if !missing.is_empty() {
         println!("Not found (the game falls back to stand-ins): {}", missing.join(", "));
     }
+}
+
+/// The level editor's props: every model under `models/props*` of Portal 2, and of Portal
+/// (its own, and the Half-Life 2 ones its maps use), as `props/<game>/<path under models/>.glb`,
+/// and `props/index.tsv`: a line each, `game<TAB>path<TAB>min x y z<TAB>max x y z` (its bounds,
+/// ours). Models already written are kept (unless `redo`); a few threads at once.
+fn prop_library(games: &[Game], out: &Path, redo: bool) {
+    let dir = out.join("props");
+    let index_path = dir.join("index.tsv");
+    // What's there already, with its bounds.
+    let mut known: HashMap<(String, String), String> = HashMap::new();
+    if let Ok(text) = std::fs::read_to_string(&index_path) {
+        for line in text.lines() {
+            let mut f = line.splitn(3, '\t');
+            if let (Some(g), Some(p), Some(rest)) = (f.next(), f.next(), f.next()) {
+                known.insert((g.to_string(), p.to_string()), rest.to_string());
+            }
+        }
+    }
+    let mut jobs: Vec<(&Game, String)> = Vec::new();
+    for g in games {
+        let mut paths: Vec<String> = Vec::new();
+        // Portal's own archive (the first), not Half-Life 2's: of those, what its maps use.
+        let own = if g.name == "portal" { &g.vpks[..1.min(g.vpks.len())] } else { &g.vpks[..] };
+        for v in own {
+            paths.extend(v.paths().filter(|p| p.starts_with("models/props") && p.ends_with(".mdl")).map(String::from));
+        }
+        if g.name == "portal" {
+            let maps = out.join("models/map");
+            let mut stack = vec![maps.clone()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.extension().is_some_and(|x| x == "glb") {
+                        let rel = p.strip_prefix(&maps).unwrap().with_extension("");
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        if rel.starts_with("props") && !rel.contains("_skin") {
+                            paths.push(format!("models/{rel}.mdl"));
+                        }
+                    }
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        jobs.extend(paths.into_iter().map(|p| (g, p)));
+    }
+    let total = jobs.len();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(Vec::new());
+    let failed = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(12);
+    println!("  props for the level editor: {total} models ({threads} threads)");
+    // (Quiet about the models the reader panics on: they're counted.)
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((g, mdl)) = jobs.get(i) else { break };
+                let rel = mdl.trim_start_matches("models/").trim_end_matches(".mdl").to_string();
+                let file = dir.join(g.name).join(format!("{rel}.glb"));
+                if !redo && file.exists() {
+                    if let Some(b) = known.get(&(g.name.to_string(), rel.clone())) {
+                        results.lock().unwrap().push(format!("{}\t{rel}\t{b}", g.name));
+                        continue;
+                    }
+                }
+                // (Some models trip the reader up: a panic is one model lost, not the lot.)
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert_model_bounds(g, games, mdl, 0, 0.0, &[]))).unwrap_or_else(|_| Err("unreadable".into()));
+                match made {
+                    Ok((bytes, lo, hi)) => {
+                        let _ = std::fs::create_dir_all(file.parent().unwrap());
+                        if std::fs::write(&file, bytes).is_ok() {
+                            let v = |v: glam::Vec3| format!("{:.3} {:.3} {:.3}", v.x, v.y, v.z);
+                            results.lock().unwrap().push(format!("{}\t{rel}\t{}\t{}", g.name, v(lo), v(hi)));
+                        }
+                    }
+                    Err(_) => {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                if i % 200 == 0 {
+                    println!("    {i} of {total}");
+                }
+            });
+        }
+    });
+    std::panic::set_hook(hook);
+    let mut lines = results.into_inner().unwrap();
+    lines.sort();
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(&index_path, lines.join("\n") + "\n").expect("write props index");
+    println!("  {} props ({} couldn't be read)", lines.len(), failed.into_inner());
 }
 
 fn inspect(games: &[Game], mdl_path: &str) {
@@ -990,6 +1096,11 @@ fn root_turn(model: &vmdl::Model, p: [f32; 3]) -> [f32; 3] {
 /// Convert a model (with skin `skin`) to glTF: a part per bone that moves any of it, and the
 /// animations `anims` names ((the MDL's name, ours)) as keyframes on those parts.
 fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32, anims: &[(&str, &str)]) -> Result<Vec<u8>, String> {
+    convert_model_bounds(game, all, mdl_path, skin, turn_deg, anims).map(|(bytes, ..)| bytes)
+}
+
+/// [`convert_model`], and the model's bounds (ours, as it rests).
+fn convert_model_bounds(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_deg: f32, anims: &[(&str, &str)]) -> Result<(Vec<u8>, glam::Vec3, glam::Vec3), String> {
     // Source space to ours (see `convert_point`), then the extra turn.
     let to_ours = glam::Quat::from_rotation_z(turn_deg.to_radians()) * glam::Quat::from_mat3(&glam::Mat3::from_cols(glam::Vec3::NEG_Z, glam::Vec3::NEG_X, glam::Vec3::Y));
     let convert = |p: glam::Vec3| to_ours * (p * 0.0254);
@@ -1130,5 +1241,16 @@ fn convert_model(game: &Game, all: &[Game], mdl_path: &str, skin: usize, turn_de
             glb::Part { name: names.get(b).cloned().unwrap_or_else(|| format!("bone{b}")), pivot: pivot_of(b).to_array(), verts, prims }
         })
         .collect();
-    Ok(glb::write(&out, &materials, &clips))
+    let (mut lo, mut hi) = (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN));
+    for part in &out {
+        for v in &part.verts {
+            let p = glam::Vec3::from(part.pivot) + glam::Vec3::from(v.0);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+    }
+    if lo.x > hi.x {
+        return Err("no vertices".into());
+    }
+    Ok((glb::write(&out, &materials, &clips), lo, hi))
 }

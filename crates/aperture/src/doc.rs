@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use faith_move::climb::Ladder;
 use faith_move::{Aabb, Fixture};
 
-use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, MoverDef, Paint, PresetPortal, Sig, Solid, NO_MODEL};
+use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, ModelProp, MoverDef, Paint, PresetPortal, Sig, Solid, NO_MODEL};
 use crate::portal::PortalColor;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -141,9 +141,13 @@ pub enum Kind {
     /// A ladder (or drainpipe) on a wall: its foot here, on the wall's face, facing out of the
     /// wall; she climbs out `height` up.
     Ladder { height: f32, #[serde(default)] pipe: bool, #[serde(default = "yes")] exit: bool },
-    /// A Mirror's Edge static mesh, standing here, turned `yaw`; solid in the box `solid` (from
-    /// here, not turned), which is drawn instead when the game isn't installed.
-    MeProp { package: String, mesh: String, #[serde(default = "one")] scale: f32, #[serde(default)] solid: Option<(Vec3, Vec3)> },
+    /// A Mirror's Edge static mesh, standing here, turned `yaw`. `bounds` is its box (from here,
+    /// before it's turned or scaled); with `solid`, that's a block too (turned with it a quarter
+    /// at a time), drawn instead when the game isn't installed.
+    MeProp { package: String, mesh: String, #[serde(default = "one")] scale: f32, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
+    /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
+    Model { path: String, #[serde(default = "one")] scale: f32, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
 }
 
 fn gel_rate() -> f32 {
@@ -189,7 +193,7 @@ impl Kind {
     pub fn turns(&self) -> Option<bool> {
         match self {
             Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } => Some(true),
-            Kind::Spawn | Kind::Turret | Kind::MeProp { .. } | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(false),
+            Kind::Spawn | Kind::Turret | Kind::MeProp { .. } | Kind::Model { .. } | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(false),
             _ => None,
         }
     }
@@ -233,6 +237,7 @@ impl Kind {
             Kind::SoftPad { .. } => "Soft landing".into(),
             Kind::Ladder { pipe, .. } => if *pipe { "Drainpipe" } else { "Ladder" }.into(),
             Kind::MeProp { mesh, .. } => mesh.clone(),
+            Kind::Model { path, .. } => path.rsplit('/').next().unwrap_or(path).trim_end_matches(".glb").to_string(),
         }
     }
 
@@ -283,6 +288,16 @@ impl Object {
 
     pub fn sized(kind: Kind, at: Vec3, size: Vec3) -> Self {
         Object { kind, at, size, yaw: 0.0, pitch: 0.0 }
+    }
+
+    /// A prop's box in the world: `b` (from it, before it's turned or scaled) scaled, turned
+    /// with it a quarter turn at a time (so a box stays a box), and placed.
+    pub fn prop_box(&self, b: (Vec3, Vec3), scale: f32) -> Aabb {
+        let turn = Quat::from_rotation_y((self.yaw / 90.0).round() * std::f32::consts::FRAC_PI_2);
+        let (p, q) = (turn * (b.0 * scale), turn * (b.1 * scale));
+        // (Rounded: a quarter turn of a float isn't exactly one.)
+        let r = |v: Vec3| (v * 1e4).round() / 1e4;
+        Aabb::new(self.at + r(p.min(q)), self.at + r(p.max(q)))
     }
 
     pub fn with_size(mut self, size: Vec3) -> Self {
@@ -349,8 +364,8 @@ impl Object {
                 let (lo, hi) = (self.at - side.abs() * 0.3, self.at + side.abs() * 0.3 + n * 0.3 + Vec3::Y * *height);
                 Aabb::new(lo.min(hi), lo.max(hi))
             }
-            Kind::MeProp { solid: Some((lo, hi)), .. } => Aabb::new(self.at + *lo, self.at + *hi),
-            Kind::MeProp { .. } => up(1.0, 1.0),
+            Kind::MeProp { bounds: Some(b), scale, .. } | Kind::Model { bounds: Some(b), scale, .. } => self.prop_box(*b, *scale),
+            Kind::MeProp { .. } | Kind::Model { .. } => up(1.0, 1.0),
             _ => around(0.35),
         }
     }
@@ -408,7 +423,7 @@ impl LevelDoc {
         for o in &self.objects {
             match &o.kind {
                 Kind::Block { mat } => l.solids.push(Solid { b: o.bounds(), mat: *mat }),
-                Kind::MeProp { solid: Some(_), .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
+                Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
                 Kind::Beam { solid: true, .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Black }),
                 Kind::SoftPad { solid: true } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
                 _ => {}
@@ -515,9 +530,13 @@ impl LevelDoc {
                 Kind::Ladder { height, pipe, exit } => {
                     l.fixtures.push(Fixture::Ladder(Ladder { base: at, top: at.y + *height, normal: o.dir(), pipe: *pipe, exit: *exit }));
                 }
-                Kind::MeProp { package, mesh, scale, solid } => {
-                    let stand_in = solid.map(|_| o.bounds());
+                Kind::MeProp { package, mesh, scale, bounds, solid } => {
+                    let stand_in = (bounds.is_some() && *solid).then(|| o.bounds());
                     l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, yaw: o.yaw.to_radians(), scale: *scale, stand_in });
+                }
+                Kind::Model { path, scale, bounds, solid } => {
+                    let solid = (bounds.is_some() && *solid).then(|| o.bounds());
+                    l.models.push(ModelProp { path: path.clone(), at, yaw: o.yaw.to_radians(), scale: *scale, solid });
                 }
             }
         }
@@ -621,20 +640,33 @@ impl LevelDoc {
             }
             push(&mut d, o);
         }
+        for m in &l.models {
+            let mut o = Object::new(Kind::Model { path: m.path.clone(), scale: m.scale, bounds: None, solid: false }, m.at);
+            o.yaw = m.yaw.to_degrees();
+            if let Some(b) = m.solid {
+                let back = Quat::from_rotation_y(-(o.yaw / 90.0).round() * std::f32::consts::FRAC_PI_2);
+                let (lo, hi) = (back * ((b.min - m.at) / m.scale), back * ((b.max - m.at) / m.scale));
+                o.kind = Kind::Model { path: m.path.clone(), scale: m.scale, bounds: Some((lo.min(hi), lo.max(hi))), solid: true };
+            }
+            push(&mut d, o);
+        }
         for w in &l.wires {
             let Some(&first) = w.points.first() else { continue };
             push(&mut d, Object::new(Kind::Wire { sig: w.sig, points: w.points[1..].iter().map(|p| *p - first).collect() }, first));
         }
         for p in &l.me_props {
             // A prop that stands in a box of its own: that box is the prop's, not a block.
-            let solid = p.stand_in.map(|b| {
+            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false }, p.at);
+            o.yaw = p.yaw.to_degrees();
+            if let Some(b) = p.stand_in {
                 if let Some(i) = d.objects.iter().position(|o| o.kind == Kind::Block { mat: Mat::Prop } && (o.bounds().min - b.min).length() < 1e-4 && (o.bounds().max - b.max).length() < 1e-4) {
                     d.objects.remove(i);
                 }
-                (b.min - p.at, b.max - p.at)
-            });
-            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, solid }, p.at);
-            o.yaw = p.yaw.to_degrees();
+                // Its box from it, before the quarter turns `prop_box` will give it back.
+                let back = Quat::from_rotation_y(-(o.yaw / 90.0).round() * std::f32::consts::FRAC_PI_2);
+                let (lo, hi) = (back * ((b.min - p.at) / p.scale), back * ((b.max - p.at) / p.scale));
+                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some((lo.min(hi), lo.max(hi))), solid: true };
+            }
             push(&mut d, o);
         }
         (d, skipped)

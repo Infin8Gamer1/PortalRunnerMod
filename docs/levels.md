@@ -13,7 +13,11 @@ new one: a white room with lamps and a start.
 - **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
   (start, checkpoints, exit, hints, goo, platforms, lamps, portals, indicator wires), parkour
   (ziplines, swing poles, balance beams, ladders, drainpipes, barge doors, barbed wire, soft
-  landings) and Mirror's Edge props. Drag one into the view, or click it and then click in
+  landings), and **Props**: every prop model of Portal and Portal 2 (extracted into `props/`)
+  and every static mesh in Mirror's Edge's prop packages (from your install), by game and
+  folder, with pictures made the first time their tiles show (kept under `thumbs/`). A prop
+  lands with its front to the camera, resting on the surface, and is solid (a block its size)
+  unless you untick that. Drag one into the view, or click it and then click in
   the view (Shift-click to place several; Esc stops): it lands on the surface under the cursor
   (a block rests on it, a laser or catcher faces out of it, a door stands across the way you're
   looking, a ladder's foot goes down to the floor), snapped to the grid, and a green outline
@@ -22,7 +26,10 @@ new one: a white room with lamps and a start.
   Shift faster, the wheel for speed (without the button, the wheel moves in and out). Click
   to select; **W/E/R** move, rotate and scale it with the gizmo (scale sizes boxes). **F**
   focuses on it, **Del** deletes it, **Ctrl+D** duplicates it, **Ctrl+Z / Ctrl+Y** undo and
-  redo. Lines show what the selection is wired to; outlines show what the game doesn't draw
+  redo. Something with a second point (a zipline's or swing pole's other end, a beam's, where a
+  faith plate lands, where a platform travels to) gets a second, smaller handle there: drag its
+  arrows to move that end along an axis, or its ring to move it about. Lines show what the
+  selection is wired to; outlines show what the game doesn't draw
   (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
 - **Outliner** and **details** (right): every object; the selected one's position, size,
   facing and settings (material, signal, what turns it on, cube kind, gel...). With nothing

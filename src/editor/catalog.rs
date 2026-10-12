@@ -27,7 +27,7 @@ impl Category {
             Category::Gel => "Gel",
             Category::Gameplay => "Gameplay",
             Category::Parkour => "Parkour",
-            Category::Props => "Mirror's Edge props",
+            Category::Props => "Props",
         }
     }
 }
@@ -75,14 +75,6 @@ const fn e(name: &'static str, category: Category, place: Place, size: Vec3, kin
 
 const fn block(name: &'static str, mat: Mat, size: Vec3, kind: fn() -> Kind) -> Entry {
     Entry { name, category: Category::Geometry, place: Place::Box, size, kind, mat: Some(mat), color: [200, 200, 200], glyph: "" }
-}
-
-const fn prop(name: &'static str, kind: fn() -> Kind) -> Entry {
-    Entry { name, category: Category::Props, place: Place::Floor, size: Vec3::ZERO, kind, mat: None, color: [120, 110, 100], glyph: "ME" }
-}
-
-fn me(package: &str, mesh: &str, lo: [f32; 3], hi: [f32; 3]) -> Kind {
-    Kind::MeProp { package: package.into(), mesh: mesh.into(), scale: 1.0, solid: Some((Vec3::from(lo), Vec3::from(hi))) }
 }
 
 const P: Vec3 = Vec3::ZERO;
@@ -144,15 +136,6 @@ pub static CATALOG: &[Entry] = &[
     e("Barge door", Category::Parkour, Place::Upright, Vec3::new(1.4, 2.2, 0.1), || Kind::BargeDoor, [170, 120, 80], "🚪"),
     e("Barbed wire", Category::Parkour, Place::Box, Vec3::new(2.0, 0.7, 0.4), || Kind::BarbedWire, [150, 150, 150], "〰"),
     e("Soft landing", Category::Parkour, Place::Box, Vec3::new(3.0, 0.5, 3.0), || Kind::SoftPad { solid: true }, [80, 120, 200], "⬛"),
-    prop("AC unit", || me("P_Ventilation", "S_ACUnit_05", [-0.44, 0.0, -0.42], [0.3, 1.44, 0.44])),
-    prop("Air vent", || me("P_Ventilation", "S_AirVent_01", [-0.13, 0.0, -0.13], [0.13, 1.12, 0.13])),
-    prop("Rooftop AC", || me("P_Ventilation", "S_ACRooftop_01", [-2.6, 0.0, -0.04], [0.04, 4.55, 4.24])),
-    prop("Rooftop boxes", || me("P_Rooftops", "S_RooftopBoxes_01a", [-0.35, 0.0, -0.01], [0.03, 1.69, 0.96])),
-    prop("Rooftop hatch", || me("P_Rooftops", "S_HatchRooftop_01", [-1.0, 0.0, -1.0], [1.0, 1.17, 1.0])),
-    prop("Cistern", || me("P_Rooftops", "S_Cistern_01", [-0.61, 0.0, -0.84], [3.17, 1.87, 0.73])),
-    prop("Crate", || me("P_Maintenance", "S_Crate_02", [-0.64, 0.0, -1.15], [0.63, 1.35, 1.14])),
-    prop("Barrel", || me("P_Maintenance", "S_Barrel_02", [-0.32, 0.0, -0.32], [0.32, 1.01, 0.32])),
-    prop("Round billboard", || me("P_Commercial", "S_BillboardRound_01", [-0.97, 0.0, -0.97], [0.97, 3.36, 0.97])),
 ];
 
 /// The entry with this name.
@@ -165,7 +148,7 @@ fn snap(v: f32, g: f32) -> f32 {
 }
 
 /// `p` snapped to the grid along the surface (not off it, so it stays on the surface).
-fn snap_along(p: Vec3, n: Vec3, g: f32) -> Vec3 {
+pub fn snap_along(p: Vec3, n: Vec3, g: f32) -> Vec3 {
     let mut q = p;
     for i in 0..3 {
         if n[i].abs() < 0.5 {

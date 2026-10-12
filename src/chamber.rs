@@ -607,6 +607,8 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             }
             Owner::Emitter if emitter_modelled(&s.b) => {}
             Owner::Catcher(_) if r.catchers => {}
+            // A library model's block: the model's drawn instead.
+            Owner::Level(_) if l.models.iter().any(|p| p.solid == Some(s.b)) => {}
             Owner::Level(_) | Owner::Emitter | Owner::Catcher(_) => {
                 let mat = if matches!(s.owner, Owner::Level(_)) { mat_for(m, s.mat) } else { m.metal.clone() };
                 let e = geom(commands, meshes.add(box_mesh(&s.b)), mat, Transform::default());

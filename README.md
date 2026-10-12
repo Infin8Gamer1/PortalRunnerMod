@@ -41,7 +41,9 @@ the storage cube, floor and pedestal buttons, dropper iris, round chamber door a
 emitters replace Portal 2's, with their maps. (Portal 2's mechanics, lasers, light bridges,
 faith plates, gel, cube sockets and the reflection cube, have no Portal version and stay
 Portal 2's.) `--inspect <model.mdl>...` describes models (parts, bones, size,
-animations) instead of extracting. Mirror's Edge is found the same way, or set
+animations) instead of extracting. It also converts every prop model of both games (about 1,700,
+2 GB) into `props/` for the level editor's props browser: `--no-props` skips that,
+`--only-props` does only that. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
 **DLSS** (NVIDIA RTX, Vulkan) is built in by default, and it needs NVIDIA's DLSS SDK to build,

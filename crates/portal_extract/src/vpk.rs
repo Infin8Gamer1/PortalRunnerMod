@@ -86,6 +86,11 @@ impl Vpk {
         Ok(Vpk { dir: path.to_path_buf(), data_start: end as u64, entries })
     }
 
+    /// Every entry's path (lower-case, forward slashes).
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(|k| k.as_str())
+    }
+
     /// An entry's bytes (path lower-case, forward slashes).
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         let e = self.entries.get(path)?;

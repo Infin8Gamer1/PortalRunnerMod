@@ -37,11 +37,13 @@ pub struct StandIn(pub usize);
 /// The game's packages (not thread-safe: they share what they've opened).
 pub struct MePackages(Packages);
 
-type Parts = Vec<(Handle<Mesh>, Handle<StandardMaterial>)>;
+pub type Parts = Vec<(Handle<Mesh>, Handle<StandardMaterial>)>;
 
 #[derive(Resource, Default)]
 pub struct MePropCache {
     meshes: HashMap<(&'static str, &'static str), Option<Parts>>,
+    /// Each mesh's box (ours, from its origin), once it's been read.
+    bounds: HashMap<(&'static str, &'static str), (Vec3, Vec3)>,
     /// The level these were spawned for (Game::loads), and what of it got drawn.
     level: u64,
     drawn: Vec<bool>,
@@ -117,17 +119,42 @@ fn get(
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
 ) -> Option<Parts> {
-    cache
-        .meshes
-        .entry(key)
-        .or_insert_with(|| match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, 512) {
-            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images)),
+    if !cache.meshes.contains_key(&key) {
+        let made = match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, 512) {
+            Ok((mesh, slots)) => {
+                let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+                for p in &mesh.positions {
+                    let p = Vec3::from(ue(*p));
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+                if lo.x <= hi.x {
+                    cache.bounds.insert(key, (lo, hi));
+                }
+                Some(build(&mesh, &slots, meshes, materials, images))
+            }
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{}: {e}", key.0, key.1);
                 None
             }
-        })
-        .clone()
+        };
+        cache.meshes.insert(key, made);
+    }
+    cache.meshes.get(&key).cloned().flatten()
+}
+
+/// A mesh's parts and its box (ours, from its origin), read once (the level editor's
+/// thumbnails).
+pub fn parts_and_bounds(
+    key: (&'static str, &'static str),
+    cache: &mut MePropCache,
+    pkgs: &mut MePackages,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) -> Option<(Parts, (Vec3, Vec3))> {
+    let parts = get(key, cache, pkgs, meshes, materials, images)?;
+    Some((parts, *cache.bounds.get(&key)?))
 }
 
 fn place(commands: &mut Commands, parts: &Parts, tf: Transform) {

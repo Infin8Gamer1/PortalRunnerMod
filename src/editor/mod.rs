@@ -9,6 +9,8 @@
 //! built chamber starts from a copy of it.
 
 pub mod catalog;
+pub mod library;
+mod thumbs;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +30,8 @@ use bevy_egui::{egui, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryC
 use aperture::doc::{Kind, LevelDoc, Object};
 use faith_move::Aabb;
 
+use library::Library;
+
 use crate::{menu, Game, PlayerCamera};
 
 pub struct EditorPlugin;
@@ -37,10 +41,14 @@ impl Plugin for EditorPlugin {
         app.add_plugins((EguiPlugin::default(), TransformGizmoPlugin))
             .insert_resource(EguiGlobalSettings { auto_create_primary_context: false, ..default() })
             .insert_resource(TransformGizmoSettings { snap_translate: Some(0.25), snap_rotate: Some(15f32.to_radians()), snap_scale: Some(0.25), ..default() })
+            .add_plugins(bevy::app::HierarchyPropagatePlugin::<RenderLayers>::new(PostUpdate))
+            .init_gizmo_group::<OnTop>()
             .init_resource::<Editor>()
+            .init_resource::<Library>()
+            .init_resource::<thumbs::Thumbs>()
             .configure_sets(PostUpdate, TransformGizmoSystems.run_if(editing))
-            .add_systems(Startup, setup)
-            .add_systems(Update, forward_gizmos)
+            .add_systems(Startup, (setup, thumbs::setup))
+            .add_systems(Update, (forward_gizmos, library::load, thumbs::run.run_if(editing)))
             .add_systems(EguiPrimaryContextPass, ui::draw.run_if(editing));
     }
 }
@@ -48,6 +56,27 @@ impl Plugin for EditorPlugin {
 /// The editor's systems, run after the game's each frame (the camera is the editor's).
 pub fn systems() -> impl IntoScheduleConfigs<bevy::ecs::system::ScheduleSystem, ()> {
     (toggle, fly, interact, rebuild, overlays, hide_game_views, gizmo_cameras).chain()
+}
+
+/// Lines drawn over everything (the end handle).
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct OnTop;
+
+/// Something from the content browser: a catalog entry, or a prop from the library.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pick {
+    Entry(usize),
+    Prop(usize),
+}
+
+/// Dragging the end handle: along an axis (0-2), or across the view (3).
+struct EndDrag {
+    axis: usize,
+    /// Where the end was, and where along the axis (or the point on the view's plane) the
+    /// drag took hold.
+    start: Vec3,
+    grab: Vec3,
+    before: LevelDoc,
 }
 
 pub fn editing(ed: Res<Editor>) -> bool {
@@ -94,10 +123,13 @@ pub struct Editor {
     looking: bool,
     pub grid: f32,
     pub status: String,
-    /// The catalog entry being dragged out of the content browser.
-    pub drop: Option<usize>,
-    /// The catalog entry clicked in the content browser: the next click in the view places it.
-    pub armed: Option<usize>,
+    /// What's being dragged out of the content browser.
+    pub drop: Option<Pick>,
+    /// What was clicked in the content browser: the next click in the view places it.
+    pub armed: Option<Pick>,
+    /// The end handle's axis under the cursor, and its drag.
+    end_hover: Option<usize>,
+    end_drag: Option<EndDrag>,
     /// Where it would land.
     ghost: Vec<Object>,
     /// The next click in the view sets the selected faith plate's target.
@@ -111,7 +143,11 @@ pub struct Editor {
     /// Where the panels are (in the window's logical pixels), for drops.
     pub panels: Vec<egui::Rect>,
     /// Where each content browser tile is (for the capture scripts to find).
-    pub tiles: Vec<(usize, egui::Rect)>,
+    pub tiles: Vec<(Pick, egui::Rect)>,
+    /// The content browser's tab (none: all but the props), and the props' game and folder.
+    pub tab: Option<catalog::Category>,
+    pub prop_game: usize,
+    pub prop_folder: Option<String>,
     /// The proxy the gizmo moves.
     handle: Option<Entity>,
     ui_camera: Option<Entity>,
@@ -142,12 +178,17 @@ impl Default for Editor {
             status: String::new(),
             drop: None,
             armed: None,
+            end_hover: None,
+            end_drag: None,
             ghost: Vec::new(),
             pick_target: false,
             before_drag: None,
             before_edit: None,
             panels: Vec::new(),
             tiles: Vec::new(),
+            tab: None,
+            prop_game: 0,
+            prop_folder: None,
             handle: None,
             ui_camera: None,
             ui_sink: None,
@@ -223,22 +264,39 @@ impl Editor {
         }
     }
 
-    /// Place a catalog entry where the middle of the view meets the level.
-    pub fn place_in_view(&mut self, entry: usize) {
+    /// Place something where the middle of the view meets the level.
+    pub fn place_in_view(&mut self, lib: &Library, pick: Pick) {
         let rot = Quat::from_euler(EulerRot::YXZ, self.cam.yaw, self.cam.pitch, 0.0);
         let look = rot * Vec3::NEG_Z;
         let (p, n) = surface(&self.doc, self.cam.pos, look);
-        self.add(entry, p, n, look);
+        self.add(lib, pick, p, n, look);
     }
 
-    /// Place a catalog entry at `p` on a surface facing `n`, seen looking along `look`.
-    pub fn add(&mut self, entry: usize, p: Vec3, n: Vec3, look: Vec3) {
-        let e = &catalog::CATALOG[entry];
-        let objs = place(&self.doc, entry, p, n, look, self.grid);
+    /// Place something at `p` on a surface facing `n`, seen looking along `look`.
+    pub fn add(&mut self, lib: &Library, pick: Pick, p: Vec3, n: Vec3, look: Vec3) {
+        let objs = place(&self.doc, lib, pick, p, n, look, self.grid);
         let count = objs.len();
         self.change(|doc| doc.objects.extend(objs));
         self.selected = Some(self.doc.objects.len() - 1);
-        self.status = format!("Placed {}{}", e.name, if count > 1 { format!(" ({count} objects)") } else { String::new() });
+        let name = match pick {
+            Pick::Entry(e) => catalog::CATALOG[e].name.to_string(),
+            Pick::Prop(i) => lib.props[i].name.clone(),
+        };
+        self.status = format!("Placed {name}{}", if count > 1 { format!(" ({count} objects)") } else { String::new() });
+    }
+
+    /// Place a catalog entry (the capture scripts).
+    pub fn add_entry(&mut self, entry: usize, p: Vec3, n: Vec3, look: Vec3) {
+        self.add(&Library::default(), Pick::Entry(entry), p, n, look);
+    }
+
+    /// Where the end handle's arrow along `axis` (0-2; 3: its ring) is on the screen, if the
+    /// selection has one (the capture scripts).
+    pub fn end_handle_on_screen(&self, window: &Window, axis: usize) -> Option<Vec2> {
+        let e = self.selected.and_then(|i| self.doc.objects.get(i)).and_then(end_of)?;
+        let s = handle_size(&self.cam, e);
+        let p = if axis < 3 { e + [Vec3::X, Vec3::Y, Vec3::Z][axis] * s * 0.7 } else { e };
+        to_screen(&self.cam, window, p)
     }
 
     fn over_panels(&self, window: &Window) -> bool {
@@ -417,7 +475,10 @@ pub fn add_levels(mut game: ResMut<Game>, mut ed: ResMut<Editor>) {
 
 /// The proxy the gizmo moves, the camera egui draws on, and one for the game's own UI to
 /// hide on while editing.
-fn setup(mut commands: Commands, mut ed: ResMut<Editor>) {
+fn setup(mut commands: Commands, mut ed: ResMut<Editor>, mut store: ResMut<GizmoConfigStore>) {
+    let (on_top, _) = store.config_mut::<OnTop>();
+    on_top.depth_bias = -1.0;
+    on_top.line.width = 3.0;
     ed.handle = Some(commands.spawn((Name::new("Editor handle"), Transform::default(), Visibility::Hidden)).id());
     ed.ui_camera = Some(
         commands
@@ -669,8 +730,13 @@ fn pick(doc: &LevelDoc, o: Vec3, d: Vec3) -> Option<usize> {
     best.map(|(_, i)| i)
 }
 
-/// A catalog entry's objects where it's dropped; a ladder's foot goes down to the floor.
-fn place(doc: &LevelDoc, entry: usize, p: Vec3, n: Vec3, look: Vec3, grid: f32) -> Vec<Object> {
+/// What something makes where it's dropped; a ladder's foot goes down to the floor.
+fn place(doc: &LevelDoc, lib: &Library, pick: Pick, p: Vec3, n: Vec3, look: Vec3, grid: f32) -> Vec<Object> {
+    let entry = match pick {
+        Pick::Entry(e) => e,
+        Pick::Prop(i) if i < lib.props.len() => return vec![lib.object(i, catalog::snap_along(p, n, grid), n, look)],
+        Pick::Prop(_) => return Vec::new(),
+    };
     let mut objs = catalog::place(&catalog::CATALOG[entry], doc, p, n, look, grid);
     for o in &mut objs {
         if let Kind::Ladder { .. } = o.kind {
@@ -687,7 +753,7 @@ fn place(doc: &LevelDoc, entry: usize, p: Vec3, n: Vec3, look: Vec3, grid: f32) 
 fn surface(doc: &LevelDoc, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
     let mut best: Option<(f32, Vec3)> = None;
     for obj in &doc.objects {
-        if !matches!(obj.kind, Kind::Block { .. } | Kind::Platform { .. } | Kind::MeProp { solid: Some(_), .. }) {
+        if !matches!(obj.kind, Kind::Block { .. } | Kind::Platform { .. } | Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. }) {
             continue;
         }
         if let Some((t, n)) = ray_box(o, d, &obj.bounds()) {
@@ -705,6 +771,105 @@ fn surface(doc: &LevelDoc, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
     (o + d * 8.0, Vec3::Y)
 }
 
+/// The other end of something with two: a zipline's, a swing pole's, a beam's, where a faith
+/// plate lands, where a platform travels to.
+fn end_of(o: &Object) -> Option<Vec3> {
+    match &o.kind {
+        Kind::ZipLine { to } | Kind::SwingPole { to } | Kind::Beam { to, .. } => Some(o.at + *to),
+        Kind::FaithPlate { target, .. } => Some(*target),
+        Kind::Platform { travel, .. } => Some(o.at + *travel),
+        _ => None,
+    }
+}
+
+fn set_end(o: &mut Object, e: Vec3) {
+    let at = o.at;
+    match &mut o.kind {
+        Kind::ZipLine { to } | Kind::SwingPole { to } | Kind::Beam { to, .. } => *to = e - at,
+        Kind::FaithPlate { target, .. } => *target = e,
+        Kind::Platform { travel, .. } => *travel = e - at,
+        _ => {}
+    }
+}
+
+/// How long the end handle's arrows are at `p` (they keep their size on screen).
+fn handle_size(cam: &FlyCam, p: Vec3) -> f32 {
+    (p - cam.pos).length() * 0.12
+}
+
+/// Where a point is on the screen (logical pixels), if it's in front of the camera.
+fn to_screen(cam: &FlyCam, window: &Window, p: Vec3) -> Option<Vec2> {
+    let rot = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
+    let v = rot.inverse() * (p - cam.pos);
+    if v.z > -0.01 {
+        return None;
+    }
+    let (w, h) = (window.width(), window.height());
+    let t = (FOV * 0.5).tan();
+    let ndc = Vec2::new(v.x / (-v.z * t * w / h), v.y / (-v.z * t));
+    Some(Vec2::new((ndc.x + 1.0) * 0.5 * w, (1.0 - ndc.y) * 0.5 * h))
+}
+
+/// The end handle's part under the cursor: an arrow (0-2), or the ring in its middle (3).
+fn end_hover(cam: &FlyCam, window: &Window, e: Vec3, cursor: Vec2) -> Option<usize> {
+    let s = handle_size(cam, e);
+    let centre = to_screen(cam, window, e)?;
+    if centre.distance(cursor) < 10.0 {
+        return Some(3);
+    }
+    let mut best = None;
+    for (k, axis) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
+        let (Some(a), Some(b)) = (to_screen(cam, window, e + axis * s * 0.2), to_screen(cam, window, e + axis * s)) else { continue };
+        let ab = b - a;
+        let t = ((cursor - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        let d = cursor.distance(a + ab * t);
+        if d < 12.0 && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, k));
+        }
+    }
+    best.map(|(_, k)| k)
+}
+
+/// The plane a drag of the end handle moves on: along an axis, facing the camera as much as
+/// it can; across the view, facing it.
+fn end_plane(cam: &FlyCam, axis: usize) -> Vec3 {
+    let fwd = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0) * Vec3::NEG_Z;
+    match axis {
+        3 => fwd,
+        k => {
+            let a = [Vec3::X, Vec3::Y, Vec3::Z][k];
+            (fwd - a * fwd.dot(a)).normalize_or(Vec3::Y)
+        }
+    }
+}
+
+/// Where a ray meets the drag's plane through `at`.
+fn end_grab(cam: &FlyCam, axis: usize, at: Vec3, o: Vec3, d: Vec3) -> Option<Vec3> {
+    let n = end_plane(cam, axis);
+    let dn = d.dot(n);
+    if dn.abs() < 1e-5 {
+        return None;
+    }
+    let t = (at - o).dot(n) / dn;
+    (t > 0.0).then(|| o + d * t)
+}
+
+/// Where the end is now, dragged from `start` (taken hold of at `grab`), snapped to the grid.
+fn end_moved(cam: &FlyCam, axis: usize, start: Vec3, grab: Vec3, o: Vec3, d: Vec3, grid: f32) -> Option<Vec3> {
+    let p = end_grab(cam, axis, start, o, d)?;
+    let snap = |v: f32| if grid > 0.0 { (v / grid).round() * grid } else { v };
+    Some(match axis {
+        3 => {
+            let m = p - grab;
+            start + Vec3::new(snap(m.x), snap(m.y), snap(m.z))
+        }
+        k => {
+            let a = [Vec3::X, Vec3::Y, Vec3::Z][k];
+            start + a * snap((p - grab).dot(a))
+        }
+    })
+}
+
 /// Clicks, drops from the browser, the gizmo and the keys.
 #[allow(clippy::too_many_arguments)]
 fn interact(
@@ -718,6 +883,7 @@ fn interact(
     gizmo: Res<TransformGizmoState>,
     mut settings: ResMut<TransformGizmoSettings>,
     mut handles: Query<&mut Transform>,
+    lib: Res<Library>,
 ) {
     if !ed.active {
         if let Some(h) = ed.handle {
@@ -737,31 +903,62 @@ fn interact(
     // (egui holds the pointer while a tile's dragged: what matters is whether it's over a panel.)
     ed.ghost.clear();
     let mut placed = false;
-    if let Some(entry) = ed.drop {
+    if let Some(pick) = ed.drop {
         if let Some((o, d)) = ray.filter(|_| !ed.over_panels(window)) {
             let (p, n) = surface(&ed.doc, o, d);
             if mouse.pressed(MouseButton::Left) {
-                ed.ghost = place(&ed.doc, entry, p, n, look, ed.grid);
+                ed.ghost = place(&ed.doc, &lib, pick, p, n, look, ed.grid);
             } else {
-                ed.add(entry, p, n, look);
+                ed.add(&lib, pick, p, n, look);
             }
         }
         if !mouse.pressed(MouseButton::Left) {
             ed.drop = None;
         }
-    } else if let Some(entry) = ed.armed {
+    } else if let Some(pick) = ed.armed {
         // A tile clicked: it follows the cursor, and a click in the view puts it there.
         if let Some((o, d)) = ray.filter(|_| !over) {
             let (p, n) = surface(&ed.doc, o, d);
             if mouse.just_pressed(MouseButton::Left) && gizmo.hovered_axis.is_none() {
-                ed.add(entry, p, n, look);
+                ed.add(&lib, pick, p, n, look);
                 placed = true;
                 // Shift: place more of them.
                 if !(keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)) {
                     ed.armed = None;
                 }
             } else {
-                ed.ghost = place(&ed.doc, entry, p, n, look, ed.grid);
+                ed.ghost = place(&ed.doc, &lib, pick, p, n, look, ed.grid);
+            }
+        }
+    }
+
+    // ---- the end handle (a zipline's other end, a faith plate's landing...)
+    let end = ed.selected.and_then(|i| ed.doc.objects.get(i)).and_then(end_of);
+    if let Some(drag) = &ed.end_drag {
+        let (axis, start, grab) = (drag.axis, drag.start, drag.grab);
+        if mouse.pressed(MouseButton::Left) {
+            if let (Some(i), Some((o, d))) = (ed.selected, ray) {
+                if let Some(moved) = end_moved(&ed.cam, axis, start, grab, o, d, ed.grid) {
+                    if let Some(obj) = ed.doc.objects.get_mut(i) {
+                        set_end(obj, moved);
+                    }
+                }
+            }
+        } else if let Some(drag) = ed.end_drag.take() {
+            ed.commit(drag.before);
+        }
+    } else {
+        ed.end_hover = None;
+        if let (Some(e), Some(c)) = (end, window.cursor_position()) {
+            if !over && !ed.looking && gizmo.hovered_axis.is_none() && !gizmo.active && ed.drop.is_none() && ed.armed.is_none() {
+                ed.end_hover = end_hover(&ed.cam, window, e, c);
+            }
+        }
+        if let (Some(axis), Some(e), Some((o, d))) = (ed.end_hover, end, ray) {
+            if mouse.just_pressed(MouseButton::Left) {
+                if let Some(grab) = end_grab(&ed.cam, axis, e, o, d) {
+                    ed.end_drag = Some(EndDrag { axis, start: e, grab, before: ed.doc.clone() });
+                }
             }
         }
     }
@@ -813,7 +1010,8 @@ fn interact(
     }
 
     // ---- clicking in the view
-    if mouse.just_pressed(MouseButton::Left) && !over && ed.drop.is_none() && ed.armed.is_none() && !placed && gizmo.hovered_axis.is_none() && !gizmo.active {
+    let on_end = ed.end_hover.is_some() || ed.end_drag.is_some();
+    if mouse.just_pressed(MouseButton::Left) && !over && ed.drop.is_none() && ed.armed.is_none() && !placed && !on_end && gizmo.hovered_axis.is_none() && !gizmo.active {
         if let Some((o, d)) = ray {
             if ed.pick_target {
                 ed.pick_target = false;
@@ -896,9 +1094,21 @@ fn rebuild(mut ed: ResMut<Editor>, mut game: ResMut<Game>) {
 
 /// What the game doesn't draw (the start, triggers, cuts, wires), the selection, signals
 /// between pieces, and where a dragged piece would land.
-fn overlays(ed: Res<Editor>, mut gizmos: Gizmos) {
+fn overlays(ed: Res<Editor>, mut gizmos: Gizmos, mut on_top: Gizmos<OnTop>) {
     if !ed.active {
         return;
+    }
+    // The end handle: arrows to drag the other end along, a ring to drag it about.
+    if let Some(e) = ed.selected.and_then(|i| ed.doc.objects.get(i)).and_then(end_of) {
+        use bevy::gizmos::transform_gizmo::{COLOR_X, COLOR_Y, COLOR_Z};
+        let s = handle_size(&ed.cam, e);
+        let active = ed.end_drag.as_ref().map(|d| d.axis).or(ed.end_hover);
+        for (k, (axis, c)) in [(Vec3::X, COLOR_X), (Vec3::Y, COLOR_Y), (Vec3::Z, COLOR_Z)].into_iter().enumerate() {
+            let c = if active == Some(k) { Color::WHITE } else { c };
+            on_top.arrow(e + axis * s * 0.2, e + axis * s, c);
+        }
+        let rot = Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0);
+        on_top.circle(Isometry3d::new(e, rot), s * 0.1, if active == Some(3) { Color::WHITE } else { Color::srgb(1.0, 0.85, 0.2) });
     }
     let cuboid = |g: &mut Gizmos, b: &Aabb, c: Color| g.cube(Transform::from_translation(b.center()).with_scale(b.size()), c);
     let arrow = |g: &mut Gizmos, from: Vec3, dir: Vec3, len: f32, c: Color| {
@@ -1091,6 +1301,45 @@ mod tests {
         assert!(door.bounds().min.y.abs() < 1e-5);
         // A room is its six sides and a lamp.
         assert_eq!(place(&CATALOG[find("Room")], &doc, Vec3::new(30.0, 0.0, 0.0), Vec3::Y, look, 0.25).len(), 7);
+    }
+
+    #[test]
+    fn props_rest_on_what_they_are_dropped_on() {
+        let mut lib = Library::default();
+        lib.props.push(library::Prop { name: "crate".into(), game: 1, folder: "props".into(), source: library::Source::Model("props/portal2/props/crate.glb".into()), bounds: Some((Vec3::new(-0.5, -0.2, -0.3), Vec3::new(0.5, 1.0, 0.3))) });
+        // On the floor: its bottom on it, facing the camera.
+        let o = lib.object(0, Vec3::new(0.0, 0.0, -5.0), Vec3::Y, Vec3::NEG_Z);
+        assert!(o.bounds().min.y.abs() < 1e-4, "{:?}", o.bounds());
+        assert!((o.dir() - Vec3::Z).length() < 1e-4, "{}", o.dir());
+        // On a wall facing +X: its back against it.
+        let o = lib.object(0, Vec3::new(-6.0, 1.0, -5.0), Vec3::X, Vec3::NEG_X);
+        assert!((o.bounds().min.x + 6.0).abs() < 1e-4, "{:?}", o.bounds());
+        // It builds solid, its block where it is, and reads back.
+        let mut doc = LevelDoc::starter("T");
+        doc.objects.push(o);
+        let l = doc.build();
+        assert_eq!(l.models.len(), 1);
+        assert_eq!(l.models[0].solid, Some(doc.objects.last().unwrap().bounds()));
+        assert!(l.solids.iter().any(|s| Some(s.b) == l.models[0].solid));
+        assert_eq!(LevelDoc::from_ron(&doc.to_ron()).unwrap(), doc);
+    }
+
+    #[test]
+    fn the_end_handle_drags_along_its_axis() {
+        let cam = FlyCam { pos: Vec3::new(0.0, 2.0, 5.0), yaw: 0.0, pitch: 0.0, speed: 8.0 };
+        let end = Vec3::new(0.0, 2.0, -5.0);
+        // Taking hold of the X arrow, then moving the cursor 1.3 m to the right: 1.25 on a
+        // quarter-metre grid, along X only.
+        let at = |x: f32| (cam.pos, (Vec3::new(x, 2.0, -5.0) - cam.pos).normalize());
+        let (o, d) = at(0.3);
+        let grab = end_grab(&cam, 0, end, o, d).unwrap();
+        let (o, d) = at(1.6);
+        let moved = end_moved(&cam, 0, end, grab, o, d, 0.25).unwrap();
+        assert!((moved - Vec3::new(1.25, 2.0, -5.0)).length() < 1e-4, "{moved}");
+        let mut zip = Object::new(Kind::ZipLine { to: Vec3::new(0.0, -2.0, -10.0) }, Vec3::new(0.0, 4.0, 5.0));
+        set_end(&mut zip, moved);
+        assert_eq!(end_of(&zip), Some(moved));
+        assert_eq!(zip.at, Vec3::new(0.0, 4.0, 5.0), "the start stays");
     }
 
     #[test]
