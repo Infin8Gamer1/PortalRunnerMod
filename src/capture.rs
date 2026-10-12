@@ -774,6 +774,35 @@ fn script(name: &str) -> Vec<Act> {
             ]);
             v
         }
+        // Chamber 16 (testchmb_a_11): the cage lights in Rattmann's den hanging from their
+        // cables (#67), the radio, mug and tools on their cube (#72), and the stacked cubes
+        // against the den's panel (#68).
+        "den16" => {
+            let map = aperture::levels::all().len() + 11;
+            vec![
+                Map(map),
+                Wait(200),
+                TurretsOff,
+                Teleport(Vec3::new(-21.1, 0.1, 13.2)),
+                Launch(Vec3::ZERO),
+                Look(-114.0, 40.0),
+                Wait(30),
+                Shot("den16_a_lights"),
+                Look(150.0, 25.0),
+                Wait(10),
+                Shot("den16_b_lights_back"),
+                Teleport(Vec3::new(2.44, 0.1, -8.6)),
+                Launch(Vec3::ZERO),
+                Look(180.0, -20.0),
+                Wait(30),
+                Shot("den16_c_desk_cube"),
+                Teleport(Vec3::new(-17.5, 0.1, 12.8)),
+                Launch(Vec3::ZERO),
+                Look(10.0, -12.0),
+                Wait(30),
+                Shot("den16_d_panel"),
+            ]
+        }
         // Chamber 12's wedge (testchmb_a_07, #21): up on the button's platform it swings out of
         // the wall and tips; blue on it, orange on the pit's floor; down into orange and flung
         // out of the wedge up to the exit's ledge.

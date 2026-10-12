@@ -535,6 +535,13 @@ pub fn sync(
             });
         }
     }
+    // Its cables, hung as Portal hangs them (what hangs from them: Chamber 16's cage lights).
+    let ents = std::fs::read_to_string(root.join("maps").join(format!("{name}.ents"))).unwrap_or_default();
+    let ropes = aperture::rope::hang(&aperture::source::parse_entities(&ents));
+    if !ropes.is_empty() {
+        let cable = materials.add(StandardMaterial { base_color: Color::srgb(0.03, 0.03, 0.03), perceptual_roughness: 0.6, ..default() });
+        commands.spawn((ChamberGeom, Mesh3d(meshes.add(cable_mesh(&ropes))), MeshMaterial3d(cable), Transform::default(), NotShadowCaster));
+    }
     // Its overlays (decals: indicator light strips, signs, stains), each a quad just off its
     // surface. A named one has its own material, so its strip follows its own door.
     let text = std::fs::read_to_string(root.join("maps").join(format!("{name}.overlays"))).unwrap_or_default();
@@ -612,6 +619,51 @@ pub fn sync(
             }
         }
     }
+}
+
+/// How many sides a cable has round.
+const CABLE_SIDES: usize = 6;
+
+/// The map's cables as one mesh: a thin tube along each.
+fn cable_mesh(ropes: &[aperture::rope::Rope]) -> Mesh {
+    let (mut pos, mut nrm, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for r in ropes {
+        let n = r.points.len();
+        if n < 2 {
+            continue;
+        }
+        let base = pos.len() as u32;
+        let mut along = 0.0;
+        for (i, &p) in r.points.iter().enumerate() {
+            let ahead = (r.points[(i + 1).min(n - 1)] - r.points[i.saturating_sub(1)]).normalize_or(Vec3::X);
+            let side = ahead.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+            let up = side.cross(ahead);
+            if i > 0 {
+                along += p.distance(r.points[i - 1]);
+            }
+            for k in 0..=CABLE_SIDES {
+                let a = k as f32 / CABLE_SIDES as f32 * std::f32::consts::TAU;
+                let out = side * a.cos() + up * a.sin();
+                pos.push((p + out * r.radius).to_array());
+                nrm.push(out.to_array());
+                uv.push([k as f32 / CABLE_SIDES as f32, along]);
+            }
+        }
+        let ring = (CABLE_SIDES + 1) as u32;
+        for i in 0..n as u32 - 1 {
+            for k in 0..CABLE_SIDES as u32 {
+                let (a, b) = (base + i * ring + k, base + (i + 1) * ring + k);
+                idx.extend([a, b, a + 1, a + 1, b, b + 1]);
+            }
+        }
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+        .with_inserted_indices(Indices::U32(idx));
+    let _ = mesh.generate_tangents();
+    mesh
 }
 
 /// Brush models (and props parented to them) follow their movers: doors slide, elevators

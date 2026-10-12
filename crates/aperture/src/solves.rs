@@ -2020,3 +2020,17 @@ fn chamber_16_props_sit_on_their_cube() {
         assert!(q.cube.is_none() && foot(q, bottom).abs() < 0.01, "{q:?} didn't land on the floor");
     }
 }
+
+/// Chamber 16's cage lights (testchmb_a_11) hang from the den's cables: each cable, hung as
+/// Source hangs it, runs through the top of the light under it (#67).
+#[test]
+fn chamber_16_cage_lights_hang_from_cables() {
+    let Ok(text) = std::fs::read_to_string(format!("{}/../../assets/extracted/maps/testchmb_a_11.ents", env!("CARGO_MANIFEST_DIR"))) else { return };
+    let ropes = crate::rope::hang(&crate::source::parse_entities(&text));
+    // (A cage light's hook is its model's top, 11 units over its origin.)
+    for light in [Vec3::new(-576.248, 704.455, 213.485), Vec3::new(-608.487, 960.892, 209.592), Vec3::new(-660.248, 679.455, 162.485)] {
+        let o = crate::source::to_ours(light);
+        let over = ropes.iter().flat_map(|r| r.points.iter()).filter(|q| Vec3::new(q.x - o.x, 0.0, q.z - o.z).length() < 0.06).map(|q| q.y - o.y).fold(f32::MAX, f32::min);
+        assert!((0.1..0.3).contains(&over), "the cable over the light at {o} is {over} m above it");
+    }
+}

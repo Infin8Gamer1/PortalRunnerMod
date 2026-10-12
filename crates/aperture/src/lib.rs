@@ -12,6 +12,7 @@ pub mod io;
 pub mod level;
 pub mod levels;
 pub mod portal;
+pub mod rope;
 pub mod sim;
 pub mod source;
 
