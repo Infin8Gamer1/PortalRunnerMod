@@ -305,6 +305,13 @@ pub struct Mover {
     pub carried: Vec3,
     /// Points on its path it can't go on to (a train's disabled path_track): it stops short.
     pub closed: Vec<bool>,
+    /// A fan's: whether it's on, how fast it's spinning now (radians a second) and how far
+    /// round it's turned.
+    pub spin_on: bool,
+    pub spin_rate: f32,
+    pub spin_angle: f32,
+    /// How much of its top speed it's spinning up to, and which way (-1: backwards).
+    pub spin_scale: f32,
 }
 
 /// How long a shuttling platform waits at each end.
@@ -348,6 +355,15 @@ impl Mover {
         };
         self.def.boxes.iter().filter(move |_| self.present && solid).map(move |b| (b.b.translated(d), b.mat))
     }
+}
+
+/// One of the level's switched regions as the map runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolumeState {
+    pub def: crate::level::Volume,
+    pub on: bool,
+    /// (A portal detector's) which portals are in it.
+    pub portals: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -494,6 +510,8 @@ pub enum SimEvent {
     CatcherOff { at: Vec3 },
     LaserBurn,
     PlayerDied,
+    /// A portal opened in (or closed out of, `inside` false) portal detector `volume`.
+    PortalDetected { volume: usize, color: PortalColor, inside: bool },
     Checkpoint { index: usize },
     LevelComplete,
     /// A turret saw her (and is about to fire).
@@ -621,6 +639,9 @@ pub struct Sim {
     pub gun_pickups: Vec<GunPickup>,
     /// How hurt Faith is (turrets' fire): at 1 she's dead.
     pub hurt: f32,
+    /// The level's switched regions, and whether each is on now; for a portal detector, which
+    /// portals are in it.
+    pub volumes: Vec<VolumeState>,
     pub launchers: Vec<PelletLauncher>,
     pub pellets: Vec<Pellet>,
     pub pellet_catchers: Vec<PelletCatcher>,
@@ -701,6 +722,7 @@ impl Sim {
             turrets: Vec::new(),
             gun_pickups: Vec::new(),
             hurt: 0.0,
+            volumes: level.volumes.iter().map(|v| VolumeState { on: v.on, def: v.clone(), portals: [false; 2] }).collect(),
             launchers: Vec::new(),
             pellets: Vec::new(),
             pellet_catchers: Vec::new(),
@@ -838,7 +860,9 @@ impl Sim {
                 }
                 Item::Mover(def) => {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], def });
+                    let spin_on = def.spin.as_ref().is_some_and(|s| s.on);
+                    let spin_rate = def.spin.as_ref().filter(|s| s.on).map_or(0.0, |s| s.speed);
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, def });
                 }
             }
         }
@@ -1199,9 +1223,9 @@ impl Sim {
         // The way she was facing along the last leg (for a floor portal's up).
         let last_dir = legs.last().map(|(a, b)| (*b - *a).normalize_or_zero()).unwrap_or(aim.dir);
         let placed = match h.what {
-            _ if let Some((n, at)) = self.mover_face_hit(from, last_dir, h.t) => self.place_on_slope(color, at, n, last_dir),
+            _ if let Some((n, at)) = self.mover_face_hit(from, last_dir, h.t) => self.place_on_slope(color, at, n, last_dir, false),
             HitWhat::Static(i) => match self.slope_hit(from, last_dir, h.t) {
-                Some((k, at)) => self.place_on_slope(color, at, self.level.slopes[k].normal, last_dir),
+                Some((k, at)) => self.place_on_slope(color, at, self.level.slopes[k].normal, last_dir, true),
                 None => self.place(color, h.point, h.normal, i, last_dir),
             },
             HitWhat::Mover(m) if self.movers[m].at_rest() => self.place(color, h.point, h.normal, usize::MAX, last_dir),
@@ -1275,9 +1299,12 @@ impl Sim {
         best.map(|(tf, n)| (n, o + d * tf))
     }
 
-    /// Where a portal shot at `point` on a tilted face (facing `n`) would open: on its plane,
-    /// its top up the slope, nudged to fit.
-    fn place_on_slope(&self, color: PortalColor, point: Vec3, n: Vec3, view: Vec3) -> Option<Portal> {
+    /// Where a portal shot at `point` on a tilted face (facing `n`: the world's, or a mover's)
+    /// would open: on its plane, its top up the slope, nudged to fit.
+    fn place_on_slope(&self, color: PortalColor, point: Vec3, n: Vec3, view: Vec3, world: bool) -> Option<Portal> {
+        if world && self.no_portal_at(point, n) {
+            return None;
+        }
         let flat = Vec3::Y - n * n.y;
         let up = if flat.length_squared() > 1e-4 {
             flat.normalize()
@@ -1297,7 +1324,8 @@ impl Sim {
             }
         }
         offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
-        offs.into_iter().map(|o| Portal::sized(point + right * o.x + up * o.y, n, up, half)).find(|cand| self.portal_fits(cand, other.as_ref()))
+        let bumpers = self.bumpers_for(point, n);
+        offs.into_iter().map(|o| Portal::sized(point + right * o.x + up * o.y, n, up, half)).find(|cand| self.portal_fits(cand, other.as_ref(), &bumpers, world))
     }
 
     /// Whether a portal could sit on the surface at `p` facing `n`.
@@ -1328,7 +1356,10 @@ impl Sim {
     /// surface, nudged to fit if it hangs off an edge or overlaps the other portal.
     pub fn place(&self, color: PortalColor, point: Vec3, n: Vec3, solid: usize, view: Vec3) -> Option<Portal> {
         let n = geom::snap_axis(n);
-        if !self.portalable_at(point, n) {
+        // (A no-portal volume is the world's: we know only the box round it, which can reach
+        // over what moves near it.)
+        let world = solid != usize::MAX;
+        if !self.portalable_at(point, n) || (world && self.no_portal_at(point, n)) {
             return None;
         }
         let up = if n.y.abs() > 0.5 {
@@ -1365,10 +1396,11 @@ impl Sim {
             offs.push(Vec2::new(mx, my));
         }
         offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
+        let bumpers = self.bumpers_for(point, n);
         for o in offs {
             let c = point + right * o.x + up * o.y;
             let cand = Portal::sized(c, n, up, half);
-            if self.portal_fits(&cand, other.as_ref()) {
+            if self.portal_fits(&cand, other.as_ref(), &bumpers, world) {
                 return Some(cand);
             }
         }
@@ -1393,9 +1425,29 @@ impl Sim {
         Self::outline_samples(p).all(|q| self.portalable_at(q, p.normal))
     }
 
-    fn portal_fits(&self, p: &Portal, other: Option<&Portal>) -> bool {
+    /// Whether a point on a surface (facing `n`) is in a no-portal volume that's on.
+    fn no_portal_at(&self, p: Vec3, n: Vec3) -> bool {
+        use crate::level::VolumeKind;
+        self.in_volume(p - n * 0.02, |k| *k == VolumeKind::NoPortal) || self.in_volume(p + n * 0.02, |k| *k == VolumeKind::NoPortal)
+    }
+
+    /// The portal bumpers (that are on) a portal shot at `point` on a surface facing `n` keeps
+    /// out of: not one the shot landed in (a bumper nudges a portal off its edge; one shot into
+    /// it stays).
+    fn bumpers_for(&self, point: Vec3, n: Vec3) -> Vec<Aabb> {
+        let q = point + n * 0.02;
+        self.volumes.iter().filter(|v| v.on && v.def.kind == crate::level::VolumeKind::Bumper).map(|v| self.volume_box(v)).filter(|b| !geom::contains(b, q)).collect()
+    }
+
+    fn portal_fits(&self, p: &Portal, other: Option<&Portal>, bumpers: &[Aabb], world: bool) -> bool {
+        use crate::level::VolumeKind;
         let n = p.normal;
         let (r, u) = (p.right(), p.up);
+        // Nothing of it in a no-portal volume (on the world), or over a bumper's edge.
+        let no_portal = world && self.volumes.iter().any(|v| v.on && v.def.kind == VolumeKind::NoPortal);
+        if (no_portal || !bumpers.is_empty()) && Self::outline_samples(p).any(|q| (no_portal && self.no_portal_at(q, n)) || bumpers.iter().any(|b| geom::contains(b, q + n * 0.02))) {
+            return false;
+        }
         // Every sample over the outline: on a portal surface, open in front.
         if !p.axial() {
             // A tilted face: its steps stand a little proud of it, so the room in front is
@@ -1893,6 +1945,7 @@ impl Sim {
                 f.dissolved.clear();
             }
         }
+        self.update_volumes(dt, ctrl);
         let ctrl = &*ctrl;
         self.update_signals(dt);
         self.update_doors(dt);
@@ -1909,6 +1962,96 @@ impl Sim {
         self.update_gel(dt);
         self.update_lasers();
         self.update_buttons(ctrl);
+    }
+
+    /// A switched region's box now (riding what it's parented to).
+    pub fn volume_box(&self, v: &VolumeState) -> Aabb {
+        let b = v.def.b;
+        match v.def.mover.and_then(|m| self.movers.get(m)) {
+            // (Turned with a swinging door: the box round it turned.)
+            Some(m) => match m.def.swing {
+                Some(sw) => {
+                    let r = sw.rotation(m.at.x);
+                    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                    for k in 0..8 {
+                        let c = Vec3::new(if k & 1 == 0 { b.min.x } else { b.max.x }, if k & 2 == 0 { b.min.y } else { b.max.y }, if k & 4 == 0 { b.min.z } else { b.max.z });
+                        let q = m.carried + sw.pivot + r * (c - sw.pivot);
+                        lo = lo.min(q);
+                        hi = hi.max(q);
+                    }
+                    Aabb::new(lo, hi)
+                }
+                None => b.translated(m.offset()),
+            },
+            None => b,
+        }
+    }
+
+    /// Whether `p` is in a switched region of this kind that's on.
+    fn in_volume(&self, p: Vec3, want: fn(&crate::level::VolumeKind) -> bool) -> bool {
+        self.volumes.iter().any(|v| v.on && want(&v.def.kind) && geom::contains(&self.volume_box(v), p))
+    }
+
+    /// The level's switched regions: pushes push, hurts hurt, detectors see portals come
+    /// and go. (No-portal volumes and bumpers are portals' business.)
+    fn update_volumes(&mut self, dt: f32, ctrl: &mut Controller) {
+        use crate::level::VolumeKind;
+        let me = ctrl.body().aabb(ctrl.feet);
+        for k in 0..self.volumes.len() {
+            let b = self.volume_box(&self.volumes[k]);
+            let v = self.volumes[k].clone();
+            match v.def.kind {
+                VolumeKind::Push { dir, speed, players, cubes } if v.on => {
+                    // At least `speed` along it (Source's base velocity: what she does herself
+                    // comes on top).
+                    if players && me.overlaps(&b) {
+                        let along = ctrl.vel.dot(dir);
+                        if along < speed {
+                            ctrl.vel += dir * (speed - along).min(speed * dt * 8.0);
+                            if dir.y > 0.3 {
+                                ctrl.state = faith_move::State::Air;
+                            }
+                        }
+                    }
+                    if cubes {
+                        for (i, p) in self.props.iter_mut().enumerate() {
+                            if p.alive && Some(i) != self.held && p.aabb().overlaps(&b) {
+                                let along = p.vel.dot(dir);
+                                if along < speed {
+                                    p.vel += dir * (speed - along).min(speed * dt * 8.0);
+                                    p.grounded = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                VolumeKind::Hurt { damage } if v.on && me.overlaps(&b) => {
+                    self.hurt += damage / 100.0 * dt;
+                    if self.hurt >= 1.0 {
+                        self.hurt = 0.0;
+                        self.player_died(ctrl, true);
+                    }
+                }
+                VolumeKind::Detector => {
+                    for c in [PortalColor::Blue, PortalColor::Orange] {
+                        let inside = v.on && self.portals[c.index()].is_some_and(|p| geom::contains(&Aabb::new(b.min - 0.05, b.max + 0.05), p.center));
+                        if inside != v.portals[c.index()] {
+                            self.volumes[k].portals[c.index()] = inside;
+                            self.events.push(SimEvent::PortalDetected { volume: k, color: c, inside });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Fans spin up and down.
+        for m in &mut self.movers {
+            let Some(spin) = &m.def.spin else { continue };
+            let want = if m.spin_on && m.present { spin.speed * m.spin_scale } else { 0.0 };
+            let step = spin.speed.abs().max(0.1) / spin.ramp.max(0.05) * dt;
+            m.spin_rate += (want - m.spin_rate).clamp(-step, step);
+            m.spin_angle = (m.spin_angle + m.spin_rate * dt) % std::f32::consts::TAU;
+        }
     }
 
     fn update_signals(&mut self, dt: f32) {

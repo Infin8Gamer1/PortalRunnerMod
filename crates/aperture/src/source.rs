@@ -13,7 +13,7 @@ use glam::Vec3;
 use faith_move::Aabb;
 
 use crate::io;
-use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MoverDef, SourceLight, Solid, Swing, NO_MODEL};
+use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MoverDef, SourceLight, Solid, Spin, Swing, Volume, VolumeKind, NO_MODEL};
 use crate::portal::{Portal, PortalColor};
 
 /// A Source entity: its keys in order (a key can repeat: outputs).
@@ -393,6 +393,10 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
     let mut path_nodes: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
     let mut spawned = false;
     let mut spawn_gun = Gun::NONE;
+    // Switched regions (their entities): what they ride is found once every mover's known.
+    let mut kind_volumes: Vec<(usize, usize)> = Vec::new();
+    // Each sound (entity) and whether it starts playing.
+    let mut initial_sounds: Vec<(usize, bool)> = Vec::new();
 
     for e in ents {
         let class = key(e, "classname").unwrap_or("");
@@ -431,10 +435,68 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                     spawn_gun.orange |= gun.orange;
                 }
             }
-            "func_noportal_volume" => {
+            // Regions the logic switches: no portals in it (on unless it starts inactive),
+            // portals fit away from it, it sees portals, it pushes, it hurts.
+            "func_noportal_volume" | "func_portal_bumper" | "func_portal_detector" | "trigger_push" | "trigger_hurt" => {
                 if let Some(b) = mb {
-                    l.repaint(Mat::Black, b.min.to_array(), b.max.to_array());
+                    let f = flags(e);
+                    let (vk, on) = match class {
+                        "func_noportal_volume" => (VolumeKind::NoPortal, f & 1 == 0),
+                        "func_portal_bumper" => (VolumeKind::Bumper, f & 1 == 0),
+                        "func_portal_detector" => (VolumeKind::Detector, !start_disabled && f & 1 == 0),
+                        "trigger_push" => {
+                            let (p, y, _) = angles(e, "pushdir");
+                            // (Clients, and physics objects: cubes.)
+                            (VolumeKind::Push { dir: direction(p, y), speed: num(e, "speed", 40.0) * 0.0254, players: f & 1 != 0, cubes: f & 8 != 0 }, !start_disabled)
+                        }
+                        _ => (VolumeKind::Hurt { damage: num(e, "damage", 10.0) }, !start_disabled),
+                    };
+                    kind_volumes.push((io_ents.len(), l.volumes.len()));
+                    kind = io::Kind::Volume { index: l.volumes.len() };
+                    l.volumes.push(Volume { b, kind: vk, on, mover: None });
                 }
+            }
+            // A sound: soundscript or file, its volume (0-10), pitch (100: as recorded), how far
+            // it carries (units), heard everywhere, starting silent, not looped.
+            "ambient_generic" => {
+                let f = flags(e);
+                let at = key(e, "SourceEntityName").and_then(|n| named.get(&n.to_ascii_lowercase())).and_then(|t| origin(t)).or_else(|| origin(e)).unwrap_or(Vec3::ZERO);
+                let reach = num(e, "radius", 1250.0) * 0.0254;
+                kind = io::Kind::Sound {
+                    at,
+                    sound: key(e, "message").unwrap_or("").to_string(),
+                    volume: (num(e, "health", 10.0) / 10.0).clamp(0.0, 1.0),
+                    pitch: (num(e, "pitch", 100.0) / 100.0).clamp(0.01, 2.55),
+                    reach,
+                    everywhere: f & 1 != 0,
+                    looped: f & 32 == 0,
+                    mover: None,
+                };
+                initial_sounds.push((io_ents.len(), f & 16 == 0 && num(e, "health", 10.0) > 0.0));
+            }
+            "env_soundscape" | "env_soundscape_proxy" => {
+                let r = num(e, "radius", 128.0);
+                kind = io::Kind::Soundscape { at: origin(e).unwrap_or(Vec3::ZERO), radius: if r < 0.0 { f32::INFINITY } else { r * 0.0254 }, scape: key(e, "soundscape").unwrap_or("").to_ascii_lowercase(), enabled: !start_disabled };
+            }
+            "env_shake" => {
+                let global = flags(e) & 1 != 0;
+                kind = io::Kind::Shake { at: origin(e).unwrap_or(Vec3::ZERO), amplitude: num(e, "amplitude", 4.0), frequency: num(e, "frequency", 2.5), duration: num(e, "duration", 1.0), radius: if global { f32::INFINITY } else { num(e, "radius", 500.0) * 0.0254 } };
+            }
+            "env_fade" => {
+                let f = flags(e);
+                let c = key(e, "rendercolor").map(floats).unwrap_or_default();
+                let color = if c.len() >= 3 { Vec3::new(c[0], c[1], c[2]) / 255.0 } else { Vec3::ZERO };
+                kind = io::Kind::Fade { color, alpha: num(e, "renderamt", 255.0) / 255.0, duration: num(e, "duration", 2.0), hold: num(e, "holdtime", 0.0), from: f & 1 != 0, stays: f & 8 != 0 };
+            }
+            // Shown or not by the logic: a spotlight's beam (on with Start On), steam (with
+            // its initial state on), sparks (with Start ON).
+            "point_spotlight" | "env_steam" | "env_spark" | "env_beam" | "env_splash" | "npc_security_camera" => {
+                kind = io::Kind::Effect;
+            }
+            // A particle system other than a grill's (those the grill shows): on with Start
+            // Active.
+            "info_particle_system" if !key(e, "effect_name").is_some_and(|n| n.eq_ignore_ascii_case("portal_cleanser") || n.eq_ignore_ascii_case("cleanser_edge_1")) => {
+                kind = io::Kind::Effect;
             }
             "info_particle_system" if key(e, "effect_name").is_some_and(|n| n.eq_ignore_ascii_case("cleanser_edge_1")) => {
                 if let Some(at) = origin(e) {
@@ -569,7 +631,23 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                         }
                     }
                 }
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default() }));
+                // A fan: it spins about its origin (Source's Z, or X or Y by its flags), up to
+                // `maxspeed` degrees a second (backwards with Reverse), from the start with
+                // Start ON; slowly up to speed and down with Acc/Dcc (by its friction). Not
+                // Solid: no boxes.
+                let mut mk = mk;
+                let spin = (class == "func_rotating").then(|| {
+                    let f = flags(e);
+                    let axis = if f & 4 != 0 { Vec3::X } else if f & 8 != 0 { Vec3::Y } else { Vec3::Z };
+                    let speed = num(e, "maxspeed", 100.0).to_radians() * if f & 2 != 0 { -1.0 } else { 1.0 };
+                    let ramp = if f & 16 != 0 { 50.0 / num(e, "fanfriction", 20.0).max(1.0) } else { 0.05 };
+                    if f & 64 != 0 {
+                        solids.clear();
+                    }
+                    mk = io::MoverKind::Rotor;
+                    Spin { pivot: origin(e).unwrap_or(Vec3::ZERO), axis: to_ours(axis).normalize(), speed, ramp, on: f & 1 != 0, sound: key(e, "message").unwrap_or("").to_string() }
+                });
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default(), spin }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }
@@ -698,7 +776,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                 if key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/box_dropper_cover.mdl")) {
                     if let Some(o) = origin(e) {
                         let b = Aabb::new(o - Vec3::new(0.6, 0.1, 0.6), o + Vec3::new(0.6, 0.0, 0.6));
-                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new() }));
+                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None }));
                         hatches.insert(io_ents.len(), movers);
                         movers += 1;
                     }
@@ -845,6 +923,16 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
             *mover = parent_mover(e);
         }
     }
+    // A switched region, or a sound, parented to a mover rides it.
+    for (k, v) in &kind_volumes {
+        l.volumes[*v].mover = parent_mover(&ents[*k]);
+    }
+    for (e, ent) in ents.iter().zip(io_ents.iter_mut()) {
+        if let io::Kind::Sound { mover, .. } = &mut ent.kind {
+            let source = key(e, "SourceEntityName").and_then(|n| named.get(&n.to_ascii_lowercase()));
+            *mover = source.and_then(|t| key(t, "targetname").and_then(|n| mover_named.get(&n.to_ascii_lowercase()).copied()).or_else(|| parent_mover(t))).or_else(|| parent_mover(e));
+        }
+    }
     // A rocket turret on a lift rides it.
     let lifts: Vec<Option<usize>> = ents.iter().filter(|e| key(e, "classname") == Some("npc_rocket_turret") && origin(e).is_some()).map(parent_mover).collect();
     for (item, lift) in l.items.iter_mut().filter(|i| matches!(i, Item::RocketTurret { .. })).zip(lifts) {
@@ -890,6 +978,14 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
             io::Kind::Animated => key(e, "StartDisabled") == Some("1"),
             // (A named sprite is off unless it starts on.)
             io::Kind::Sprite => flags(e) & 1 == 0,
+            // A spotlight's on with Start On; steam with its initial state; sparks with Start ON.
+            io::Kind::Effect => match key(e, "classname").unwrap_or("") {
+                "point_spotlight" | "env_beam" => flags(e) & 1 == 0,
+                "env_steam" => key(e, "InitialState") != Some("1") && flags(e) & 1 == 0,
+                "env_spark" => flags(e) & 64 == 0,
+                "info_particle_system" => key(e, "start_active") != Some("1"),
+                _ => false,
+            },
             _ => false,
         })
         .map(|(k, _)| k)
@@ -901,6 +997,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
     logic.hatches = hatches;
     logic.cleansers = cleansers;
     logic.cube_ents = cube_ents;
+    logic.initial_sounds = initial_sounds;
     // Doors she opens by using them (Use Opens; Toggle to shut them again too).
     logic.usable = ents
         .iter()
@@ -941,6 +1038,57 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A map's switched regions, sounds and fans: pushed by a push volume, a portal in a
+    /// detector starts a sound, a no-portal volume refuses one till it's disabled, a fan
+    /// spins up once it's started.
+    #[test]
+    fn volumes_sounds_and_fans_work() {
+        use crate::sim::{Aim, Sim};
+        // A floor, a wall at x -10 facing +X (white), a push round the start, a detector and a
+        // no-portal volume on the wall, a fan.
+        let solids = "bounds 0 -10 -1 -10 10 5 10\nwhite 0 -10 -1 -10 10 0 10\nwhite 0 -11 0 -10 -10 5 10\nbounds 1 -2 0 -2 2 3 2\nbounds 2 -10.1 0 -4 -9.9 4 0\nbounds 3 -10.1 0 4 -9.9 4 10\nbounds 4 5 1 5 6 2 6\nblack 4 5 1 5 6 2 6\n";
+        let ents = r#"{ "classname" "worldspawn" }
+{ "classname" "info_player_start" "origin" "0 0 0" "angles" "0 0 0" }
+{ "classname" "weapon_portalgun" "origin" "0 0 0" "CanFirePortal1" "1" "CanFirePortal2" "1" }
+{ "classname" "trigger_push" "model" "*1" "pushdir" "0 90 0" "speed" "300" "spawnflags" "1" }
+{ "classname" "func_portal_detector" "model" "*2" "OnStartTouchPortal1" "snd,PlaySound,,0,-1" }
+{ "classname" "func_noportal_volume" "model" "*3" "targetname" "np" }
+{ "classname" "ambient_generic" "targetname" "snd" "message" "Portal.elevator_chime" "spawnflags" "48" "health" "10" "origin" "0 0 64" }
+{ "classname" "func_rotating" "model" "*4" "targetname" "fan" "maxspeed" "180" "origin" "-216 -216 59" }"#;
+        let l = level("t", "T", solids, ents);
+        let mut sim = Sim::new(l);
+        let mut c = faith_move::Controller::new(crate::tuning(5.3, 15.0), Vec3::ZERO, 0.0);
+        for _ in 0..30 {
+            sim.step(1.0 / 60.0, &mut c);
+        }
+        // Pushed along Source's yaw 90 (our -X).
+        assert!(c.vel.x < -3.0, "not pushed: {}", c.vel);
+        let ent = |sim: &Sim, n: &str| sim.io.as_ref().unwrap().ents.iter().position(|e| e.name == n).unwrap();
+        let snd = ent(&sim, "snd");
+        assert!(!sim.io.as_ref().unwrap().sounds[&snd].playing, "it starts silent");
+        // Blue on the wall in the detector: the sound starts.
+        let eye = Vec3::new(0.0, 1.7, 0.0);
+        let aim = |to: Vec3| Aim { eye, dir: (to - eye).normalize(), yaw: 0.0 };
+        assert!(sim.fire(crate::portal::PortalColor::Blue, aim(Vec3::new(-10.0, 1.7, -2.0))));
+        sim.step(1.0 / 60.0, &mut c);
+        sim.step(1.0 / 60.0, &mut c);
+        assert!(sim.io.as_ref().unwrap().sounds[&snd].playing, "the detector didn't start it");
+        // Orange in the no-portal volume: refused, till it's disabled.
+        assert!(!sim.fire(crate::portal::PortalColor::Orange, aim(Vec3::new(-10.0, 1.7, 7.0))));
+        let mut io = sim.io.take().unwrap();
+        let np = io.ents.iter().position(|e| e.name == "np").unwrap();
+        io.input(&mut sim, np, "Disable", "", np);
+        let fan = io.ents.iter().position(|e| e.name == "fan").unwrap();
+        io.input(&mut sim, fan, "Start", "", fan);
+        sim.io = Some(io);
+        assert!(sim.fire(crate::portal::PortalColor::Orange, aim(Vec3::new(-10.0, 1.7, 7.0))));
+        for _ in 0..60 {
+            sim.step(1.0 / 60.0, &mut c);
+        }
+        let m = sim.movers.iter().find(|m| m.def.spin.is_some()).expect("the fan");
+        assert!((m.spin_rate - std::f32::consts::PI).abs() < 0.01 && m.spin_angle != 0.0, "{} {}", m.spin_rate, m.spin_angle);
+    }
 
     #[test]
     fn entities_keep_repeated_keys() {

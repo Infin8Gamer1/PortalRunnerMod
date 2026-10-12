@@ -353,6 +353,10 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
     }
     text.push_str(&sprites);
     std::fs::write(path, text).map_err(|e| e.to_string())?;
+    // (Security cameras aren't props: the game draws them itself, from this model.)
+    if ents.iter().any(|e| bsp::key(e, "classname") == Some("npc_security_camera")) && !used.iter().any(|(m, _, _)| m == "models/props/security_camera.mdl") {
+        used.push(("models/props/security_camera.mdl".into(), 0, Vec::new()));
+    }
     Ok(used)
 }
 

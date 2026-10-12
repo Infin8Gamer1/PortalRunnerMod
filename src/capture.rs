@@ -24,6 +24,8 @@ pub struct Capture {
     /// Real time per frame (smoothed, ms): the clock the game runs on here is fixed.
     real_ms: f32,
     last: Option<std::time::Instant>,
+    /// Keep her here (a view set up to look at something), till another map loads.
+    hold: Option<Vec3>,
 }
 
 pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
@@ -33,7 +35,7 @@ pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
         game.locked = true;
         // Every frame is 1/60 s of game time, however fast it renders: scripts count frames.
         commands.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / 60.0)));
-        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)), real_ms: 0.0, last: None });
+        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)), real_ms: 0.0, last: None, hold: None });
     }
 }
 
@@ -83,6 +85,10 @@ enum Act {
     RayTracing(bool),
     /// Load one of Portal's maps: as imported, or the game's own copy of it.
     Chamber(crate::LevelGroup, &'static str),
+    /// Stand off the `n`th of the map's effects of a kind (`camera`, `spotlight`, `steam`,
+    /// `sparks`, `beam`, or a particle effect's name), `d` metres from it, looking at it
+    /// (from beside it, or a little below one that's high up).
+    ViewArt(&'static str, usize, f32),
 }
 
 /// What the mouse does.
@@ -1166,6 +1172,35 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("nativeedit_04_playing"),
             ]
         }
+        // Portal's maps' effects: a security camera watching her, a spotlight, steam, an
+        // elevator shaft's beam, sparks, a beam, mist.
+        "effects" => {
+            use crate::LevelGroup::PortalNative as N;
+            vec![
+                Chamber(N, "testchmb_a_00"),
+                Wait(60),
+                ViewArt("camera", 0, 3.0),
+                Wait(40),
+                Shot("fx_camera"),
+                ViewArt("beam", 0, 5.0),
+                Wait(20),
+                Shot("fx_beam"),
+                ViewArt("sparks", 0, 2.5),
+                Wait(90),
+                Shot("fx_sparks"),
+                ViewArt("spotlight", 0, 5.0),
+                Wait(20),
+                Shot("fx_spotlight"),
+                Chamber(N, "escape_01"),
+                Wait(60),
+                ViewArt("steam", 0, 3.0),
+                Wait(40),
+                Shot("fx_steam"),
+                ViewArt("water_mist_512", 0, 6.0),
+                Wait(60),
+                Shot("fx_mist"),
+            ]
+        }
         // The chambers menu's folders.
         "chambersmenu" => {
             use crate::menu::Screen;
@@ -1738,6 +1773,10 @@ pub fn run(
     }
     let acts = script(&cap.script);
     game.scripted = Some(MoveInput::default());
+    if let Some(at) = cap.hold {
+        game.ctrl.feet = at;
+        game.ctrl.vel = Vec3::ZERO;
+    }
     if cap.hold_until.is_some_and(|t| std::time::Instant::now() < t) {
         return;
     }
@@ -1820,6 +1859,7 @@ pub fn run(
         }
         Act::Chamber(group, map) => match (0..game.levels.len()).find(|&i| game.groups[i] == *group && game.source_names[i].as_deref() == Some(*map)) {
             Some(i) => {
+                cap.hold = None;
                 game.pending = Some(i);
                 let pause = if cap.real_ms > 0.0 && cap.real_ms < 40.0 { 600 } else { 1500 };
                 cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
@@ -1838,6 +1878,45 @@ pub fn run(
                 game.ctrl.vel = Vec3::ZERO;
                 game.ctrl.state = MoveState::Air;
                 println!("capture: light {k} at {at}");
+            }
+        }
+        Act::ViewArt(what, n, d) => {
+            let found = game.sim.level.art.as_ref().and_then(|art| {
+                art.props
+                    .iter()
+                    .filter(|p| match (&p.kind, *what) {
+                        (aperture::art::PropKind::Camera, "camera") | (aperture::art::PropKind::Spotlight { .. }, "spotlight") | (aperture::art::PropKind::Steam { .. }, "steam") | (aperture::art::PropKind::Sparks { .. }, "sparks") | (aperture::art::PropKind::Beam { .. }, "beam") => true,
+                        (aperture::art::PropKind::Particles { .. }, w) => p.model.eq_ignore_ascii_case(w),
+                        _ => false,
+                    })
+                    .nth(*n)
+                    .map(|p| (p.at, p.turn))
+            });
+            if let Some((at, turn)) = found {
+                // Where there's a clear view of it: round it (the way it faces first), a
+                // little below it, nothing in between.
+                let fwd = turn * Vec3::NEG_Z;
+                let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::Z);
+                let clear = |eye: Vec3| {
+                    let to = at - eye;
+                    let (_, hit) = game.sim.trace(eye, to.normalize_or(Vec3::Z), to.length(), aperture::Mask::SHOT, 0);
+                    hit.is_none_or(|h| h.t > to.length() - 0.3) && !game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, eye))
+                };
+                let eye = (0..8)
+                    .map(|k| Quat::from_rotation_y(k as f32 * std::f32::consts::FRAC_PI_4) * flat)
+                    .flat_map(|dir| [0.3f32, 0.0, 0.6].map(move |down| at + dir * *d - Vec3::Y * (*d * down)))
+                    .find(|e| clear(*e))
+                    .unwrap_or(at + flat * *d);
+                game.ctrl.feet = eye - Vec3::Y * 1.7;
+                game.ctrl.vel = Vec3::ZERO;
+                game.ctrl.state = MoveState::Air;
+                cap.hold = Some(game.ctrl.feet);
+                let to = at - eye;
+                game.ctrl.yaw = (-to.x).atan2(-to.z);
+                game.ctrl.pitch = (to.y / Vec2::new(to.x, to.z).length().max(1e-3)).atan();
+                println!("capture: {what} {n} at {at}");
+            } else {
+                println!("capture: no {what} {n}");
             }
         }
         Act::ViewCube(n) => {

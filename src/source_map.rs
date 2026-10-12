@@ -453,7 +453,7 @@ pub fn sync(
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
         match &p.kind {
             // An emancipation grill's particles.
-            aperture::art::PropKind::Particles => {
+            aperture::art::PropKind::Particles { .. } => {
                 if let Some(kind) = crate::grill_fx::Kind::of(&p.model) {
                     let seed = grill_seed;
                     grill_seed += 1;
@@ -486,6 +486,8 @@ pub fn sync(
                     NotShadowCaster,
                 ));
             }
+            // (Effects and cameras are `map_fx`'s.)
+            aperture::art::PropKind::Spotlight { .. } | aperture::art::PropKind::Steam { .. } | aperture::art::PropKind::Sparks { .. } | aperture::art::PropKind::Beam { .. } | aperture::art::PropKind::Camera => {}
             kind => {
                 let Some(path) = extracted.model(&p.model) else { continue };
                 let at = p.at + shift;
@@ -714,12 +716,17 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
         } else if mv.present && *vis == Visibility::Hidden && p.animated.is_none() {
             *vis = Visibility::Inherited;
         }
-        let (at, turn) = match mv.def.swing {
-            Some(sw) => {
+        let (at, turn) = match (mv.def.swing, &mv.def.spin) {
+            (Some(sw), _) => {
                 let r = sw.rotation(mv.at.x);
                 (mv.carried + sw.pivot + r * (p.base - sw.pivot), r * p.turn)
             }
-            None => (p.base + mv.offset(), p.turn),
+            // On a fan: round with it.
+            (None, Some(spin)) => {
+                let r = Quat::from_axis_angle(spin.axis, mv.spin_angle);
+                (mv.offset() + spin.pivot + r * (p.base - spin.pivot), r * p.turn)
+            }
+            (None, None) => (p.base + mv.offset(), p.turn),
         };
         // (A sprite turns to the camera, not with what it rides.)
         let turn = if sprite { tf.rotation } else { turn };
@@ -730,13 +737,18 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
     }
     for (m, mut tf, mut vis) in &mut q {
         let Some(mv) = movers.iter().find(|v| v.def.model == m.0) else { continue };
-        let want = match mv.def.swing {
+        let want = match (mv.def.swing, &mv.def.spin) {
             // A swinging door turns about its hinge.
-            Some(sw) => {
+            (Some(sw), _) => {
                 let r = sw.rotation(mv.at.x);
                 Transform { translation: mv.carried + sw.pivot - r * sw.pivot, rotation: r, ..default() }
             }
-            None => Transform::from_translation(mv.offset()),
+            // A fan spins about its middle.
+            (None, Some(spin)) => {
+                let r = Quat::from_axis_angle(spin.axis, mv.spin_angle);
+                Transform { translation: mv.offset() + spin.pivot - r * spin.pivot, rotation: r, ..default() }
+            }
+            (None, None) => Transform::from_translation(mv.offset()),
         };
         if tf.translation != want.translation || tf.rotation != want.rotation {
             tf.translation = want.translation;

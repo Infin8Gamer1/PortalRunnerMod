@@ -489,8 +489,8 @@ mod tests {
             assert!((ours.kill_y - theirs.kill_y).abs() < 0.05, "{name}: kill height");
             // What's drawn: every prop, sprite and overlay the map has.
             let art = ours.art.as_ref().unwrap();
-            let props = crate::art::parse_props(&f[2]);
-            assert_eq!(art.props.len(), props.len(), "{name}: props");
+            let theirs_art = crate::art::MapArt::from_files(&name, &f[2], &f[3], &f[1]);
+            assert_eq!(art.props.len(), theirs_art.props.len(), "{name}: props");
             assert_eq!(art.overlays.len(), crate::art::parse_overlays(&f[3]).len(), "{name}: overlays");
             assert_eq!(art.ropes.len(), crate::rope::hang(&source::parse_entities(&f[1])).len(), "{name}: ropes");
             assert!(!art.faces.is_empty(), "{name}: faces");

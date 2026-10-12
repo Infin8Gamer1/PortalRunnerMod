@@ -17,6 +17,7 @@ mod glb;
 mod maps;
 mod remix;
 mod scenes;
+mod sounds;
 mod templates;
 mod usd;
 mod vpk;
@@ -755,6 +756,11 @@ fn main() {
             None => println!("  no scenes.image: GLaDOS stays quiet"),
         }
     }
+    // Portal's sounds as a library, with its soundscripts and soundscapes (`--no-sounds` skips
+    // it; `--sounds` writes the files again).
+    if !args.iter().any(|a| a == "--no-sounds") {
+        sound_library(&games, &out, args.iter().any(|a| a == "--sounds"));
+    }
     // The game's own copies of the maps, to play and edit (`levels/portal/` in the repository:
     // made again only when asked, `--port-maps`).
     if maps_dir.is_some() && !args.iter().any(|a| a == "--no-maps") && args.iter().any(|a| a == "--port-maps") {
@@ -1055,6 +1061,59 @@ fn vmt_base_texture(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Portal's sounds as a library (see `sounds.rs`): Portal's own, and the others its
+/// soundscripts (`Portal.*`), soundscapes and maps use.
+fn sound_library(games: &[Game], out: &Path, again: bool) {
+    let Some(portal) = games.iter().find(|g| g.name == "portal") else { return };
+    // (Half-Life 2's soundscripts are loose files beside Portal's: after Portal's own.)
+    let hl2 = portal.loose.first().and_then(|l| l.parent()).map(|r| r.join("hl2"));
+    let read = |p: &str| portal.read(p).or_else(|| std::fs::read(hl2.as_ref()?.join(p.to_ascii_lowercase())).ok().filter(|b| !b.is_empty()));
+    let scripts = sounds::soundscripts(&read);
+    let (scapes, mut wanted) = sounds::soundscapes(&read);
+    let _ = std::fs::create_dir_all(out.join("sounds").join("lib"));
+    let table: String = scripts.iter().map(|s| format!("{}|{}|{},{}|{}|{}\n", s.name, s.volume, s.pitch.0, s.pitch.1, s.soundlevel, s.waves.join(";"))).collect();
+    let _ = std::fs::write(out.join("sounds").join("scripts.txt"), table);
+    let _ = std::fs::write(out.join("sounds").join("soundscapes.txt"), scapes);
+    // What the maps play (a soundscript, or a file) and Portal's own soundscripts.
+    let mut named: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (map, _) in aperture::port::MAPS {
+        let Ok(text) = std::fs::read_to_string(out.join("maps").join(format!("{map}.ents"))) else { continue };
+        for e in bsp::parse_entities(&text) {
+            if bsp::key(&e, "classname") == Some("ambient_generic") {
+                if let Some(m) = bsp::key(&e, "message") {
+                    named.insert(m.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    for s in &scripts {
+        let lower = s.name.to_ascii_lowercase();
+        if lower.starts_with("portal") || named.contains(&lower) {
+            wanted.extend(s.waves.iter().cloned());
+        }
+    }
+    wanted.extend(named.iter().filter(|n| n.ends_with(".wav") || n.ends_with(".mp3")).map(|n| sounds::wave_path(n)));
+    let wanted: std::collections::BTreeSet<String> = wanted.into_iter().collect();
+    // Portal's own: every sound in its package, and loose ones beside it.
+    let mut own: Vec<String> = portal.vpks.first().map(|v| v.paths().filter_map(|p| p.strip_prefix("sound/").map(str::to_string)).collect()).unwrap_or_default();
+    for l in &portal.loose {
+        let mut stack = vec![l.join("sound")];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Ok(rel) = p.strip_prefix(l.join("sound")) {
+                    own.push(rel.to_string_lossy().replace('\\', "/").to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    own.retain(|p| p.ends_with(".wav") || p.ends_with(".mp3"));
+    let (written, kept) = sounds::library(&read, &own, &wanted, out, again);
+    println!("  sound library: {} files ({written} written, {kept} kept), {} soundscripts", written + kept, scripts.len());
 }
 
 /// A file's fingerprint (FNV-1a): whether it's as it was written.
