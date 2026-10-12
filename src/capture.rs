@@ -1292,6 +1292,59 @@ fn script(name: &str) -> Vec<Act> {
             Wait(90),
             Shot("editor_04_playing"),
         ],
+        // The level editor's Portal sounds and effects (PORTAL_EDIT=1): a room with a camera,
+        // steam, sparks, a spotlight's beam, mist, a fan, a push up, a decal, a sound (and the
+        // sound browser for it) and a physics prop, then playing it.
+        "editoreffects" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                use crate::editor::catalog::find;
+                use aperture::doc::Kind;
+                ed.open(aperture::doc::LevelDoc::starter("Effects"), None);
+                ed.tab = Some(crate::editor::catalog::Category::PortalEffects);
+                let look = Vec3::NEG_Z;
+                ed.add_entry(find("Decal"), Vec3::new(0.0, 2.0, -16.0), Vec3::Z, look);
+                ed.add_entry(find("Security camera"), Vec3::new(-6.0, 4.0, -12.0), Vec3::X, look);
+                // (Against black, to be seen.)
+                ed.add_entry(find("Black metal"), Vec3::new(6.0, 0.0, -9.0), Vec3::NEG_X, look);
+                ed.add_entry(find("Steam"), Vec3::new(4.0, 1.0, -9.0), Vec3::NEG_X, look);
+                ed.add_entry(find("Black metal"), Vec3::new(-6.0, 2.0, -8.0), Vec3::X, look);
+                ed.add_entry(find("Sparks"), Vec3::new(-4.0, 3.0, -8.0), Vec3::X, look);
+                ed.add_entry(find("Spotlight beam"), Vec3::new(3.0, 4.5, -16.0), Vec3::Z, look);
+                ed.add_entry(find("Particles"), Vec3::new(3.0, 0.0, -12.0), Vec3::Y, look);
+                ed.add_entry(find("Fan (brush)"), Vec3::new(-3.0, 0.0, -12.0), Vec3::Y, look);
+                ed.add_entry(find("Push volume"), Vec3::new(-3.0, 0.2, -12.0), Vec3::Y, look);
+                let mut chair = aperture::doc::Object::new(Kind::Model { path: "props/portal/props/lab_chair/lab_chair.glb".into(), scale: Vec3::ONE, bounds: Some((Vec3::new(-0.284, -0.6, -0.285), Vec3::new(0.286, 0.472, 0.306))), solid: true }, Vec3::new(1.5, 0.6, -6.0));
+                if let Some(k) = crate::editor::ui::physics_prop(&chair.kind) {
+                    chair.kind = k;
+                }
+                ed.doc.objects.push(chair);
+                ed.add_entry(find("Sound"), Vec3::new(0.0, 0.0, -6.0), Vec3::Y, look);
+                ed.selected = Some(ed.doc.objects.len() - 1);
+                ed.sound_picking = ed.selected;
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 3.5, -1.0), yaw: 0.0, pitch: -0.2, speed: 8.0 };
+            }),
+            Wait(120),
+            Shot("edfx_01_placed"),
+            Edit(|ed, menu| {
+                ed.sound_picking = None;
+                ed.play(menu);
+            }),
+            Wait(150),
+            Shot("edfx_02_playing"),
+            Teleport(Vec3::new(0.0, 0.0, -9.0)),
+            Look(-90.0, -10.0),
+            Wait(30),
+            Shot("edfx_03_steam"),
+            Teleport(Vec3::new(0.0, 0.0, -8.0)),
+            Look(90.0, 10.0),
+            Wait(150),
+            Shot("edfx_04_sparks"),
+            Teleport(Vec3::new(3.0, 0.0, -6.0)),
+            Look(0.0, -20.0),
+            Wait(30),
+            Shot("edfx_05_mist"),
+        ],
         // The level editor by mouse (PORTAL_EDIT=1): a cube dragged in from the content
         // browser, a button clicked and then placed, the wheel over a panel and over the view,
         // and the gizmo on a piece off to the side with the camera turned.

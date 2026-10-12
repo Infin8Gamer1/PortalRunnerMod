@@ -78,6 +78,10 @@ impl Look {
     }
 }
 
+/// The particle effects drawn (`info_particle_system`'s effect_name: the editor offers these;
+/// a grill's are drawn as the grill).
+pub const EFFECTS: [&str; 12] = ["water_mist_256", "water_mist_512", "water_mist_384_128", "water_mist_512_128", "water_mist_1024_512", "elevator_beam", "glados_beam", "broken_tube_suck", "fire_large_02", "fire_incinerator_door", "neurotoxins_step1", "neurotoxins_step3"];
+
 /// A particle system where the map has it.
 #[derive(Component)]
 pub struct Fx {
@@ -606,6 +610,13 @@ pub fn screen(time: Res<Time>, mut game: ResMut<Game>, mut st: Local<ScreenState
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_offered_effect_is_drawn() {
+        for e in EFFECTS {
+            assert!(Look::of_effect(e).is_some(), "{e}");
+        }
+    }
 
     #[test]
     fn effects_by_name() {

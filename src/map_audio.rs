@@ -4,10 +4,14 @@
 //! soundscript (or its radius) has it; the area's ambience (env_soundscape), the nearest one
 //! in sight within its radius, looping and now and then a sound at random; fans humming as
 //! they spin. Files are read the first time they're played.
+//!
+//! Mirror's Edge's sounds are in it too, read from the install (as the editor's props are):
+//! a sound named `me:<package>.<group>.<cue>` is that SoundCue.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume};
 use bevy::prelude::*;
@@ -49,6 +53,37 @@ pub struct SoundLib {
     pub files: HashMap<String, LibFile>,
     pub scapes: HashMap<String, Vec<Rule>>,
     cache: HashMap<String, Option<Handle<AudioSource>>>,
+    /// Mirror's Edge's sound packages (`CookedPC/Audio`), its cues as read (by lower-case
+    /// path), and every one there is (`me:` names, for the editor; read on a thread when
+    /// first asked for).
+    me_audio: Option<PathBuf>,
+    me_cues: HashMap<String, Option<MeCue>>,
+    pub me_list: Vec<String>,
+    me_listing: Option<Mutex<Receiver<Vec<String>>>>,
+}
+
+/// One of Mirror's Edge's cues: its waves, volume and pitch (ranges), whether it loops.
+struct MeCue {
+    waves: Vec<Handle<AudioSource>>,
+    volume: (f32, f32),
+    pitch: (f32, f32),
+    looping: bool,
+}
+
+/// Every SoundCue in Mirror's Edge's sound packages, as `me:` names.
+fn me_cues(audio: &Path) -> Vec<String> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(audio).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("upk"))).collect();
+    files.sort();
+    let mut out = Vec::new();
+    for f in files {
+        let Some(package) = f.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+        let Ok(pkg) = me_assets::package::Package::open(&f) else { continue };
+        let mut names: Vec<String> = pkg.exports.iter().enumerate().filter(|(_, e)| pkg.class_name(e) == "SoundCue").map(|(i, _)| format!("me:{package}.{}", pkg.path(i as i32 + 1))).collect();
+        names.sort();
+        names.dedup();
+        out.extend(names);
+    }
+    out
 }
 
 /// A sound found: its file, how loud (with its loudness correction), its pitch, how far it
@@ -76,11 +111,12 @@ fn floats(s: &str) -> Vec<f32> {
 }
 
 impl SoundLib {
-    pub fn load() -> SoundLib {
-        let Some(root) = crate::extracted::find_root() else { return SoundLib::default() };
+    pub fn load(me: Option<PathBuf>) -> SoundLib {
+        let me_audio = me.map(|c| c.join("Audio")).filter(|a| a.is_dir());
+        let Some(root) = crate::extracted::find_root() else { return SoundLib { me_audio, ..default() } };
         let dir = root.join("sounds");
         let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap_or_default();
-        let mut lib = SoundLib { root: Some(root.clone()), ..default() };
+        let mut lib = SoundLib { root: Some(root.clone()), me_audio, ..default() };
         for l in read("lib/index.txt").lines() {
             let f: Vec<&str> = l.split('|').collect();
             if f.len() < 4 {
@@ -156,6 +192,9 @@ impl SoundLib {
     /// files, and its pitch in its range).
     pub fn find(&mut self, name: &str, k: u32, sources: &mut Assets<AudioSource>) -> Option<Found> {
         let lower = name.trim().to_ascii_lowercase().replace('\\', "/");
+        if let Some(path) = lower.strip_prefix("me:") {
+            return self.me_find(path, k, sources);
+        }
         let (wave, volume, pitch, soundlevel) = match self.scripts.get(&lower) {
             Some(s) if !s.waves.is_empty() => {
                 let w = s.waves[k as usize % s.waves.len()].clone();
@@ -167,6 +206,55 @@ impl SoundLib {
         let handle = self.file(&wave, sources)?;
         let f = self.files.get(&wave);
         Some(Found { handle, volume: volume * f.map_or(1.0, |f| f.gain), pitch, near: near_distance(soundlevel), loops: f.is_some_and(|f| f.loops) })
+    }
+
+    /// One of Mirror's Edge's cues (`k` picks among its waves, and its volume and pitch in
+    /// their ranges), read from its package the first time.
+    fn me_find(&mut self, path: &str, k: u32, sources: &mut Assets<AudioSource>) -> Option<Found> {
+        if !self.me_cues.contains_key(path) {
+            let cue = self.me_audio.as_ref().and_then(|a| me_assets::sound::SoundBank::new(me_assets::Packages::new(a)).cue(path));
+            let cue = cue.map(|c| MeCue { waves: c.waves.iter().map(|w| sources.add(AudioSource { bytes: Arc::from(w.ogg.as_slice()) })).collect(), volume: c.volume, pitch: c.pitch, looping: c.looping });
+            self.me_cues.insert(path.to_string(), cue);
+        }
+        let cue = self.me_cues.get(path)?.as_ref()?;
+        let f = (k.wrapping_mul(2_654_435_761) >> 16) as f32 / 65_536.0;
+        Some(Found {
+            handle: cue.waves.get(k as usize % cue.waves.len().max(1))?.clone(),
+            volume: cue.volume.0 + (cue.volume.1 - cue.volume.0) * f,
+            pitch: cue.pitch.0 + (cue.pitch.1 - cue.pitch.0) * f,
+            near: near_distance(75.0),
+            loops: cue.looping,
+        })
+    }
+
+    /// Mirror's Edge's cues for the editor's browser: read on a thread the first time it's
+    /// asked; empty till then (or without the game).
+    pub fn me_listing(&mut self) -> &[String] {
+        if self.me_list.is_empty() {
+            match &self.me_listing {
+                Some(rx) => {
+                    if let Some(list) = rx.lock().ok().and_then(|r| r.try_recv().ok()) {
+                        info!("Mirror's Edge's sounds for the editor: {} cues", list.len());
+                        self.me_list = list;
+                    }
+                }
+                None => {
+                    if let Some(a) = self.me_audio.clone() {
+                        let (tx, rx) = channel();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(me_cues(&a));
+                        });
+                        self.me_listing = Some(Mutex::new(rx));
+                    }
+                }
+            }
+        }
+        &self.me_list
+    }
+
+    /// Whether Mirror's Edge's sounds are there (and still being listed).
+    pub fn me_state(&self) -> (bool, bool) {
+        (self.me_audio.is_some(), self.me_audio.is_some() && self.me_list.is_empty())
     }
 
     /// Every sound there is to place (the editor's browser): the soundscripts whose files are
@@ -181,8 +269,12 @@ impl SoundLib {
     }
 }
 
-pub fn setup(mut commands: Commands) {
-    commands.insert_resource(SoundLib::load());
+pub fn setup(mut commands: Commands, arms: Option<Res<crate::me_viewmodel::MeArms>>) {
+    let cooked = match &arms {
+        Some(a) => Some(a.cooked_pc().to_path_buf()),
+        None => crate::me_viewmodel::candidates().iter().find_map(|d| me_assets::cooked_pc(d)),
+    };
+    commands.insert_resource(SoundLib::load(cooked));
 }
 
 /// A sound playing for an `ambient_generic`: which of its starts, its file's volume, how far
@@ -411,6 +503,22 @@ const SCAPE_GAIN: f32 = 0.7;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirror's Edge's cues (when it's installed): listed from its sound packages, and one read
+    /// to play by its `me:` name.
+    #[test]
+    fn mirrors_edges_sounds_are_in_the_library() {
+        let Some(cooked) = crate::me_viewmodel::candidates().iter().find_map(|d| me_assets::cooked_pc(d)) else { return };
+        let started = std::time::Instant::now();
+        let list = me_cues(&cooked.join("Audio"));
+        eprintln!("{} cues listed in {:?}", list.len(), started.elapsed());
+        assert!(list.len() > 1000, "{}", list.len());
+        assert!(list.iter().any(|n| n.eq_ignore_ascii_case("me:A_Ambience_Wind.Wind.Wind")), "{:?}", &list[..5]);
+        let mut lib = SoundLib::load(Some(cooked));
+        let mut sources = Assets::<AudioSource>::default();
+        let f = lib.find("me:A_Ambience_Wind.Wind.Wind", 0, &mut sources).expect("the wind");
+        assert!(f.loops && f.volume > 0.0);
+    }
 
     #[test]
     fn sounds_fall_off_as_source_has_them() {

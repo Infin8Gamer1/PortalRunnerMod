@@ -63,6 +63,15 @@ pub struct UiState {
     /// Materials whose pictures are wanted (shown this frame), and their pictures.
     mat_wanted: Vec<String>,
     mat_tex: HashMap<String, Option<egui::TextureId>>,
+    /// The sound browser's search, game (0: Portal, 1: Mirror's Edge), what it lists, and
+    /// for what.
+    sound_search: String,
+    sound_game: usize,
+    sound_list: Vec<String>,
+    sound_key: Option<(String, usize, usize)>,
+    /// What keys' menus offer: Portal's soundscapes and colour correction tables.
+    scapes: Vec<String>,
+    tables: Vec<String>,
 }
 
 /// A material's look for its tile: its texture, else its colour.
@@ -88,7 +97,24 @@ pub fn draw(
     mut prop_thumbs: ResMut<Thumbs>,
     mut prop_textures: Local<HashMap<usize, egui::TextureId>>,
     (extracted, mut images): (Res<crate::extracted::Extracted>, ResMut<Assets<Image>>),
+    (mut commands, mut sounds, mut sources, previews): (Commands, Option<ResMut<crate::map_audio::SoundLib>>, ResMut<Assets<AudioSource>>, Query<Entity, With<Preview>>),
 ) -> Result {
+    if state.scapes.is_empty() {
+        if let Some(lib) = &sounds {
+            let mut scapes: Vec<String> = lib.scapes.keys().cloned().collect();
+            scapes.sort();
+            state.scapes = scapes;
+        }
+        let mut tables: Vec<String> = crate::extracted::find_root()
+            .and_then(|r| std::fs::read_dir(r.join("correction")).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(|n| format!("materials/correction/{n}")))
+            .collect();
+        tables.sort();
+        state.tables = tables;
+    }
     // The props' pictures made since last time, for egui.
     for (i, h) in &prop_thumbs.ready {
         if !prop_textures.contains_key(i) {
@@ -170,6 +196,41 @@ pub fn draw(
         }
         if !open || ed.selected != Some(target.obj) {
             ed.picking = None;
+        }
+    }
+
+    // ---- the sound browser
+    if let Some(obj) = ed.sound_picking {
+        let mut open = true;
+        let mut preview = None;
+        let mut stop = false;
+        let window = egui::Window::new("Sounds").open(&mut open).default_size([440.0, 520.0]).default_pos(ctx.viewport_rect().center() - egui::vec2(220.0, 260.0)).show(&ctx, |ui| {
+            if let Some(lib) = sounds.as_deref_mut() {
+                sound_browser(ui, ed, &mut state, lib, obj, &mut preview, &mut stop);
+            } else {
+                ui.label("No sound library: run the extractor.");
+            }
+        });
+        if let Some(w) = window {
+            ed.panels.push(w.response.rect);
+        }
+        if stop || preview.is_some() || !open {
+            for e in &previews {
+                commands.entity(e).despawn();
+            }
+        }
+        if let (Some(name), Some(lib)) = (preview, sounds.as_deref_mut()) {
+            let k = (game.sim.time * 1000.0) as u32;
+            match lib.find(&name, k, &mut sources) {
+                Some(f) => {
+                    let volume = f.volume * game_settings.effects_gain();
+                    commands.spawn((Preview, AudioPlayer::new(f.handle), PlaybackSettings::DESPAWN.with_volume(bevy::audio::Volume::Linear(volume)).with_speed(f.pitch)));
+                }
+                None => ed.status = format!("Couldn't read {name}"),
+            }
+        }
+        if !open || ed.selected != Some(obj) {
+            ed.sound_picking = None;
         }
     }
 
@@ -641,6 +702,7 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mu
         None => Vec::new(),
     };
     let mut picking = None;
+    let mut browse_sounds = false;
     let incoming_labels: Vec<String> = incoming.iter().map(|(k, e, inp)| {
         let o = &ed.doc.objects[*k];
         format!("{} {}: {e}, {inp}", o.kind.label(), o.name)
@@ -740,6 +802,13 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mu
                     }
                     map_fields(ui, o, i, state, &mut picking);
                     pick_target = kind_fields(ui, &mut o.kind, newest);
+                    if let Some(physics) = physics_prop(&o.kind) {
+                        ui.label("Physics");
+                        if ui.button("Knock it about").on_hover_text("Make it one of Portal's physics props (prop_physics): it falls, she can pick it up").clicked() {
+                            o.kind = physics;
+                        }
+                        ui.end_row();
+                    }
                     if let Some(l) = looks {
                         ui.label("Materials");
                         let r = if l.lacking { ui.colored_label(egui::Color32::from_rgb(240, 180, 60), &l.text) } else { ui.label(&l.text) };
@@ -749,8 +818,10 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mu
                         ui.end_row();
                     }
                 });
-                if let Kind::Entity { keys, .. } = &mut o.kind {
-                    entity_keys(ui, keys);
+                if let Kind::Entity { class, keys, .. } = &mut o.kind {
+                    if entity_keys(ui, class, keys, state) {
+                        browse_sounds = true;
+                    }
                 }
                 if matches!(o.kind, Kind::Entity { .. }) {
                     outputs(ui, &mut o.outputs, &state.names);
@@ -773,6 +844,9 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mu
             if let Some(s) = ed.doc.objects[i].kind.drives() {
                 let n = ed.doc.objects.iter().filter(|o| o.kind.inputs().is_some_and(|inp| inp.all.contains(&s))).count();
                 ui.weak(format!("Drives signal {s}: {n} piece(s) listen (lines in the view)."));
+            }
+            if browse_sounds {
+                ed.sound_picking = Some(i);
             }
             if pick_target {
                 ed.pick_target = true;
@@ -911,16 +985,48 @@ fn map_fields(ui: &mut egui::Ui, o: &mut Object, i: usize, state: &mut UiState, 
 }
 
 /// A Portal entity's keys (Source's): each one's value, to change; more to add.
-fn entity_keys(ui: &mut egui::Ui, keys: &mut Vec<(String, String)>) {
+/// A Portal entity's keys (and values), with a picker beside those that name something the
+/// game has: a sound (the sound browser: true when it's asked for), a soundscape, a particle
+/// effect, a colour correction table.
+fn entity_keys(ui: &mut egui::Ui, class: &str, keys: &mut Vec<(String, String)>, state: &UiState) -> bool {
+    let mut browse = false;
     egui::CollapsingHeader::new(format!("Keys ({})", keys.len())).default_open(true).show(ui, |ui| {
         let mut remove = None;
         for (k, (key, value)) in keys.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.add_sized([120.0, 18.0], egui::TextEdit::singleline(key));
-                ui.add_sized([(ui.available_width() - 28.0).max(60.0), 18.0], egui::TextEdit::singleline(value));
-                if ui.small_button("x").on_hover_text("Remove it").clicked() {
-                    remove = Some(k);
-                }
+            let lower = key.to_ascii_lowercase();
+            let options: Option<Vec<String>> = match (class, lower.as_str()) {
+                ("env_soundscape" | "env_soundscape_proxy" | "env_soundscape_triggerable", "soundscape") => Some(state.scapes.clone()),
+                ("info_particle_system", "effect_name") => Some(crate::map_fx::EFFECTS.iter().map(|e| e.to_string()).collect()),
+                ("color_correction", "filename") => Some(state.tables.clone()),
+                _ => None,
+            };
+            let sound = matches!(class, "ambient_generic" | "func_rotating") && lower == "message";
+            ui.push_id(k, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized([120.0, 18.0], egui::TextEdit::singleline(key));
+                    let extra = if sound || options.is_some() { 52.0 } else { 28.0 };
+                    ui.add_sized([(ui.available_width() - extra).max(60.0), 18.0], egui::TextEdit::singleline(value));
+                    if sound && ui.small_button("…").on_hover_text("Pick a sound").clicked() {
+                        browse = true;
+                    }
+                    if let Some(options) = &options {
+                        ui.menu_button("…", |ui| {
+                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                for o in options {
+                                    if ui.selectable_label(value.eq_ignore_ascii_case(o), o).clicked() {
+                                        *value = o.clone();
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        })
+                        .response
+                        .on_hover_text("What the game has");
+                    }
+                    if ui.small_button("x").on_hover_text("Remove it").clicked() {
+                        remove = Some(k);
+                    }
+                });
             });
         }
         if let Some(k) = remove {
@@ -930,6 +1036,91 @@ fn entity_keys(ui: &mut egui::Ui, keys: &mut Vec<(String, String)>) {
             keys.push((String::new(), String::new()));
         }
     });
+    browse
+}
+
+/// One of Portal's models from the props library as a physics prop (with its hull, as the
+/// extractor gives a map's), when it is one and is as big as its model.
+pub fn physics_prop(kind: &Kind) -> Option<Kind> {
+    let Kind::Model { path, scale, bounds: Some((lo, hi)), .. } = kind else { return None };
+    let rel = path.strip_prefix("props/portal/")?.strip_suffix(".glb")?;
+    if *scale != Vec3::ONE {
+        return None;
+    }
+    // (Its box in Source's units and axes, as the model has it.)
+    let source = |v: Vec3| Vec3::new(-v.z, -v.x, v.y) / 0.0254;
+    let (a, b) = (source(*lo), source(*hi));
+    let (a, b) = (a.min(b), a.max(b));
+    let hull = [a.x, a.y, a.z, b.x, b.y, b.z].map(|x| format!("{}", (x * 100.0).round() / 100.0)).join(" ");
+    Some(Kind::Entity { class: "prop_physics".into(), keys: vec![("model".into(), format!("models/{rel}.mdl")), ("_hull".into(), hull)], brushes: Vec::new() })
+}
+
+/// A sound being previewed in the sound browser.
+#[derive(Component)]
+pub struct Preview;
+
+/// The sound browser: Portal's soundscripts and files, or Mirror's Edge's cues, searched; ▶
+/// plays one, clicking its name gives it to the sound (`obj`'s message).
+fn sound_browser(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, lib: &mut crate::map_audio::SoundLib, obj: usize, preview: &mut Option<String>, stop: &mut bool) {
+    let (me_there, me_listing) = lib.me_state();
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.sound_game, 0, "Portal");
+        if me_there {
+            ui.selectable_value(&mut state.sound_game, 1, "Mirror's Edge");
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("■").on_hover_text("Stop the preview").clicked() {
+                *stop = true;
+            }
+        });
+    });
+    ui.add(egui::TextEdit::singleline(&mut state.sound_search).hint_text("Search").desired_width(f32::INFINITY));
+    if state.sound_game == 1 {
+        lib.me_listing();
+    }
+    let total = if state.sound_game == 1 { lib.me_list.len() } else { lib.files.len() + lib.scripts.len() };
+    let key = (state.sound_search.to_lowercase(), state.sound_game, total);
+    if state.sound_key.as_ref() != Some(&key) {
+        let words: Vec<&str> = key.0.split_whitespace().collect();
+        let all = if state.sound_game == 1 { lib.me_list.clone() } else { lib.listing() };
+        state.sound_list = all.into_iter().filter(|n| words.iter().all(|w| n.to_lowercase().contains(w))).collect();
+        state.sound_key = Some(key);
+    }
+    if state.sound_game == 1 && me_listing {
+        ui.weak("Reading Mirror's Edge's sound packages…");
+    }
+    let current = match ed.doc.objects.get(obj).map(|o| &o.kind) {
+        Some(Kind::Entity { keys, .. }) => keys.iter().find(|(k, _)| k.eq_ignore_ascii_case("message")).map(|(_, v)| v.clone()).unwrap_or_default(),
+        _ => String::new(),
+    };
+    ui.weak(format!("{} sounds{}", state.sound_list.len(), if current.is_empty() { String::new() } else { format!(" · now: {current}") }));
+    let mut chosen = None;
+    let row = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row, state.sound_list.len(), |ui, range| {
+        for n in &state.sound_list[range] {
+            ui.horizontal(|ui| {
+                if ui.small_button("▶").on_hover_text("Listen").clicked() {
+                    *preview = Some(n.clone());
+                }
+                let label = match lib.files.get(n) {
+                    Some(f) => format!("{n}  ({:.1} s{})", f.secs, if f.loops { ", loops" } else { "" }),
+                    None => n.clone(),
+                };
+                if ui.selectable_label(current.eq_ignore_ascii_case(n), label).on_hover_text("Use it").clicked() {
+                    chosen = Some(n.clone());
+                }
+            });
+        }
+    });
+    if let Some(n) = chosen {
+        if let Some(Kind::Entity { keys, .. }) = ed.doc.objects.get_mut(obj).map(|o| &mut o.kind) {
+            match keys.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("message")) {
+                Some((_, v)) => *v = n.clone(),
+                None => keys.push(("message".into(), n.clone())),
+            }
+        }
+        ed.status = format!("Sound: {n}");
+    }
 }
 
 /// A Portal entity's outputs: when it fires an event, an input sent (after a delay, so many
