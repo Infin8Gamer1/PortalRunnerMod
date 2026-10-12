@@ -1783,12 +1783,14 @@ fn solve_testchmb_a_11() {
     p.ride_exit("testchmb_a_13");
 }
 
-/// Chamber 17 (testchmb_a_13), the companion cube's chamber, as Portal's walkthrough has it: so
-/// far, up the ledges with the cube (she vaults them; from below, it's held up over each and
-/// let go onto it, and she climbs after it), through the pellet hallways behind it (orange
-/// left at the second's end), the first catcher's pellet bounced off it, and the second
-/// hallway's pellet down out of blue on an angled panel into the second catcher. The rest (the
-/// third catcher, the lifts, the button and the incinerator) isn't played yet.
+/// Chamber 17 (testchmb_a_13), the companion cube's chamber, as Portal's walkthrough has it:
+/// up the ledges with the cube (she vaults them; from below, it's held up over each and let go
+/// onto it, and she climbs after it), orange where the first hallway's pellet bounces, through
+/// the pellet hallways behind the cube, the first catcher's pellet bounced off it, the first
+/// hallway's pellet down out of blue on an angled panel into the second catcher, and out of
+/// blue on the wall facing the doors into the third (the cube on one door's button, herself on
+/// the other's once it's past); up by the portals onto the ledge with the cube, across the
+/// lifts, the cube on the button, the switch, the cube into the incinerator, and out.
 #[test]
 fn solve_testchmb_a_13() {
     let Some(mut p) = Play::load("testchmb_a_13") else { return };
@@ -1811,6 +1813,12 @@ fn solve_testchmb_a_13() {
     set_up(&mut p, Vec3::new(-13.2, 1.63, -44.4));
     assert!(p.sim.props[cube].pos.y > 3.25, "the cube isn't up top: {}", p.sim.props[cube].pos);
     p.go(Vec3::new(-15.5, 3.25, -44.0), 0.5);
+    // Orange on the first hallway's end wall, where its pellet bounces: it brings the second
+    // and third catchers their pellets (its launcher runs till the last one's caught). From
+    // just inside the hallway, while its pellet's far off down it and going away.
+    p.wait_for(30.0, "the first hallway's pellet far off", |p| p.sim.pellets.iter().any(|q| q.alive && (q.pos.z + 40.61).abs() < 0.5 && q.pos.x > 0.0 && q.vel.x > 0.0));
+    p.safe_shot(PortalColor::Orange, Vec3::new(-16.26, 4.37, -40.61), Vec3::new(-13.5, 3.25, -42.6), 1.6);
+    p.go(Vec3::new(-15.5, 3.25, -44.0), 0.5);
     p.pick_up(p.sim.props[cube].pos);
     p.assert_alive("up the ledges with the cube");
     // The pellet hallways, the cube held low in front (a pellet bounces off it): along the
@@ -1823,14 +1831,7 @@ fn solve_testchmb_a_13() {
         p.go(w, 0.4);
         assert_eq!(p.sim.held, Some(cube), "lost the cube on the way to {w} (at {})", p.c.feet);
     }
-    // Down the ramp at the second hallway's west end, under its pellet's way: the cube down,
-    // orange on the end wall the pellet turns at (for the second catcher, later), and the cube
-    // up again.
-    p.sim.use_key(Aim::of(&p.c));
-    p.wait(0.3);
-    p.shoot(PortalColor::Orange, Vec3::new(-19.5, 6.54, -37.62));
-    p.pick_up(p.sim.props[cube].pos);
-    p.c.pitch = -0.2;
+    // Down the ramp at the second hallway's west end, under its pellet's way.
     for w in [Vec3::new(-12.6, 0.0, -27.9), Vec3::new(-11.9, -6.5, -25.4)] {
         p.go(w, 0.4);
         assert_eq!(p.sim.held, Some(cube), "lost the cube on the way to {w} (at {})", p.c.feet);
@@ -1860,7 +1861,7 @@ fn solve_testchmb_a_13() {
     p.assert_alive("catching the first pellet");
     assert_eq!(p.sim.held, Some(cube));
     // The second catcher sits in an angled panel, facing up and out: blue on the angled panel
-    // across from it. The second hallway's pellet comes out of it, up off the ceiling and down
+    // across from it. The first hallway's pellet comes out of it, up off the ceiling and down
     // into the catcher.
     p.sim.use_key(Aim::of(&p.c));
     p.go(Vec3::new(-6.0, -6.5, -20.0), 0.2);
@@ -1891,7 +1892,96 @@ fn solve_testchmb_a_13() {
     let trap = |p: &Play, name: &str| p.sim.io.as_ref().unwrap().ents.iter().any(|e| e.name == name && e.alive && matches!(e.kind, crate::io::Kind::Trigger { enabled: true, .. }));
     p.wait_for(20.0, "the second catcher to take the pellet", |p| !trap(p, "ball_trap_12"));
     p.assert_alive("catching the second pellet");
-    // (The third catcher, the lifts, the button and the incinerator aren't played yet.)
+    // The third catcher, behind two doors, each opened by a button: the cube on the one on the
+    // ledge (the far door), and herself on the one in the corridor (the near door) once the
+    // pellet's gone past her. The first hallway's pellet, out of blue on the wall facing the
+    // doors.
+    let b_button = Vec3::new(-1.75, -4.88, 3.24);
+    // (Up onto the ledge's button from the floor below it: the cube held up over the ledge's
+    // edge, lined up over the button, and let go.)
+    p.pick_up(p.sim.props[cube].pos);
+    p.go(Vec3::new(b_button.x, -6.5, 0.9), 0.3);
+    p.c.yaw = std::f32::consts::PI;
+    p.c.pitch = 0.35;
+    p.wait(0.8);
+    for _ in 0..6 {
+        let at = p.sim.props[cube].pos;
+        let off = Vec2::new(at.x - b_button.x, at.z - b_button.z);
+        if off.length() < 0.12 {
+            break;
+        }
+        let spot = p.c.feet - Vec3::new(off.x, 0.0, off.y);
+        p.nudge(spot);
+        p.wait(0.4);
+    }
+    p.sim.use_key(Aim::of(&p.c));
+    p.c.pitch = 0.0;
+    p.wait(1.5);
+    let b = p.sim.buttons.iter().position(|x| x.at.distance(b_button) < 1.0).expect("the ledge's button");
+    assert!(p.sim.buttons[b].pressed, "the cube's not on the ledge's button (it's at {})", p.sim.props[cube].pos);
+    p.assert_alive("the cube on the ledge's button");
+    // (Blue from off to the side: out of it, the pellet goes straight up the corridor.)
+    p.go(Vec3::new(-8.6, -6.5, -23.0), 0.4);
+    p.shoot(PortalColor::Blue, Vec3::new(-6.3, -5.03, -29.87));
+    let wall = p.sim.portals[0].unwrap().center;
+    let line_x = wall.x;
+    // Beside the corridor's button, out of the pellet's way; on it once the pellet's past.
+    let a_button = p.sim.buttons.iter().position(|x| x.at.distance(Vec3::new(-6.43, -6.5, -11.47)) < 1.0).expect("the corridor's button");
+    let a_at = p.sim.buttons[a_button].at;
+    p.go(Vec3::new(a_at.x + 1.3, -6.5, a_at.z - 0.5), 0.2);
+    let feet_z = p.c.feet.z;
+    p.wait_for(40.0, "the pellet past her up the corridor", |p| p.sim.pellets.iter().any(|q| q.alive && (q.pos.x - line_x).abs() < 0.6 && q.pos.z > feet_z + 0.8 && q.vel.z > 0.0));
+    p.nudge(Vec3::new(a_at.x, -6.5, a_at.z));
+    let trap = |p: &Play, name: &str| p.sim.io.as_ref().unwrap().ents.iter().any(|e| e.name == name && e.alive && matches!(e.kind, crate::io::Kind::Trigger { enabled: true, .. }));
+    p.wait_for(40.0, "the third catcher to take the pellet", |p| !trap(p, "ball_trap_11"));
+    p.assert_alive("catching the third pellet");
+    // The lifts up: orange on the wall over the upper ledge (in sight from the room), the
+    // cube off the ledge's button, in by blue (still on the wall facing the doors) with it,
+    // and out onto the ledge; across the three lifts as they've risen.
+    let lift3 = p.mover("lift3_rm5");
+    p.wait_for(20.0, "the lifts to rise", |p| p.sim.movers[lift3].goal.is_none());
+    p.safe_shot(PortalColor::Orange, Vec3::new(-8.41, 4.63, -35.76), Vec3::new(-6.0, -6.5, -20.0), 3.0);
+    let over_ledge = p.sim.portals[1].unwrap().center;
+    p.go(Vec3::new(b_button.x, b_button.y, b_button.z - 0.9), 0.4);
+    p.pick_up(p.sim.props[cube].pos);
+    p.enter_now(PortalColor::Blue, wall, Some(over_ledge));
+    for w in [Vec3::new(-11.25, 0.0, -29.0), Vec3::new(-11.4, -0.2, -24.4), Vec3::new(-17.0, -0.2, -24.4), Vec3::new(-22.7, -0.4, -24.4)] {
+        p.go(w, 0.4);
+        assert_eq!(p.sim.held, Some(cube), "lost the cube on the way to {w} (at {})", p.c.feet);
+    }
+    // Off the third lift with a running jump, down onto the ledge across from it (south).
+    p.go(Vec3::new(-22.7, -0.4, -23.0), 0.2);
+    p.c.yaw = 0.0;
+    let end = p.time + 4.0;
+    while p.time < end && !(p.c.state == State::Ground && p.c.feet.y < -3.0) {
+        let take_off = p.c.state == State::Ground && p.c.feet.z < -25.6;
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: take_off, jump_held: take_off || p.c.state != State::Ground, ..Default::default() });
+    }
+    assert_eq!(p.sim.held, Some(cube), "lost the cube jumping off the third lift (at {})", p.c.feet);
+    p.assert_alive("off the lifts");
+    // Up the ramp to the button: the cube on it opens the doors to the incinerator's switch.
+    // The switch; the cube back off the button, and into the incinerator. Its going opens the
+    // way out.
+    // (The cube held low, round the ledge's corner into the narrow way along to the ramp.)
+    p.c.pitch = -0.3;
+    p.wait(0.3);
+    for w in [Vec3::new(-22.7, -3.25, -37.9), Vec3::new(-17.5, -3.25, -37.9), Vec3::new(-9.0, 0.0, -37.9)] {
+        p.go(w, 0.4);
+        assert_eq!(p.sim.held, Some(cube), "lost the cube on the way to {w} (at {})", p.c.feet);
+    }
+    p.cube_on_button(Vec3::new(-7.04, 0.0, -39.92));
+    let doors = p.mover("switch_door_left_a11");
+    p.wait_for(5.0, "the switch's doors", |p| p.sim.movers[doors].goal.is_none() && p.sim.movers[doors].node == 1);
+    p.press("button_incineratordoor_a13");
+    let hatch = p.mover("incinerator_door_1");
+    p.wait_for(5.0, "the incinerator to open", |p| p.sim.movers[hatch].node == 1);
+    p.pick_up(p.sim.props[cube].pos);
+    // (From the hall in front of it: the incinerator's mouth is in its north wall.)
+    p.go(Vec3::new(4.88, -1.6, -38.0), 0.4);
+    p.drop_held_at(Vec3::new(4.88, -1.6, -35.2));
+    p.wait_for(5.0, "the cube in the incinerator", |p| !p.sim.props[cube].alive);
+    p.assert_alive("in Chamber 17");
+    p.ride_exit("testchmb_a_14");
 }
 
 /// Chamber 00's clock runs its hundredths and thousandths (#48), not just its seconds.
