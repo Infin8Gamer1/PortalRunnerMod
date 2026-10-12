@@ -22,6 +22,8 @@ use crate::me_props::{MePackages, MePropCache};
 /// The render layer props are drawn on for their pictures (nothing else is).
 pub const LAYER: usize = 20;
 const SIZE: u32 = 144;
+/// Bumped when pictures are made differently (or what they show is): older ones are made again.
+const VERSION: &str = "2";
 const FOV: f32 = 0.5;
 
 #[derive(Resource, Default)]
@@ -53,10 +55,19 @@ struct Job {
 fn cached(lib: &Library, i: usize) -> Option<PathBuf> {
     let root = crate::extracted::find_root()?;
     let p = &lib.props[i];
+    let thumbs = root.join("thumbs").join(VERSION);
     Some(match &p.source {
-        Source::Model(path) => root.join("thumbs").join(path.trim_end_matches(".glb")).with_extension("png"),
-        Source::Me(package, mesh) => root.join("thumbs/me").join(package).join(format!("{mesh}.png")),
+        Source::Model(path) => thumbs.join(path.trim_end_matches(".glb")).with_extension("png"),
+        Source::Me(package, mesh) => thumbs.join("me").join(package).join(format!("{mesh}.png")),
     })
+}
+
+/// Whether a picture's older than its model (extracted again since).
+fn stale(lib: &Library, i: usize, picture: &std::path::Path) -> bool {
+    let Source::Model(path) = &lib.props[i].source else { return false };
+    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let model = crate::extracted::find_root().map(|r| r.join(path));
+    matches!((model.as_deref().and_then(modified), modified(picture)), (Some(m), Some(p)) if m > p)
 }
 
 /// Where a Mirror's Edge prop's box is kept (so it's known before its mesh is read again).
@@ -178,7 +189,7 @@ pub fn run(
         if thumbs.ready.contains_key(&i) || thumbs.failed.contains(&i) || i >= lib.props.len() {
             continue;
         }
-        if let Some(path) = cached(&lib, i).filter(|p| p.is_file()) {
+        if let Some(path) = cached(&lib, i).filter(|p| p.is_file() && !stale(&lib, i, p)) {
             if loaded >= 12 {
                 continue;
             }

@@ -54,6 +54,10 @@ const SKY_RADIUS: f32 = 900.0;
 /// take the triangle the sun is in).
 const SUN_HOLE: f32 = 0.1;
 
+/// The materials whose emission has been scaled to physical units (each only once).
+#[derive(Resource, Default)]
+pub struct ScaledEmissive(pub HashSet<AssetId<StandardMaterial>>);
+
 static WANTED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -83,6 +87,7 @@ pub fn add(app: &mut App, wanted: bool) {
     }
     app.add_plugins(SolariPlugins)
         .init_resource::<RtMeshes>()
+        .init_resource::<ScaledEmissive>()
         .add_systems(Startup, check_support)
         .add_systems(Update, (cameras, forward_overlays, emissive_materials, sky_dome).run_if(active))
         .add_systems(PostUpdate, register_meshes.after(VisibilitySystems::VisibilityPropagate).run_if(active));
@@ -152,8 +157,9 @@ fn emissive_materials(
     mats: Option<Res<crate::chamber::ChamberMats>>,
     lamps: Option<Res<crate::source_map::Lamps>>,
     scorches: Option<Res<crate::chamber::ScorchMats>>,
-    mut done: Local<HashSet<AssetId<StandardMaterial>>>,
+    mut done: ResMut<ScaledEmissive>,
 ) {
+    let done = &mut done.0;
     let lamp = mats.map(|m| m.lamp.id());
     let is_lamp = |id: AssetId<StandardMaterial>| Some(id) == lamp || lamps.as_ref().is_some_and(|l| l.0.contains(&id));
     let todo: Vec<_> = materials

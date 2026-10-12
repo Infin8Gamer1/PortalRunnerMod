@@ -6,7 +6,7 @@ use bevy::gizmos::transform_gizmo::{TransformGizmoMode, TransformGizmoSettings};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 
-use aperture::doc::{Kind, LevelDoc};
+use aperture::doc::{Kind, LevelDoc, Turns};
 use aperture::{CubeKind, Inputs, Mat, Paint, PortalColor};
 
 use super::catalog::{Category, CATALOG};
@@ -51,6 +51,8 @@ pub fn draw(
     mut thumbs: Local<HashMap<Mat, Thumb>>,
     mut state: Local<UiState>,
     lib: Res<Library>,
+    me_cache: Option<Res<crate::me_props::MePropCache>>,
+    mut game_settings: ResMut<crate::settings::Settings>,
     mut prop_thumbs: ResMut<Thumbs>,
     mut prop_textures: Local<HashMap<usize, egui::TextureId>>,
 ) -> Result {
@@ -85,7 +87,7 @@ pub fn draw(
     // ---- toolbar
     let top = egui::Panel::top("editor_toolbar").show(&mut root, |ui| {
         ui.horizontal(|ui| {
-            toolbar(ui, ed, &mut game, &mut menu, &mut settings);
+            toolbar(ui, ed, &mut game, &mut menu, &mut settings, &mut game_settings);
         });
     });
     ed.panels.push(top.response.rect);
@@ -114,7 +116,8 @@ pub fn draw(
         outliner(ui, ed, &mut state);
         ui.separator();
         egui::ScrollArea::vertical().id_salt("details").show(ui, |ui| {
-            details(ui, ed);
+            let looks = ed.selected.and_then(|i| ed.doc.objects.get(i)).and_then(|o| materials_of(&o.kind, &lib, me_cache.as_deref()));
+            details(ui, ed, looks.as_ref());
         });
     });
     ed.panels.push(right.response.rect);
@@ -129,7 +132,7 @@ pub fn draw(
     Ok(())
 }
 
-fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu::Menu, settings: &mut TransformGizmoSettings) {
+fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu::Menu, settings: &mut TransformGizmoSettings, game_settings: &mut crate::settings::Settings) {
     ui.menu_button("File", |ui| {
         if ed.unsaved {
             ui.colored_label(egui::Color32::from_rgb(240, 180, 60), "Unsaved changes are lost by New/Open/Import");
@@ -186,6 +189,27 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
             ui.close();
         }
     });
+    ui.menu_button("View", |ui| {
+        let v = &mut ed.view;
+        ui.checkbox(&mut v.meshes, "Visual meshes").on_hover_text("The level as the game draws it");
+        ui.checkbox(&mut v.collision, "Collision").on_hover_text("What Faith and cubes collide with: blue takes portals, orange doesn't, cyan glass, yellow grating, magenta clip");
+        ui.checkbox(&mut v.markers, "Markers").on_hover_text("The start, checkpoints, the exit, hints, cuts, wires, which way things point");
+        ui.checkbox(&mut v.all_links, "All signal links").on_hover_text("Lines from every button, catcher and relay to what it drives (the selection's always show)");
+        ui.checkbox(&mut v.grid, "Grid");
+        ui.checkbox(&mut v.body, "Faith");
+        ui.checkbox(&mut v.fog, "Fog");
+        ui.separator();
+        ui.label("Lighting");
+        ui.radio_value(&mut v.unlit, false, "Lit");
+        ui.radio_value(&mut v.unlit, true, "Unlit").on_hover_text("Everything at its own colour (textures as they are)");
+        ui.separator();
+        // (Ray-traced lighting is set up as the game starts: a change takes a restart.)
+        let mut rt = game_settings.ray_tracing >= 0.5;
+        if ui.checkbox(&mut rt, format!("Ray-traced lighting: {}", crate::raytrace::label(game_settings.ray_tracing))).on_hover_text("Set as the game starts: a change takes effect after a restart").changed() {
+            game_settings.ray_tracing = if rt { 1.0 } else { 0.0 };
+            game_settings.save();
+        }
+    });
     ui.separator();
     if ui.add_enabled(ed.can_undo(), egui::Button::new("⟲ Undo")).clicked() {
         ed.undo();
@@ -197,6 +221,11 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
     ui.selectable_value(&mut settings.mode, TransformGizmoMode::Translate, "➡ Move (W)");
     ui.selectable_value(&mut settings.mode, TransformGizmoMode::Rotate, "⟳ Rotate (E)");
     ui.selectable_value(&mut settings.mode, TransformGizmoMode::Scale, "🔲 Scale (R)");
+    // Along the world's axes, or the selection's own (scaling is always its own).
+    let local = settings.space == bevy::gizmos::transform_gizmo::TransformGizmoSpace::Local;
+    if ui.selectable_label(local, if local { "Local" } else { "World" }).on_hover_text("Move and rotate along the world's axes, or the selection's own").clicked() {
+        settings.space = if local { bevy::gizmos::transform_gizmo::TransformGizmoSpace::World } else { bevy::gizmos::transform_gizmo::TransformGizmoSpace::Local };
+    }
     ui.separator();
     egui::ComboBox::from_id_salt("grid").width(70.0).selected_text(grid_name(ed.grid)).show_ui(ui, |ui| {
         for g in GRIDS {
@@ -457,7 +486,40 @@ fn outliner(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState) {
     });
 }
 
-fn details(ui: &mut egui::Ui, ed: &mut Editor) {
+/// What a prop's materials found: a line to show, whether some have nothing, and which.
+struct Looks {
+    text: String,
+    lacking: bool,
+    which: String,
+}
+
+fn materials_of(kind: &Kind, lib: &Library, me: Option<&crate::me_props::MePropCache>) -> Option<Looks> {
+    match kind {
+        Kind::Model { path, .. } => Some(match lib.by_path.get(path).and_then(|&i| lib.props[i].looks) {
+            Some((t, n)) => Looks { text: format!("{t} of {n} textured (or glass)"), lacking: t < n, which: String::new() },
+            None => Looks { text: "not known (run the extractor again)".into(), lacking: false, which: String::new() },
+        }),
+        Kind::MeProp { package, mesh, .. } => {
+            let Some(l) = me.and_then(|c| c.looks(package, mesh)) else {
+                return Some(Looks { text: "not read yet".into(), lacking: false, which: String::new() });
+            };
+            let mut text = format!("{} of {} textured", l.textured, l.total);
+            if l.plain > 0 {
+                text += &format!(", {} a plain colour", l.plain);
+            }
+            if l.unset > 0 {
+                text += &format!(", {} unset (a level gives them one)", l.unset);
+            }
+            if !l.missing.is_empty() {
+                text += &format!(", {} without", l.missing.len());
+            }
+            Some(Looks { text, lacking: !l.missing.is_empty(), which: l.missing.join(", ") })
+        }
+        _ => None,
+    }
+}
+
+fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>) {
     let before = ed.doc.clone();
     let newest = ed.doc.objects.iter().rev().find_map(|o| o.kind.drives()).unwrap_or(0);
     match ed.selected {
@@ -505,17 +567,38 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor) {
                         o.size = o.size.max(Vec3::splat(0.01));
                         ui.end_row();
                     }
-                    if let Some(any) = o.kind.turns() {
-                        ui.label("Yaw");
-                        ui.add(egui::DragValue::new(&mut o.yaw).speed(1.0).suffix("°"));
-                        ui.end_row();
-                        if any {
-                            ui.label("Pitch");
-                            ui.add(egui::DragValue::new(&mut o.pitch).speed(1.0).range(-90.0..=90.0).suffix("°"));
+                    match o.kind.turns() {
+                        // About each axis (applied Y, then X, then Z).
+                        Some(Turns::Free) => {
+                            ui.label("Rotation");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut o.pitch).speed(1.0).prefix("x ").suffix("°"));
+                                ui.add(egui::DragValue::new(&mut o.yaw).speed(1.0).prefix("y ").suffix("°"));
+                                ui.add(egui::DragValue::new(&mut o.roll).speed(1.0).prefix("z ").suffix("°"));
+                            });
                             ui.end_row();
                         }
+                        Some(turns) => {
+                            ui.label("Yaw");
+                            ui.add(egui::DragValue::new(&mut o.yaw).speed(1.0).suffix("°"));
+                            ui.end_row();
+                            if turns == Turns::Aim {
+                                ui.label("Pitch");
+                                ui.add(egui::DragValue::new(&mut o.pitch).speed(1.0).range(-90.0..=90.0).suffix("°"));
+                                ui.end_row();
+                            }
+                        }
+                        None => {}
                     }
                     pick_target = kind_fields(ui, &mut o.kind, newest);
+                    if let Some(l) = looks {
+                        ui.label("Materials");
+                        let r = if l.lacking { ui.colored_label(egui::Color32::from_rgb(240, 180, 60), &l.text) } else { ui.label(&l.text) };
+                        if !l.which.is_empty() {
+                            r.on_hover_text(format!("Without a texture or colour: {}", l.which));
+                        }
+                        ui.end_row();
+                    }
                 });
             }
             ui.add_space(6.0);
@@ -602,9 +685,20 @@ fn inputs(ui: &mut egui::Ui, inp: &mut Inputs, newest: usize) {
 }
 
 /// A prop's scale, and whether it's solid (a block the size of its box).
-fn prop_fields(ui: &mut egui::Ui, scale: &mut f32, bounds: &Option<(Vec3, Vec3)>, solid: &mut bool) {
+fn prop_fields(ui: &mut egui::Ui, scale: &mut Vec3, bounds: &Option<(Vec3, Vec3)>, solid: &mut bool) {
     ui.label("Scale");
-    ui.add(egui::DragValue::new(scale).speed(0.01).range(0.05..=20.0));
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            for (axis, v) in ["x ", "y ", "z "].into_iter().zip([&mut scale.x, &mut scale.y, &mut scale.z]) {
+                ui.add(egui::DragValue::new(v).speed(0.01).range(0.01..=50.0).prefix(axis));
+            }
+        });
+        // All three at once (from the largest).
+        let mut all = scale.max_element();
+        if ui.add(egui::DragValue::new(&mut all).speed(0.01).range(0.01..=50.0).prefix("all ")).changed() {
+            *scale = Vec3::splat(all);
+        }
+    });
     ui.end_row();
     ui.label("Solid");
     ui.add_enabled(bounds.is_some(), egui::Checkbox::without_text(solid)).on_hover_text("A block the size of its box stops Faith and cubes");

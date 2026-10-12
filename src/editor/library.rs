@@ -33,6 +33,9 @@ pub struct Prop {
     pub source: Source,
     /// Its box, from its origin (Mirror's Edge's: once its thumbnail's been made).
     pub bounds: Option<(Vec3, Vec3)>,
+    /// How many of its materials have a look of their own (a texture, a colour), of how many
+    /// (a model's, from the index).
+    pub looks: Option<(usize, usize)>,
 }
 
 #[derive(Resource, Default)]
@@ -40,6 +43,8 @@ pub struct Library {
     pub props: Vec<Prop>,
     /// Each game's folders, sorted.
     pub folders: [Vec<String>; 3],
+    /// The models by path (`props/portal2/...glb`).
+    pub by_path: std::collections::HashMap<String, usize>,
     pub loaded: bool,
     loading: Option<Mutex<Receiver<Vec<Prop>>>>,
 }
@@ -51,8 +56,8 @@ impl Library {
         let prop = &self.props[i];
         let bounds = prop.bounds;
         let kind = match &prop.source {
-            Source::Model(path) => Kind::Model { path: path.clone(), scale: 1.0, bounds, solid: bounds.is_some() },
-            Source::Me(package, mesh) => Kind::MeProp { package: package.to_string(), mesh: mesh.to_string(), scale: 1.0, bounds, solid: bounds.is_some() },
+            Source::Model(path) => Kind::Model { path: path.clone(), scale: Vec3::ONE, bounds, solid: bounds.is_some() },
+            Source::Me(package, mesh) => Kind::MeProp { package: package.to_string(), mesh: mesh.to_string(), scale: Vec3::ONE, bounds, solid: bounds.is_some() },
         };
         let mut o = Object::new(kind, p);
         o.face(Vec3::new(-look.x, 0.0, -look.z));
@@ -88,6 +93,7 @@ pub fn load(mut lib: ResMut<Library>, ed: Res<super::Editor>, arms: Option<Res<c
                 f.dedup();
             }
             info!("Props for the editor: {} ({} Portal, {} Portal 2, {} Mirror's Edge)", props.len(), props.iter().filter(|p| p.game == 0).count(), props.iter().filter(|p| p.game == 1).count(), props.iter().filter(|p| p.game == 2).count());
+            lib.by_path = props.iter().enumerate().filter_map(|(i, p)| if let Source::Model(path) = &p.source { Some((path.clone(), i)) } else { None }).collect();
             lib.props = props;
             lib.folders = folders;
             lib.loaded = true;
@@ -121,7 +127,9 @@ fn models(root: &Path) -> Vec<Prop> {
     text.lines()
         .filter_map(|line| {
             let f: Vec<&str> = line.split('\t').collect();
-            let [game, rel, lo, hi] = f[..] else { return None };
+            let (game, rel, lo, hi) = (*f.first()?, *f.get(1)?, *f.get(2)?, *f.get(3)?);
+            // (`textured total`, from extractors that write it.)
+            let looks = f.get(4).and_then(|l| l.split_once(' ')).and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)));
             let game = match game {
                 "portal" => 0,
                 "portal2" => 1,
@@ -129,7 +137,7 @@ fn models(root: &Path) -> Vec<Prop> {
             };
             let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
             let folder = rel.split('/').next().unwrap_or("").to_string();
-            Some(Prop { name, game, folder, source: Source::Model(format!("props/{}/{rel}.glb", ["portal", "portal2"][game])), bounds: v(lo).zip(v(hi)) })
+            Some(Prop { name, game, folder, source: Source::Model(format!("props/{}/{rel}.glb", ["portal", "portal2"][game])), bounds: v(lo).zip(v(hi)), looks })
         })
         .collect()
 }
@@ -162,7 +170,7 @@ fn me_meshes(cooked: &Path) -> Vec<Prop> {
         names.dedup();
         for name in names {
             let mesh: &'static str = Box::leak(name.to_string().into_boxed_str());
-            out.push(Prop { name: mesh.to_string(), game: 2, folder: package.to_string(), source: Source::Me(package, mesh), bounds: None });
+            out.push(Prop { name: mesh.to_string(), game: 2, folder: package.to_string(), source: Source::Me(package, mesh), bounds: None, looks: None });
         }
     }
     out

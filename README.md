@@ -43,7 +43,8 @@ faith plates, gel, cube sockets and the reflection cube, have no Portal version 
 Portal 2's.) `--inspect <model.mdl>...` describes models (parts, bones, size,
 animations) instead of extracting. It also converts every prop model of both games (about 1,700,
 2 GB) into `props/` for the level editor's props browser: `--no-props` skips that,
-`--only-props` does only that. Mirror's Edge is found the same way, or set
+`--only-props` does only that, and `--check-props` lists any of their materials without a
+texture, and why. Mirror's Edge is found the same way, or set
 `FAITH_ME_DIR` (or put its path in `me_path.txt`).
 
 **DLSS** (NVIDIA RTX, Vulkan) is built in by default, and it needs NVIDIA's DLSS SDK to build,

@@ -128,6 +128,7 @@ fn gltf_material(remix: &Remix, m: &Material) -> Result<glb::Material, String> {
     let baked = remix.bake(m, MAP_MAX)?;
     Ok(glb::Material {
         texture_png: baked.albedo.as_ref().map(png).transpose()?,
+        color: None,
         blend: m.translucent,
         mask: false,
         normal_png: baked.normal.as_ref().map(png).transpose()?,

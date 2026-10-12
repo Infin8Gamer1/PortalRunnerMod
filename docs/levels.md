@@ -16,8 +16,11 @@ new one: a white room with lamps and a start.
   landings), and **Props**: every prop model of Portal and Portal 2 (extracted into `props/`)
   and every static mesh in Mirror's Edge's prop packages (from your install), by game and
   folder, with pictures made the first time their tiles show (kept under `thumbs/`). A prop
-  lands with its front to the camera, resting on the surface, and is solid (a block its size)
-  unless you untick that. Drag one into the view, or click it and then click in
+  lands with its front to the camera, resting on the surface, and is solid (a block round it)
+  unless you untick that. Props turn about all three axes and scale along each (the details
+  panel, or the gizmo: **R** scales along the prop's own axes; the toolbar's World/Local
+  switches what moving and turning go along). The details panel says how many of a prop's
+  materials have a texture (or, for glass and plain-coloured materials, a colour). Drag one into the view, or click it and then click in
   the view (Shift-click to place several; Esc stops): it lands on the surface under the cursor
   (a block rests on it, a laser or catcher faces out of it, a door stands across the way you're
   looking, a ladder's foot goes down to the floor), snapped to the grid, and a green outline
@@ -31,6 +34,9 @@ new one: a white room with lamps and a start.
   arrows to move that end along an axis, or its ring to move it about. Lines show what the
   selection is wired to; outlines show what the game doesn't draw
   (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
+- **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
+  coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
+  unlit; and ray-traced lighting (set as the game starts, so a change takes a restart).
 - **Outliner** and **details** (right): every object; the selected one's position, size,
   facing and settings (material, signal, what turns it on, cube kind, gel...). With nothing
   selected, the level's name, intro line, indoors or out, and which portals the gun shoots.

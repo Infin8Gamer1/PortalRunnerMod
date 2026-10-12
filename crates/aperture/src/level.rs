@@ -426,10 +426,10 @@ pub struct MeProp {
     /// The package (`P_Ventilation`) and the StaticMesh in it (`S_ACUnit_05`).
     pub package: &'static str,
     pub mesh: &'static str,
-    /// Where its origin goes, and its turn about the vertical (radians).
+    /// Where its origin goes, how it's turned, and how it's scaled along its own axes.
     pub at: Vec3,
-    pub yaw: f32,
-    pub scale: f32,
+    pub turn: glam::Quat,
+    pub scale: Vec3,
     /// A solid that blocks where it stands and stands in for it without the game (its box
     /// is hidden when the prop is drawn).
     pub stand_in: Option<Aabb>,
@@ -439,9 +439,10 @@ pub struct MeProp {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelProp {
     pub path: String,
+    /// Where its origin goes, how it's turned, and how it's scaled along its own axes.
     pub at: Vec3,
-    pub yaw: f32,
-    pub scale: f32,
+    pub turn: glam::Quat,
+    pub scale: Vec3,
     /// The block that stands for it (not drawn while it is).
     pub solid: Option<Aabb>,
 }
@@ -488,7 +489,7 @@ impl Level {
     /// A Mirror's Edge prop: `mesh` from `package`, its origin at `at`, turned `yaw_deg` (see
     /// [`MeProp`]).
     pub fn me_prop(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32) -> &mut Self {
-        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), yaw: yaw_deg.to_radians(), scale: 1.0, stand_in: None });
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in: None });
         self
     }
 
@@ -498,7 +499,7 @@ impl Level {
     pub fn me_prop_solid(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32, a: [f32; 3], b: [f32; 3]) -> &mut Self {
         self.solid(Mat::Prop, a, b);
         let stand_in = Some(Aabb::new(Vec3::from(a).min(Vec3::from(b)), Vec3::from(a).max(Vec3::from(b))));
-        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), yaw: yaw_deg.to_radians(), scale: 1.0, stand_in });
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in });
         self
     }
 

@@ -27,7 +27,7 @@ use bevy::render::render_resource::BlendState;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::{egui, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext};
 
-use aperture::doc::{Kind, LevelDoc, Object};
+use aperture::doc::{Kind, LevelDoc, Object, Turns};
 use faith_move::Aabb;
 
 use library::Library;
@@ -43,24 +43,56 @@ impl Plugin for EditorPlugin {
             .insert_resource(TransformGizmoSettings { snap_translate: Some(0.25), snap_rotate: Some(15f32.to_radians()), snap_scale: Some(0.25), ..default() })
             .add_plugins(bevy::app::HierarchyPropagatePlugin::<RenderLayers>::new(PostUpdate))
             .init_gizmo_group::<OnTop>()
+            .init_gizmo_group::<EditorLines>()
             .init_resource::<Editor>()
             .init_resource::<Library>()
             .init_resource::<thumbs::Thumbs>()
             .configure_sets(PostUpdate, TransformGizmoSystems.run_if(editing))
             .add_systems(Startup, (setup, thumbs::setup))
-            .add_systems(Update, (forward_gizmos, library::load, thumbs::run.run_if(editing)))
+            .add_systems(Update, (forward_gizmos, library::load, thumbs::run.run_if(|ed: Res<Editor>| ed.active && !ed.view.unlit), unlit, me_bounds.run_if(editing)))
             .add_systems(EguiPrimaryContextPass, ui::draw.run_if(editing));
     }
 }
 
 /// The editor's systems, run after the game's each frame (the camera is the editor's).
 pub fn systems() -> impl IntoScheduleConfigs<bevy::ecs::system::ScheduleSystem, ()> {
-    (toggle, fly, interact, rebuild, overlays, hide_game_views, gizmo_cameras).chain()
+    (toggle, fly, interact, rebuild, overlays, hide_game_views, gizmo_cameras, apply_view).chain()
 }
+
+/// The editor's lines (on a layer of their own, so they show without the level's meshes).
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct EditorLines;
 
 /// Lines drawn over everything (the end handle).
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct OnTop;
+
+/// The render layer the editor's lines are on.
+const LINES_LAYER: usize = 21;
+
+/// What the view shows (the View menu).
+pub struct View {
+    /// The level as the game draws it.
+    pub meshes: bool,
+    /// Outlines of what Faith and cubes collide with (the built level's boxes).
+    pub collision: bool,
+    pub grid: bool,
+    /// What the game doesn't draw: the start, triggers, cuts, wires, lines along things.
+    pub markers: bool,
+    /// Every signal's links (not just the selection's).
+    pub all_links: bool,
+    /// Everything at its own colour, unlit.
+    pub unlit: bool,
+    pub fog: bool,
+    /// Faith, standing at the start.
+    pub body: bool,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        View { meshes: true, collision: false, grid: true, markers: true, all_links: false, unlit: false, fog: true, body: true }
+    }
+}
 
 /// Something from the content browser: a catalog entry, or a prop from the library.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -123,6 +155,10 @@ pub struct Editor {
     looking: bool,
     pub grid: f32,
     pub status: String,
+    /// What the view shows.
+    pub view: View,
+    /// The player camera's layers before the editor changed them.
+    saved_layers: Option<RenderLayers>,
     /// What's being dragged out of the content browser.
     pub drop: Option<Pick>,
     /// What was clicked in the content browser: the next click in the view places it.
@@ -176,6 +212,8 @@ impl Default for Editor {
             looking: false,
             grid: 0.25,
             status: String::new(),
+            view: View::default(),
+            saved_layers: None,
             drop: None,
             armed: None,
             end_hover: None,
@@ -391,6 +429,11 @@ impl Editor {
         menu.title = false;
     }
 
+    /// Reload the level from the document (after changing it directly).
+    pub fn rebuild_now(&mut self) {
+        self.rebuild = true;
+    }
+
     /// The editor's entry in the game's level list, once it has one.
     pub fn slot(&self) -> Option<usize> {
         self.slot
@@ -479,6 +522,9 @@ fn setup(mut commands: Commands, mut ed: ResMut<Editor>, mut store: ResMut<Gizmo
     let (on_top, _) = store.config_mut::<OnTop>();
     on_top.depth_bias = -1.0;
     on_top.line.width = 3.0;
+    on_top.render_layers = RenderLayers::layer(LINES_LAYER);
+    let (lines, _) = store.config_mut::<EditorLines>();
+    lines.render_layers = RenderLayers::layer(LINES_LAYER);
     ed.handle = Some(commands.spawn((Name::new("Editor handle"), Transform::default(), Visibility::Hidden)).id());
     ed.ui_camera = Some(
         commands
@@ -979,14 +1025,22 @@ fn interact(
                         // (Sized about its middle, as the gizmo scales.)
                         obj.size = tf.scale.abs().max(Vec3::splat(0.05));
                     }
-                    TransformGizmoMode::Rotate if obj.kind.turns().is_some() => {
-                        let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
-                        obj.yaw = yaw.to_degrees();
-                        if obj.kind.turns() == Some(true) {
-                            obj.pitch = pitch.to_degrees();
+                    TransformGizmoMode::Scale => {
+                        if let Kind::MeProp { scale, .. } | Kind::Model { scale, .. } = &mut obj.kind {
+                            *scale = tf.scale.abs().max(Vec3::splat(0.01));
                         }
                     }
-                    _ => {}
+                    TransformGizmoMode::Rotate => match obj.kind.turns() {
+                        Some(Turns::Free) => obj.set_rotation(tf.rotation),
+                        Some(turns) => {
+                            let (yaw, pitch, _) = tf.rotation.to_euler(EulerRot::YXZ);
+                            obj.yaw = yaw.to_degrees();
+                            if turns == Turns::Aim {
+                                obj.pitch = pitch.to_degrees();
+                            }
+                        }
+                        None => {}
+                    },
                 }
             }
         }
@@ -999,7 +1053,11 @@ fn interact(
                 if let Ok(mut tf) = handles.get_mut(h) {
                     tf.translation = obj.at;
                     tf.rotation = if obj.kind.turns().is_some() { obj.rotation() } else { Quat::IDENTITY };
-                    tf.scale = if obj.kind.is_box() { obj.size } else { Vec3::ONE };
+                    tf.scale = match &obj.kind {
+                        _ if obj.kind.is_box() => obj.size,
+                        Kind::MeProp { scale, .. } | Kind::Model { scale, .. } => *scale,
+                        _ => Vec3::ONE,
+                    };
                 }
                 commands.entity(h).insert(TransformGizmoFocus);
             }
@@ -1094,10 +1152,11 @@ fn rebuild(mut ed: ResMut<Editor>, mut game: ResMut<Game>) {
 
 /// What the game doesn't draw (the start, triggers, cuts, wires), the selection, signals
 /// between pieces, and where a dragged piece would land.
-fn overlays(ed: Res<Editor>, mut gizmos: Gizmos, mut on_top: Gizmos<OnTop>) {
+fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, mut on_top: Gizmos<OnTop>) {
     if !ed.active {
         return;
     }
+    let view = &ed.view;
     // The end handle: arrows to drag the other end along, a ring to drag it about.
     if let Some(e) = ed.selected.and_then(|i| ed.doc.objects.get(i)).and_then(end_of) {
         use bevy::gizmos::transform_gizmo::{COLOR_X, COLOR_Y, COLOR_Z};
@@ -1110,14 +1169,41 @@ fn overlays(ed: Res<Editor>, mut gizmos: Gizmos, mut on_top: Gizmos<OnTop>) {
         let rot = Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0);
         on_top.circle(Isometry3d::new(e, rot), s * 0.1, if active == Some(3) { Color::WHITE } else { Color::srgb(1.0, 0.85, 0.2) });
     }
-    let cuboid = |g: &mut Gizmos, b: &Aabb, c: Color| g.cube(Transform::from_translation(b.center()).with_scale(b.size()), c);
-    let arrow = |g: &mut Gizmos, from: Vec3, dir: Vec3, len: f32, c: Color| {
+    let cuboid = |g: &mut Gizmos<EditorLines>, b: &Aabb, c: Color| g.cube(Transform::from_translation(b.center()).with_scale(b.size()), c);
+    let arrow = |g: &mut Gizmos<EditorLines>, from: Vec3, dir: Vec3, len: f32, c: Color| {
         g.arrow(from, from + dir * len, c);
     };
     // A faint grid on the ground round the camera.
     let at = Vec3::new((ed.cam.pos.x / 1.0).round(), 0.002, (ed.cam.pos.z / 1.0).round());
-    gizmos.grid(Isometry3d::new(at, Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)), UVec2::splat(40), Vec2::splat(1.0), Color::srgba(1.0, 1.0, 1.0, 0.12));
-    for (i, o) in ed.doc.objects.iter().enumerate() {
+    if view.grid {
+        gizmos.grid(Isometry3d::new(at, Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)), UVec2::splat(40), Vec2::splat(1.0), Color::srgba(1.0, 1.0, 1.0, 0.12));
+    }
+    // What Faith and cubes collide with, coloured by what it is: blue takes portals, orange
+    // doesn't, cyan is glass, yellow grating, magenta clip.
+    if view.collision {
+        for s in &game.sim.statics {
+            let c = match s.mat {
+                aperture::Mat::Glass | aperture::Mat::Frosted => Color::srgb(0.3, 0.9, 1.0),
+                aperture::Mat::Grate => Color::srgb(1.0, 0.9, 0.2),
+                aperture::Mat::Clip => Color::srgb(1.0, 0.3, 0.9),
+                m if m.portalable() => Color::srgb(0.35, 0.6, 1.0),
+                _ => Color::srgb(1.0, 0.55, 0.2),
+            };
+            cuboid(&mut gizmos, &s.b, c);
+        }
+    }
+    // Every signal's links: from each source to each piece listening to it.
+    if view.all_links {
+        for src in ed.doc.objects.iter() {
+            let Some(sig) = src.kind.drives() else { continue };
+            for o in &ed.doc.objects {
+                if o.kind.inputs().is_some_and(|i| i.all.contains(&sig)) {
+                    gizmos.line(src.bounds().center(), o.bounds().center(), Color::srgba(0.3, 0.7, 1.0, 0.7));
+                }
+            }
+        }
+    }
+    for (i, o) in ed.doc.objects.iter().enumerate().filter(|_| view.markers) {
         let b = o.bounds();
         match &o.kind {
             Kind::Spawn => {
@@ -1169,7 +1255,7 @@ fn overlays(ed: Res<Editor>, mut gizmos: Gizmos, mut on_top: Gizmos<OnTop>) {
             }
             _ => {}
         }
-        if o.kind.turns() == Some(true) {
+        if o.kind.turns() == Some(Turns::Aim) {
             arrow(&mut gizmos, o.at, o.dir(), 0.8, Color::srgba(1.0, 1.0, 1.0, 0.5));
         }
     }
@@ -1195,8 +1281,156 @@ fn overlays(ed: Res<Editor>, mut gizmos: Gizmos, mut on_top: Gizmos<OnTop>) {
         let (lo, hi) = (b.min, Vec3::new(b.max.x, b.min.y, b.max.z));
         gizmos.line(lo, hi, green);
         gizmos.line(Vec3::new(lo.x, lo.y, hi.z), Vec3::new(hi.x, lo.y, lo.z), green);
-        if g.kind.turns() == Some(true) {
+        if g.kind.turns() == Some(Turns::Aim) {
             arrow(&mut gizmos, g.at, g.dir(), 0.8, green);
+        }
+    }
+}
+
+/// The View menu's choices: what the camera draws (the level's meshes, Faith, the editor's
+/// lines) and fog. Leaving the editor puts the camera back as it was.
+#[allow(clippy::type_complexity)]
+fn apply_view(
+    mut commands: Commands,
+    mut ed: ResMut<Editor>,
+    mut cams: Query<(Entity, &mut RenderLayers, Has<bevy::pbr::DistanceFog>), With<PlayerCamera>>,
+    mut taa: Query<&mut bevy::anti_alias::taa::TemporalAntiAliasing, With<PlayerCamera>>,
+    #[cfg(feature = "dlss")] mut dlss: Query<&mut bevy::anti_alias::dlss::Dlss, With<PlayerCamera>>,
+    #[cfg(feature = "dlss")] mut dlss_rr: Query<&mut bevy::anti_alias::dlss::Dlss<bevy::anti_alias::dlss::DlssRayReconstructionFeature>, With<PlayerCamera>>,
+    mut fogged: Local<bool>,
+) {
+    let Ok((cam, mut layers, fog)) = cams.single_mut() else { return };
+    // Without the level's meshes nothing's drawn where they were: the temporal smoothing's
+    // history (the denoiser's, with traced light) would hold their ghosts there for good.
+    if ed.active && !ed.view.meshes {
+        for mut t in &mut taa {
+            t.reset = true;
+        }
+        #[cfg(feature = "dlss")]
+        {
+            for mut d in &mut dlss {
+                d.reset = true;
+            }
+            for mut d in &mut dlss_rr {
+                d.reset = true;
+            }
+        }
+    }
+    if !ed.active {
+        if let Some(saved) = ed.saved_layers.take() {
+            *layers = saved;
+        }
+        return;
+    }
+    let saved = ed.saved_layers.get_or_insert_with(|| layers.clone()).clone();
+    let mut want = RenderLayers::layer(LINES_LAYER);
+    if ed.view.meshes {
+        want = want.union(&saved.clone().without(crate::portal_render::PLAYER_LAYER));
+    }
+    if ed.view.body {
+        want = want.with(crate::portal_render::PLAYER_LAYER);
+    }
+    if *layers != want {
+        *layers = want;
+    }
+    // Fog off: taken off the camera; back on, the level's lighting puts it back.
+    if !ed.view.fog && fog {
+        commands.entity(cam).remove::<bevy::pbr::DistanceFog>();
+        *fogged = false;
+    } else if ed.view.fog && !*fogged {
+        *fogged = true;
+        if !fog {
+            ed.rebuild = true;
+        }
+    }
+}
+
+/// Mirror's Edge props whose box isn't known yet (placed before their mesh was read, or
+/// imported without a block): it is once the level's drawn them.
+fn me_bounds(mut ed: ResMut<Editor>, cache: Option<Res<crate::me_props::MePropCache>>) {
+    let Some(cache) = cache else { return };
+    let missing = ed.doc.objects.iter().any(|o| matches!(o.kind, Kind::MeProp { bounds: None, .. }));
+    if !missing {
+        return;
+    }
+    // (Found out, not an edit: no undo step.)
+    for o in &mut ed.doc.objects {
+        if let Kind::MeProp { package, mesh, bounds: b @ None, .. } = &mut o.kind {
+            *b = cache.looks(package, mesh).and_then(|l| l.bounds);
+        }
+    }
+}
+
+/// How a material was before the unlit view: its colour, glow (and its map, how exposure
+/// takes it, whether ray tracing had scaled it).
+struct Lit {
+    base: Color,
+    emissive: LinearRgba,
+    emissive_texture: Option<Handle<Image>>,
+    weight: f32,
+    scaled: bool,
+}
+
+/// The unlit view: every material shows its own colour, as glow alone (no colour lit by
+/// anything: ray-traced lighting draws a material marked unlit black). As it was after.
+fn unlit(
+    ed: Res<Editor>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut events: MessageReader<AssetEvent<StandardMaterial>>,
+    mut scaled: Option<ResMut<crate::raytrace::ScaledEmissive>>,
+    mut saved: Local<std::collections::HashMap<AssetId<StandardMaterial>, Lit>>,
+    mut on: Local<bool>,
+) {
+    let want = ed.active && ed.view.unlit;
+    let added: Vec<AssetId<StandardMaterial>> = events.read().filter_map(|e| if let AssetEvent::Added { id } = e { Some(*id) } else { None }).collect();
+    let rt = crate::raytrace::active();
+    let mut flatten = |id: AssetId<StandardMaterial>, materials: &mut Assets<StandardMaterial>, saved: &mut std::collections::HashMap<AssetId<StandardMaterial>, Lit>| {
+        if saved.contains_key(&id) {
+            return;
+        }
+        let Some(mut m) = materials.get_mut(id) else { return };
+        // (The editor's own lines and handles are unlit already.)
+        if m.unlit {
+            return;
+        }
+        let was_scaled = scaled.as_ref().is_some_and(|s| s.0.contains(&id));
+        saved.insert(id, Lit { base: m.base_color, emissive: m.emissive, emissive_texture: m.emissive_texture.clone(), weight: m.emissive_exposure_weight, scaled: was_scaled });
+        let c = m.base_color.to_linear();
+        // Its colour as glow: in physical units when the light's traced (as every glow is then).
+        let scale = if rt { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
+        m.emissive = LinearRgba::rgb(c.red * scale, c.green * scale, c.blue * scale);
+        m.emissive_texture = m.base_color_texture.clone();
+        m.emissive_exposure_weight = if rt { 1.0 } else { 0.0 };
+        m.base_color = Color::linear_rgba(0.0, 0.0, 0.0, c.alpha);
+        if let Some(s) = scaled.as_mut() {
+            s.0.insert(id);
+        }
+    };
+    if want && !*on {
+        *on = true;
+        let ids: Vec<_> = materials.ids().collect();
+        for id in ids {
+            flatten(id, &mut materials, &mut saved);
+        }
+    } else if want {
+        // What's made while it's on (a level rebuilt, props loaded).
+        for id in added {
+            flatten(id, &mut materials, &mut saved);
+        }
+    } else if *on {
+        *on = false;
+        for (id, lit) in saved.drain() {
+            if let Some(mut m) = materials.get_mut(id) {
+                m.base_color = lit.base;
+                m.emissive = lit.emissive;
+                m.emissive_texture = lit.emissive_texture;
+                m.emissive_exposure_weight = lit.weight;
+            }
+            if !lit.scaled {
+                if let Some(s) = scaled.as_mut() {
+                    s.0.remove(&id);
+                }
+            }
         }
     }
 }
@@ -1306,7 +1540,7 @@ mod tests {
     #[test]
     fn props_rest_on_what_they_are_dropped_on() {
         let mut lib = Library::default();
-        lib.props.push(library::Prop { name: "crate".into(), game: 1, folder: "props".into(), source: library::Source::Model("props/portal2/props/crate.glb".into()), bounds: Some((Vec3::new(-0.5, -0.2, -0.3), Vec3::new(0.5, 1.0, 0.3))) });
+        lib.props.push(library::Prop { name: "crate".into(), game: 1, folder: "props".into(), source: library::Source::Model("props/portal2/props/crate.glb".into()), bounds: Some((Vec3::new(-0.5, -0.2, -0.3), Vec3::new(0.5, 1.0, 0.3))), looks: None });
         // On the floor: its bottom on it, facing the camera.
         let o = lib.object(0, Vec3::new(0.0, 0.0, -5.0), Vec3::Y, Vec3::NEG_Z);
         assert!(o.bounds().min.y.abs() < 1e-4, "{:?}", o.bounds());

@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 #[derive(Default)]
 pub struct Material {
     pub texture_png: Option<Vec<u8>>,
+    /// Without a texture: its colour (linear RGBA), else a light grey.
+    pub color: Option<[f32; 4]>,
     /// See-through (glass): alpha-blended.
     pub blend: bool,
     /// Cut out where the texture's alpha is low (grilles, decals).
@@ -70,7 +72,7 @@ pub fn write(parts: &[Part], mats: &[Material], clips: &[Clip]) -> Vec<u8> {
         if let Some(png) = &m.texture_png {
             pbr["baseColorTexture"] = json!({"index": texture(&mut bin, png)});
         } else {
-            pbr["baseColorFactor"] = json!([0.8, 0.8, 0.82, 1.0]);
+            pbr["baseColorFactor"] = json!(m.color.unwrap_or([0.8, 0.8, 0.82, 1.0]));
         }
         if m.blend {
             pbr["roughnessFactor"] = json!(0.1);

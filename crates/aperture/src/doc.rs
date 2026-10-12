@@ -50,11 +50,47 @@ pub struct Object {
     /// A box's size (unused by pieces).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub size: Vec3,
-    /// Degrees: which way it faces.
+    /// Degrees: which way it faces (turned about Y, then tipped about X, then rolled about Z).
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub yaw: f32,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub pitch: f32,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub roll: f32,
+}
+
+/// How something can be turned.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Turns {
+    /// Round (yaw): the start, a turret.
+    Yaw,
+    /// Round and up and down (yaw and pitch): what points somewhere, a laser, a catcher.
+    Aim,
+    /// Any way (about X, Y and Z): props.
+    Free,
+}
+
+/// A prop's scale: along its own X, Y and Z (a single number scales all three alike).
+mod scale3 {
+    use glam::Vec3;
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec3, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum S {
+            One(f32),
+            Three(Vec3),
+        }
+        Ok(match S::deserialize(d)? {
+            S::One(s) => Vec3::splat(s),
+            S::Three(v) => v,
+        })
+    }
+
+    pub fn one() -> Vec3 {
+        Vec3::ONE
+    }
 }
 
 fn is_zero(v: &Vec3) -> bool {
@@ -144,10 +180,10 @@ pub enum Kind {
     /// A Mirror's Edge static mesh, standing here, turned `yaw`. `bounds` is its box (from here,
     /// before it's turned or scaled); with `solid`, that's a block too (turned with it a quarter
     /// at a time), drawn instead when the game isn't installed.
-    MeProp { package: String, mesh: String, #[serde(default = "one")] scale: f32, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    MeProp { package: String, mesh: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
-    Model { path: String, #[serde(default = "one")] scale: f32, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    Model { path: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
 }
 
 fn gel_rate() -> f32 {
@@ -160,10 +196,6 @@ fn gel_speed() -> f32 {
 
 fn pellet_life() -> f32 {
     12.0
-}
-
-fn one() -> f32 {
-    1.0
 }
 
 impl Kind {
@@ -188,12 +220,12 @@ impl Kind {
         )
     }
 
-    /// Whether which way it faces matters, and how: `Some(true)` any way, `Some(false)` only
-    /// round (yaw).
-    pub fn turns(&self) -> Option<bool> {
+    /// How it can be turned, if which way it faces matters.
+    pub fn turns(&self) -> Option<Turns> {
         match self {
-            Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } => Some(true),
-            Kind::Spawn | Kind::Turret | Kind::MeProp { .. } | Kind::Model { .. } | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(false),
+            Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } => Some(Turns::Aim),
+            Kind::MeProp { .. } | Kind::Model { .. } => Some(Turns::Free),
+            Kind::Spawn | Kind::Turret | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(Turns::Yaw),
             _ => None,
         }
     }
@@ -283,21 +315,42 @@ fn inputs_label(i: &Inputs) -> String {
 
 impl Object {
     pub fn new(kind: Kind, at: Vec3) -> Self {
-        Object { kind, at, size: Vec3::ZERO, yaw: 0.0, pitch: 0.0 }
+        Object { kind, at, size: Vec3::ZERO, yaw: 0.0, pitch: 0.0, roll: 0.0 }
     }
 
     pub fn sized(kind: Kind, at: Vec3, size: Vec3) -> Self {
-        Object { kind, at, size, yaw: 0.0, pitch: 0.0 }
+        Object { kind, at, size, yaw: 0.0, pitch: 0.0, roll: 0.0 }
     }
 
     /// A prop's box in the world: `b` (from it, before it's turned or scaled) scaled, turned
-    /// with it a quarter turn at a time (so a box stays a box), and placed.
-    pub fn prop_box(&self, b: (Vec3, Vec3), scale: f32) -> Aabb {
-        let turn = Quat::from_rotation_y((self.yaw / 90.0).round() * std::f32::consts::FRAC_PI_2);
-        let (p, q) = (turn * (b.0 * scale), turn * (b.1 * scale));
+    /// as it's turned, and placed: the box round that (a quarter turn about any axis keeps it
+    /// exact; other turns make it bigger than the prop).
+    pub fn prop_box(&self, b: (Vec3, Vec3), scale: Vec3) -> Aabb {
+        let turn = self.rotation();
+        let (lo, hi) = (b.0 * scale, b.1 * scale);
+        let (mut a, mut z) = (Vec3::MAX, Vec3::MIN);
+        for k in 0..8 {
+            let c = turn * Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
+            a = a.min(c);
+            z = z.max(c);
+        }
         // (Rounded: a quarter turn of a float isn't exactly one.)
-        let r = |v: Vec3| (v * 1e4).round() / 1e4;
-        Aabb::new(self.at + r(p.min(q)), self.at + r(p.max(q)))
+        let round = |v: Vec3| (v * 1e4).round() / 1e4;
+        Aabb::new(self.at + round(a), self.at + round(z))
+    }
+
+    /// A world box round this prop, as its box from it (before it's turned or scaled): what
+    /// [`Object::prop_box`] takes back (exactly, turned a quarter at a time).
+    pub fn unturned_box(&self, b: &Aabb, scale: Vec3) -> (Vec3, Vec3) {
+        let back = self.rotation().inverse();
+        let (mut a, mut z) = (Vec3::MAX, Vec3::MIN);
+        for k in 0..8 {
+            let c = back * (Vec3::new(if k & 1 == 0 { b.min.x } else { b.max.x }, if k & 2 == 0 { b.min.y } else { b.max.y }, if k & 4 == 0 { b.min.z } else { b.max.z }) - self.at);
+            a = a.min(c);
+            z = z.max(c);
+        }
+        let round = |v: Vec3| (v * 1e4).round() / 1e4;
+        (round(a / scale), round(z / scale))
     }
 
     pub fn with_size(mut self, size: Vec3) -> Self {
@@ -306,7 +359,7 @@ impl Object {
     }
 
     pub fn rotation(&self) -> Quat {
-        Quat::from_euler(EulerRot::YXZ, self.yaw.to_radians(), self.pitch.to_radians(), 0.0)
+        Quat::from_euler(EulerRot::YXZ, self.yaw.to_radians(), self.pitch.to_radians(), self.roll.to_radians())
     }
 
     /// The way it faces (exactly along an axis when it's meant to be: no rounding noise).
@@ -314,6 +367,14 @@ impl Object {
         let d = self.rotation() * Vec3::NEG_Z;
         let d = Vec3::select(d.abs().cmplt(Vec3::splat(1e-6)), Vec3::ZERO, d);
         d.normalize()
+    }
+
+    /// Turned as `q` is.
+    pub fn set_rotation(&mut self, q: Quat) {
+        let (y, p, r) = q.to_euler(EulerRot::YXZ);
+        // (Rounded to a thousandth of a degree: no noise in the file.)
+        let d = |a: f32| (a.to_degrees() * 1000.0).round() / 1000.0;
+        (self.yaw, self.pitch, self.roll) = (d(y), d(p), d(r));
     }
 
     /// Turn it to face `dir`.
@@ -532,11 +593,11 @@ impl LevelDoc {
                 }
                 Kind::MeProp { package, mesh, scale, bounds, solid } => {
                     let stand_in = (bounds.is_some() && *solid).then(|| o.bounds());
-                    l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, yaw: o.yaw.to_radians(), scale: *scale, stand_in });
+                    l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in });
                 }
                 Kind::Model { path, scale, bounds, solid } => {
                     let solid = (bounds.is_some() && *solid).then(|| o.bounds());
-                    l.models.push(ModelProp { path: path.clone(), at, yaw: o.yaw.to_radians(), scale: *scale, solid });
+                    l.models.push(ModelProp { path: path.clone(), at, turn: o.rotation(), scale: *scale, solid });
                 }
             }
         }
@@ -642,11 +703,9 @@ impl LevelDoc {
         }
         for m in &l.models {
             let mut o = Object::new(Kind::Model { path: m.path.clone(), scale: m.scale, bounds: None, solid: false }, m.at);
-            o.yaw = m.yaw.to_degrees();
+            o.set_rotation(m.turn);
             if let Some(b) = m.solid {
-                let back = Quat::from_rotation_y(-(o.yaw / 90.0).round() * std::f32::consts::FRAC_PI_2);
-                let (lo, hi) = (back * ((b.min - m.at) / m.scale), back * ((b.max - m.at) / m.scale));
-                o.kind = Kind::Model { path: m.path.clone(), scale: m.scale, bounds: Some((lo.min(hi), lo.max(hi))), solid: true };
+                o.kind = Kind::Model { path: m.path.clone(), scale: m.scale, bounds: Some(o.unturned_box(&b, m.scale)), solid: true };
             }
             push(&mut d, o);
         }
@@ -657,15 +716,12 @@ impl LevelDoc {
         for p in &l.me_props {
             // A prop that stands in a box of its own: that box is the prop's, not a block.
             let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false }, p.at);
-            o.yaw = p.yaw.to_degrees();
+            o.set_rotation(p.turn);
             if let Some(b) = p.stand_in {
                 if let Some(i) = d.objects.iter().position(|o| o.kind == Kind::Block { mat: Mat::Prop } && (o.bounds().min - b.min).length() < 1e-4 && (o.bounds().max - b.max).length() < 1e-4) {
                     d.objects.remove(i);
                 }
-                // Its box from it, before the quarter turns `prop_box` will give it back.
-                let back = Quat::from_rotation_y(-(o.yaw / 90.0).round() * std::f32::consts::FRAC_PI_2);
-                let (lo, hi) = (back * ((b.min - p.at) / p.scale), back * ((b.max - p.at) / p.scale));
-                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some((lo.min(hi), lo.max(hi))), solid: true };
+                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true };
             }
             push(&mut d, o);
         }
@@ -730,6 +786,38 @@ mod tests {
         assert_eq!(l.items.len(), 3);
         let Item::Laser { dir, .. } = &l.items[2] else { panic!() };
         assert!((*dir - Vec3::X).length() < 1e-5);
+    }
+
+    /// A prop turned about every axis and scaled along each reads back the same, builds turned
+    /// and scaled so, with a box round all of it; a level saved with one scale for all three
+    /// still reads.
+    #[test]
+    fn props_turn_and_scale_every_way() {
+        let mut o = Object::new(Kind::Model { path: "props/portal2/props/radio.glb".into(), scale: Vec3::new(3.0, 1.5, 2.0), bounds: Some((Vec3::new(-0.5, 0.0, -0.25), Vec3::new(0.5, 1.0, 0.25))), solid: true }, Vec3::new(1.0, 2.0, -3.0));
+        (o.pitch, o.yaw, o.roll) = (30.0, 45.0, 20.0);
+        let mut d = LevelDoc::new("T");
+        d.objects.push(o.clone());
+        let back = LevelDoc::from_ron(&d.to_ron()).unwrap();
+        assert_eq!(back, d);
+        let l = back.build();
+        let m = &l.models[0];
+        assert!(m.turn.dot(o.rotation()).abs() > 1.0 - 1e-6);
+        assert_eq!(m.scale, Vec3::new(3.0, 1.5, 2.0));
+        // The box holds every corner of the turned, scaled prop.
+        let b = m.solid.unwrap();
+        for k in 0..8 {
+            let c = Vec3::new(if k & 1 == 0 { -1.5 } else { 1.5 }, if k & 2 == 0 { 0.0 } else { 1.5 }, if k & 4 == 0 { -0.5 } else { 0.5 });
+            let p = o.at + o.rotation() * c;
+            assert!((p.cmpge(b.min - 1e-3) & p.cmple(b.max + 1e-3)).all(), "{p} outside {b:?}");
+        }
+        // Read back from the level, it's turned the same.
+        let (again, _) = LevelDoc::from_level(&l);
+        let r = again.objects.iter().find(|x| matches!(x.kind, Kind::Model { .. })).unwrap();
+        assert!(r.rotation().dot(o.rotation()).abs() > 1.0 - 1e-6);
+        // An older file: one number for the scale.
+        let old = "(name: \"Old\", objects: [(kind: MeProp(package: \"P_Rooftops\", mesh: \"S_Cistern_01\", scale: 2.0), at: (0.0, 0.0, 0.0))])";
+        let d = LevelDoc::from_ron(old).unwrap();
+        assert!(matches!(d.objects[0].kind, Kind::MeProp { scale, .. } if scale == Vec3::splat(2.0)));
     }
 
     #[test]

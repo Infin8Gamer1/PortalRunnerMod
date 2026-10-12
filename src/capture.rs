@@ -1261,6 +1261,50 @@ fn script(name: &str) -> Vec<Act> {
             Shot("props_07_zipline_end_moved"),
             Edit(|ed, _| println!("capture: objects {:?}", ed.doc.objects.iter().map(|o| format!("{} at {} {:?}", o.kind.label(), o.at, o.kind)).filter(|s| !s.contains("block") && !s.contains("Lamp")).collect::<Vec<_>>())),
         ],
+        // The level editor's view options and props turned and scaled every way (PORTAL_EDIT=1).
+        "editorview" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                use aperture::doc::{Kind, Object};
+                ed.open(aperture::doc::LevelDoc::starter("View"), None);
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 3.0, -1.5), yaw: 0.0, pitch: -0.4, speed: 8.0 };
+                let bounds = Some((Vec3::new(-0.278, 0.001, -0.124), Vec3::new(0.278, 0.783, 0.124)));
+                let radio = Object::new(Kind::Model { path: "props/portal2/props/radio_reference.glb".into(), scale: Vec3::ONE, bounds, solid: true }, Vec3::new(-1.5, 0.0, -6.0));
+                let mut big = radio.clone();
+                big.at = Vec3::new(1.5, 1.0, -6.0);
+                big.pitch = 30.0;
+                big.roll = 20.0;
+                big.yaw = 45.0;
+                if let Kind::Model { scale, .. } = &mut big.kind {
+                    *scale = Vec3::new(3.0, 1.5, 2.0);
+                }
+                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false }, Vec3::new(0.0, 0.0, -11.0));
+                ed.doc.objects.extend([radio, big, cistern]);
+                ed.selected = Some(ed.doc.objects.len() - 2);
+                ed.rebuild_now();
+            }),
+            Wait(90),
+            Shot("view_01_props_turned_and_scaled"),
+            Edit(|ed, _| ed.selected = Some(ed.doc.objects.len() - 1)),
+            Wait(10),
+            Shot("view_02_me_prop_selected"),
+            Edit(|ed, _| {
+                ed.view.collision = true;
+                ed.view.meshes = false;
+            }),
+            Wait(120),
+            Shot("view_03_collision_only"),
+            Edit(|ed, _| {
+                ed.view.collision = false;
+                ed.view.meshes = true;
+                ed.view.unlit = true;
+            }),
+            Wait(60),
+            Shot("view_04_unlit"),
+            Edit(|ed, _| ed.view.unlit = false),
+            Wait(30),
+            Shot("view_05_lit_again"),
+        ],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.

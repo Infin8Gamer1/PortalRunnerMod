@@ -14,7 +14,7 @@ pub fn spawn_for_level(mut commands: Commands, game: Res<Game>, assets: Res<Asse
     *loaded = game.loads;
     for m in &game.sim.level.models {
         let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(format!("extracted/{}", m.path)));
-        let tf = Transform::from_translation(m.at).with_rotation(Quat::from_rotation_y(m.yaw)).with_scale(Vec3::splat(m.scale));
+        let tf = Transform::from_translation(m.at).with_rotation(m.turn).with_scale(m.scale);
         commands.spawn((ChamberGeom, WorldAssetRoot(scene), tf, Visibility::default()));
     }
 }
