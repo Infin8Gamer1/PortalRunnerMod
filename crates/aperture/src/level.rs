@@ -384,6 +384,8 @@ pub struct Level {
     pub hints: Vec<(Aabb, &'static str)>,
     /// Falling below this kills you.
     pub kill_y: f32,
+    /// The gravity Faith falls under here (m/s²; none: [`crate::FAITH_GRAVITY`]).
+    pub gravity: Option<f32>,
     /// Indoors (a test chamber: dark sky, lamps) or out on the roofs.
     pub indoor: bool,
     /// Ceiling lamps (indoor): positions.
@@ -561,6 +563,7 @@ impl Level {
             exit: None,
             hints: Vec::new(),
             kill_y: -30.0,
+            gravity: None,
             indoor: true,
             lamps: Vec::new(),
             me_props: Vec::new(),

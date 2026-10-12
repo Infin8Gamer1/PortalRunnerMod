@@ -83,6 +83,8 @@ enum Act {
     Mouse(Hand),
     /// Ray-traced lighting on or off (the setting, not saved).
     RayTracing(bool),
+    /// Change the settings.
+    Set(fn(&mut crate::settings::Settings)),
     /// Load one of Portal's maps: as imported, or the game's own copy of it.
     Chamber(crate::LevelGroup, &'static str),
     /// Stand off the `n`th of the map's effects of a kind (`camera`, `spotlight`, `steam`,
@@ -1545,6 +1547,89 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // The lighting before #3's work (no ray tracing, bloom, ambient occlusion or auto
+        // exposure), with today's raster look, and traced; in a chamber, on a rooftop, in one
+        // of Portal's maps. Then a portal pair: the view through blue, and the same view from
+        // just in front of orange (which it shows), traced and not.
+        "lighting3" => {
+            let before: fn(&mut crate::settings::Settings) = |s| {
+                s.ray_tracing = 0.0;
+                s.bloom = 0.0;
+                s.ssao = 0.0;
+                s.auto_exposure = 0.0;
+            };
+            let raster: fn(&mut crate::settings::Settings) = |s| {
+                let d = crate::settings::Settings::default();
+                (s.bloom, s.ssao, s.auto_exposure, s.ray_tracing) = (d.bloom, d.ssao, d.auto_exposure, 0.0);
+            };
+            let mut v = Vec::new();
+            let maps: [(usize, &'static str); 3] = [(1, "chamber"), (7, "rooftop"), (aperture::levels::all().len() + 11, "portal16")];
+            for (map, name) in maps {
+                let shot = |k: &str| Shot(Box::leak(format!("l3_{name}_{k}").into_boxed_str()));
+                v.extend([Set(before), Map(map), Wait(240), shot("1_before"), Set(raster), Wait(120), shot("2_raster"), RayTracing(true), Wait(240), shot("3_traced")]);
+            }
+            v.extend([
+                Map(0),
+                Wait(120),
+                Portal(PortalColor::Blue, Vec3::new(24.0, 1.2, 18.0), Vec3::NEG_X, Vec3::Y),
+                Portal(PortalColor::Orange, Vec3::new(-24.0, 1.2, 14.0), Vec3::X, Vec3::Y),
+                Teleport(Vec3::new(21.0, 0.0, 18.0)),
+                Launch(Vec3::ZERO),
+                Look(-90.0, 0.0),
+                Wait(240),
+                Shot("l3_portal_1_through_blue_traced"),
+                Teleport(Vec3::new(-23.6, 0.0, 14.0)),
+                Launch(Vec3::ZERO),
+                Look(-90.0, 0.0),
+                Wait(240),
+                Shot("l3_portal_2_from_orange_traced"),
+                RayTracing(false),
+                Wait(120),
+                Shot("l3_portal_4_from_orange_raster"),
+                Teleport(Vec3::new(21.0, 0.0, 18.0)),
+                Launch(Vec3::ZERO),
+                Look(-90.0, 0.0),
+                Wait(120),
+                Shot("l3_portal_3_through_blue_raster"),
+                Set(|s| s.ray_tracing = 1.0),
+            ]);
+            v
+        }
+        // #25's gaps: a floor indicator strip in Chamber 00, imported and native; the portal
+        // gun on Chamber 02's turning pedestal.
+        "gaps25" => {
+            use crate::LevelGroup::{PortalImported as I, PortalNative as N};
+            vec![
+                Chamber(I, "testchmb_a_00"),
+                Wait(60),
+                Teleport(Vec3::new(24.0, 3.25, 22.5)),
+                Launch(Vec3::ZERO),
+                Look(0.0, -45.0),
+                Wait(60),
+                Shot("gaps25_floor_strip_imported"),
+                Chamber(N, "testchmb_a_00"),
+                Wait(60),
+                Teleport(Vec3::new(24.0, 3.25, 22.5)),
+                Launch(Vec3::ZERO),
+                Look(0.0, -45.0),
+                Wait(60),
+                Shot("gaps25_floor_strip_native"),
+                Chamber(I, "testchmb_a_01"),
+                Wait(100),
+                Teleport(Vec3::new(-4.06, -3.25, 0.4)),
+                Look(0.0, -12.0),
+                Wait(60),
+                Shot("gaps25_pedestal_imported_a"),
+                Wait(90),
+                Shot("gaps25_pedestal_imported_b"),
+                Chamber(N, "testchmb_a_01"),
+                Wait(100),
+                Teleport(Vec3::new(-4.06, -3.25, 0.4)),
+                Look(0.0, -12.0),
+                Wait(60),
+                Shot("gaps25_pedestal_native"),
+            ]
+        }
         // The level editor's lights (PORTAL_EDIT=1): a dark room with a red point light and a
         // blue spot light, then blocks outdoors under an orange sun; each traced and not.
         "editorlights" => vec![
@@ -1579,7 +1664,7 @@ fn script(name: &str) -> Vec<Act> {
                 for (x, z) in [(-4.0, -8.0), (2.0, -12.0), (5.0, -6.0)] {
                     d.objects.push(Object::sized(Kind::Block { mat: Mat::Black }, Vec3::new(x, 1.0, z), Vec3::new(1.5, 2.0, 1.5)));
                 }
-                d.objects.push(Object::new(Kind::Spawn, Vec3::new(0.0, 0.0, 2.0)));
+                d.objects.push(Object::new(Kind::Spawn { gravity: None }, Vec3::new(0.0, 0.0, 2.0)));
                 let mut sun = Object::new(Kind::Sun { color: Vec3::new(1.0, 0.55, 0.25), illuminance: 9000.0 }, Vec3::new(0.0, 6.0, -10.0));
                 sun.face(Vec3::new(1.0, -0.45, -0.6));
                 d.objects.push(sun);
@@ -1937,6 +2022,7 @@ pub fn run(
         Act::Edit(f) => f(&mut editor, &mut menu),
         Act::Mouse(m) => mouse.act(*m, &editor),
         Act::RayTracing(on) => settings.ray_tracing = if *on { 1.0 } else { 0.0 },
+        Act::Set(f) => f(&mut settings),
         Act::AtLight(k, of) => {
             let lights = &game.sim.level.lights;
             if !lights.is_empty() {

@@ -324,9 +324,9 @@ impl Editor {
         self.rebuild = true;
         self.started = true;
         // Looking out from the start (a Portal map's: its player start).
-        let start = self.doc.objects.iter().find(|o| o.kind == Kind::Spawn).or_else(|| self.doc.objects.iter().find(|o| matches!(&o.kind, Kind::Entity { class, .. } if class == "info_player_start")));
+        let start = self.doc.objects.iter().find(|o| matches!(o.kind, Kind::Spawn { .. })).or_else(|| self.doc.objects.iter().find(|o| matches!(&o.kind, Kind::Entity { class, .. } if class == "info_player_start")));
         if let Some(s) = start {
-            let yaw = if s.kind == Kind::Spawn { s.yaw.to_radians() } else { (-s.dir().x).atan2(-s.dir().z) };
+            let yaw = if matches!(s.kind, Kind::Spawn { .. }) { s.yaw.to_radians() } else { (-s.dir().x).atan2(-s.dir().z) };
             self.cam = FlyCam { pos: s.at + Vec3::new(0.0, 2.5, 0.0), yaw, pitch: -0.3, speed: self.cam.speed };
         }
     }
@@ -1320,7 +1320,7 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
         // (Only what has a box drawn works it out: a Portal map's thousands of brushes don't.)
         let b = if matches!(o.kind, Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } | Kind::Block { .. } | Kind::Decor { .. }) { Aabb::from_center_size(o.at, Vec3::ZERO) } else { o.bounds() };
         match &o.kind {
-            Kind::Spawn => {
+            Kind::Spawn { .. } => {
                 cuboid(&mut gizmos, &b, Color::srgb(0.3, 0.9, 0.45));
                 arrow(&mut gizmos, o.at + Vec3::Y * 0.05, o.dir(), 1.2, Color::srgb(0.3, 0.9, 0.45));
             }

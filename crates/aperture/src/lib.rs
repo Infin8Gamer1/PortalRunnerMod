@@ -27,8 +27,13 @@ pub use sim::{Aim, Hit, HitWhat, MapTransition, Mask, Prop, Sim, SimEvent};
 /// Movement tuning for Faith in a portal game: Mirror's Edge's, with a skid instead of a hard
 /// clamp when a fling lands her faster than she can run, and no floor to fall out of (the
 /// chamber's own kill height and goo do that).
+/// The gravity Faith falls under (m/s²): Portal's (600 units/s²), not Mirror's Edge's
+/// (16.4), so Portal's flings carry as they should. A level can set its own (its spawn's).
+pub const FAITH_GRAVITY: f32 = 15.24;
+
 pub fn tuning(hard_land_height: f32, lethal_fall_height: f32) -> faith_move::Tuning {
     faith_move::Tuning {
+        gravity: FAITH_GRAVITY,
         overspeed_decel: Some(30.0),
         hard_land_height,
         lethal_fall_height,

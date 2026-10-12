@@ -1539,6 +1539,8 @@ impl Sim {
     /// Faith's frame: her movement in the world as she sees it, then through any portal she
     /// crossed, then grills, plates, goo, lasers, checkpoints and the exit.
     pub fn step_player(&mut self, ctrl: &mut Controller, input: &MoveInput, dt: f32) {
+        // (The level's gravity for her, or the game's.)
+        ctrl.tuning.gravity = self.level.gravity.unwrap_or(crate::FAITH_GRAVITY);
         let body = ctrl.body();
         let center = ctrl.feet + Vec3::Y * body.height * 0.5;
         let half = Vec3::new(body.half_width, body.height * 0.5, body.half_width);

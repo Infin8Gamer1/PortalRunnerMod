@@ -174,8 +174,10 @@ pub fn chamber06() -> Level {
   7.2 m/s and long-jumps about 6 m. She vaults things up to 1.48 m, wallclimbs walls about
   3.3 m high, and steps up 35 cm without jumping. Gaps you mean to be impossible on foot should
   be 9 m or more; walls, 5 m or more.
-- Gravity is 16.4 m/s² (Mirror's Edge's). Falls of 5.3 m are hard landings and 10 m kill, by
-  default (players can change both).
+- Gravity is Portal's, 15.24 m/s² (600 units/s²), so Portal's flings carry as they should. A
+  level can set its own on its **Spawn** (Gravity, in its details); one of Portal's maps on
+  its `info_player_start`, as a `gravity` key in units/s². Falls of 5.3 m are hard landings and
+  15 m kill, by default (players can change both).
 - A portal is 1.4 x 2.4 m. Walls meant to take one need at least that much flat white, and a
   wall portal you walk into needs its white to reach the floor (the portal's bottom sits on
   it).

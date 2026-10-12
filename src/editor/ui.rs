@@ -258,7 +258,7 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
         }
         if ui.button("New, empty").clicked() {
             let mut d = LevelDoc::new("Untitled");
-            d.objects.push(aperture::doc::Object::new(Kind::Spawn, Vec3::ZERO));
+            d.objects.push(aperture::doc::Object::new(Kind::Spawn { gravity: None }, Vec3::ZERO));
             ed.open(d, None);
             ui.close();
         }
@@ -1558,7 +1558,25 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             ui.checkbox(exit, "");
             ui.end_row();
         }
-        Kind::Cut | Kind::Spawn | Kind::Exit | Kind::Lamp | Kind::Goo | Kind::Turret | Kind::BargeDoor | Kind::BarbedWire => {}
+        Kind::Spawn { gravity } => {
+            ui.label("Gravity");
+            ui.horizontal(|ui| {
+                let mut own = gravity.is_some();
+                if ui.checkbox(&mut own, "").on_hover_text("The level's own gravity for her (else the game's: Portal's)").changed() {
+                    *gravity = own.then_some(aperture::FAITH_GRAVITY);
+                }
+                match gravity {
+                    Some(g) => {
+                        ui.add(egui::DragValue::new(g).speed(0.05).range(1.0..=40.0).suffix(" m/s²"));
+                    }
+                    None => {
+                        ui.weak(format!("{:.2} m/s² (Portal's)", aperture::FAITH_GRAVITY));
+                    }
+                }
+            });
+            ui.end_row();
+        }
+        Kind::Cut | Kind::Exit | Kind::Lamp | Kind::Goo | Kind::Turret | Kind::BargeDoor | Kind::BarbedWire => {}
         // (Their fields are `map_fields`' and the entity panels'.)
         Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => {}
     }
