@@ -549,7 +549,7 @@ fn plasma() -> Image {
     image(N, data, true)
 }
 
-fn mat_for(m: &ChamberMats, mat: Mat) -> Handle<StandardMaterial> {
+pub fn mat_for(m: &ChamberMats, mat: Mat) -> Handle<StandardMaterial> {
     match mat {
         Mat::White => m.white.clone(),
         Mat::Black => m.black.clone(),

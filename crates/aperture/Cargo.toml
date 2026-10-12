@@ -5,5 +5,7 @@ edition = "2024"
 description = "Portal-style puzzle simulation (portals, cubes, buttons, gels, lasers, bridges) on top of faith_move"
 
 [dependencies]
-glam = "0.32"
+glam = { version = "0.32", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
 faith_move = { path = "../faith_move" }

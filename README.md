@@ -101,6 +101,7 @@ there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.tx
 | Restart chamber / next map / previous map | Backspace / M / N | |
 | Pause menu / controls | Esc / F1 | Start |
 | Debug readout (state, speed, fps) / Mirror's Edge body on/off | F3 / F2 | |
+| Level editor (in it, F5 or F4 plays the level) | F4 | |
 
 Holding a cube, either trigger lets go of it with a push. Menus: arrows or WASD, Enter, Esc;
 the d-pad, A and B; or the mouse.
@@ -183,8 +184,13 @@ VSync off.)
 
 ## Making levels
 
-Levels are Rust code: see [docs/levels.md](docs/levels.md) for the builder, every piece you
-can place, and how to give a level its own solution test.
+**F4** opens the level editor on the chamber you're in: fly round it, drag walls, floors,
+puzzle pieces and Mirror's Edge props in from the content browser, move, turn and size them
+with the gizmo, wire buttons to doors in the details panel, and press **F5** to play it. Levels
+made there are saved as `.ron` files in `levels/` and listed after the game's chambers.
+
+The game's own chambers are Rust code: see [docs/levels.md](docs/levels.md) for the editor,
+the builder, every piece you can place, and how to give a level its own solution test.
 
 ## Layout
 

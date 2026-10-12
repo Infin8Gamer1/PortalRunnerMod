@@ -75,6 +75,8 @@ enum Act {
     RocketsOn,
     /// Retire every turret (so she can stand in their sight).
     TurretsOff,
+    /// Do something in the level editor.
+    Edit(fn(&mut crate::editor::Editor, &mut crate::menu::Menu)),
 }
 
 fn fwd() -> MoveInput {
@@ -1073,6 +1075,33 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("menu_controls"),
             ]
         }
+        // The level editor (start it with PORTAL_EDIT=1): the chamber it opens on, a new room
+        // with pieces dropped in and wired up, then playing it.
+        "editor" => vec![
+            Wait(120),
+            Shot("editor_01_opened"),
+            Edit(|ed, _| ed.open(aperture::doc::LevelDoc::starter("Demo"), None)),
+            Wait(60),
+            Shot("editor_02_new_room"),
+            Edit(|ed, _| {
+                use crate::editor::catalog::find;
+                let look = Vec3::NEG_Z;
+                ed.add(find("Floor button"), Vec3::new(-3.0, 0.0, -6.0), Vec3::Y, look);
+                ed.add(find("Storage cube"), Vec3::new(3.0, 0.0, -5.0), Vec3::Y, look);
+                ed.add(find("Cut (doorway)"), Vec3::new(0.0, 1.5, -16.0), Vec3::Z, look);
+                ed.add(find("Door"), Vec3::new(0.0, 0.0, -16.3), Vec3::Y, look);
+                ed.add(find("Laser emitter"), Vec3::new(-6.0, 2.0, -12.0), Vec3::X, look);
+                ed.add(find("Faith plate"), Vec3::new(3.0, 0.0, -11.0), Vec3::Y, look);
+                ed.add(find("Black stripe"), Vec3::new(0.0, 0.0, -9.0), Vec3::Y, look);
+                ed.selected = ed.doc.objects.iter().position(|o| matches!(o.kind, aperture::doc::Kind::Door { .. }));
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 4.2, -0.8), yaw: 0.0, pitch: -0.35, speed: 8.0 };
+            }),
+            Wait(90),
+            Shot("editor_03_pieces"),
+            Edit(|ed, menu| ed.play(menu)),
+            Wait(90),
+            Shot("editor_04_playing"),
+        ],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -1303,6 +1332,7 @@ pub fn run(
     mut exit: MessageWriter<AppExit>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     mut menu: ResMut<crate::menu::Menu>,
+    mut editor: ResMut<crate::editor::Editor>,
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
@@ -1398,6 +1428,7 @@ pub fn run(
             cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
         Act::Menu(screen) => menu.open_at(*screen),
+        Act::Edit(f) => f(&mut editor, &mut menu),
         Act::AtLight(k, of) => {
             let lights = &game.sim.level.lights;
             if !lights.is_empty() {

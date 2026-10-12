@@ -13,7 +13,7 @@ use crate::geom;
 use crate::portal::PortalColor;
 
 /// What a box is made of: what it looks like, and whether portals stick to it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Mat {
     /// White panels: portals go here.
     White,
@@ -79,9 +79,11 @@ pub type Sig = usize;
 
 /// What turns something on: every listed signal on (none listed: always on), or with
 /// `invert`, not that.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Inputs {
+    #[serde(default)]
     pub all: Vec<Sig>,
+    #[serde(default)]
     pub invert: bool,
 }
 
@@ -108,7 +110,7 @@ impl Inputs {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CubeKind {
     /// Weighted storage cube.
     Storage,
@@ -119,7 +121,7 @@ pub enum CubeKind {
 }
 
 /// Portal 2's paints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Paint {
     /// Repulsion gel (blue): bounce.
     Bounce,

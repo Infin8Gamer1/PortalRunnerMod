@@ -1,5 +1,55 @@
 # Making levels
 
+There are two ways: the level editor in the game, and Rust code (how the game's own chambers
+are made, each with a test that plays it through).
+
+## The level editor
+
+**F4** in the game opens the editor (`PORTAL_EDIT=1` starts in it). The first time, it opens on
+a copy of the chamber you're in (Portal's own maps can't be edited: a new room instead).
+
+- **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
+  (start, checkpoints, exit, hints, goo, platforms, lamps, portals, indicator wires) and
+  Mirror's Edge props. Drag one into the view: it lands on the surface under the cursor
+  (a block rests on it, a laser or catcher faces out of it, a door stands across the way you're
+  looking), snapped to the grid. Double-click puts it where the middle of the view is.
+- **The view**: hold the right mouse button to look round, with WASD to fly, Q/E down and up,
+  Shift faster, the wheel for speed (without the button, the wheel moves in and out). Click
+  to select; **W/E/R** move, rotate and scale it with the gizmo (scale sizes boxes). **F**
+  focuses on it, **Del** deletes it, **Ctrl+D** duplicates it, **Ctrl+Z / Ctrl+Y** undo and
+  redo. Lines show what the selection is wired to; outlines show what the game doesn't draw
+  (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
+- **Outliner** and **details** (right): every object; the selected one's position, size,
+  facing and settings (material, signal, what turns it on, cube kind, gel...). With nothing
+  selected, the level's name, intro line, indoors or out, and which portals the gun shoots.
+- **Play** (**F5**, or **F4**) plays the level from its start with the real simulation; **F4**
+  comes back to the editor.
+- **File**: a new room or an empty level, open a level file, import any of the game's chambers
+  (as its boxes and pieces, after the cuts), save (**Ctrl+S**).
+
+New sources (buttons, catchers, relays) get a signal of their own, and a door, bridge or
+platform placed after one listens to it: drop a button, then a door, and the button opens it.
+
+Levels are saved as RON in `levels/` (`PORTAL_LEVELS` to put them elsewhere): a list of objects,
+each a kind, where it is (a box's centre, a piece's point, as the builder methods below take),
+a box's size, and which way it faces (degrees). They're read when they're loaded, so a saved
+change shows the next time the level loads. `aperture::doc` has the format.
+
+```ron
+(
+    name: "My chamber",
+    objects: [
+        (kind: Block(mat: White), at: (0.0, -0.5, -8.0), size: (14.0, 1.0, 18.0)),
+        (kind: Spawn, at: (0.0, 0.0, -2.0)),
+        (kind: FloorButton(sig: 0, cube_only: false), at: (-3.0, 0.0, -6.0)),
+        (kind: Door(inputs: (all: [0])), at: (0.0, 1.5, -16.1), size: (3.0, 3.0, 0.2)),
+        (kind: Laser(inputs: ()), at: (-6.0, 2.0, -12.0), yaw: -90.0),
+    ],
+)
+```
+
+## In Rust
+
 A level is a function returning an `aperture::Level`, built with its builder methods. Add a
 file under `crates/aperture/src/levels/`, write the function, and list it in
 `levels::all()` (in `levels/mod.rs`): the game cycles through that list in order.

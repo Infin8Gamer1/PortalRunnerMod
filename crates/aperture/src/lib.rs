@@ -6,6 +6,7 @@
 //! through portals. The test chambers are in [`levels`].
 
 pub mod collide;
+pub mod doc;
 pub mod geom;
 pub mod gel;
 pub mod io;
