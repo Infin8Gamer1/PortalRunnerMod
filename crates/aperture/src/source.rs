@@ -882,6 +882,21 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
         .collect();
     l.io = Some(logic);
 
+    // A grill's field runs from emitter to emitter. Its trigger can stop short: Chamber 15's
+    // section 2 grill's ends 1.6 m off the wall its emitter's on.
+    for item in &mut l.items {
+        let Item::Fizzler { b, .. } = item else { continue };
+        let s = b.size();
+        let (along, across) = if s.x >= s.z { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+        for &at in &l.grill_edges {
+            let off = at - b.center();
+            if off.dot(across).abs() > 0.5 || at.y < b.min.y || at.y > b.max.y || off.dot(along).abs() > s.dot(along) * 0.5 + 2.0 {
+                continue;
+            }
+            *b = Aabb::new(b.min.min(at * along + b.min * (Vec3::ONE - along)), b.max.max(at * along + b.max * (Vec3::ONE - along)));
+        }
+    }
+
     // The gun she starts with: what the map leaves by the start (none: Portal's chambers
     // before you find it, and Chamber 02, where it's on a pedestal).
     l.gun = spawn_gun;

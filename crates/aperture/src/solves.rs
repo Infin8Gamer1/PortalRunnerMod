@@ -2034,3 +2034,17 @@ fn chamber_16_cage_lights_hang_from_cables() {
         assert!((0.1..0.3).contains(&over), "the cable over the light at {o} is {over} m above it");
     }
 }
+
+/// Chamber 15's grills (testchmb_a_10) run from emitter to emitter: section 2's, wall to
+/// wall, though Portal's trigger for it stops 1.6 m short of the west wall (#60).
+#[test]
+fn chamber_15_grills_reach_their_emitters() {
+    let Some(p) = Play::load("testchmb_a_10") else { return };
+    let section2 = p.sim.fizzlers.iter().find(|f| (f.b.center().z + 3.28).abs() < 0.1).expect("no grill in section 2");
+    assert!((section2.b.min.x - 45.517).abs() < 0.02 && (section2.b.max.x - 61.773).abs() < 0.02, "section 2's grill: {:?}", section2.b);
+    // Each grill's edge emitters sit on its ends.
+    for &at in &p.sim.level.grill_edges {
+        let f = p.sim.fizzlers.iter().find(|f| at.y > f.b.min.y && at.y < f.b.max.y && (at - f.b.center()).abs().cmplt(f.b.size() * 0.5 + Vec3::splat(0.5)).all());
+        assert!(f.is_some(), "an emitter at {at} is off every grill");
+    }
+}
