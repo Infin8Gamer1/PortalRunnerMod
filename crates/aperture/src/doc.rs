@@ -1150,6 +1150,19 @@ impl LevelDoc {
 mod tests {
     use super::*;
 
+    /// A level with a Portal brush in it is built as a map, but its own pieces are still its
+    /// own (drawn as the game's): only the map's movers count as the map's.
+    #[test]
+    fn a_levels_own_pieces_beside_map_parts() {
+        let mut d = LevelDoc::starter("T");
+        d.objects.push(Object::new(Kind::Brush(crate::brush::box_brush(&Aabb::from_center_size(Vec3::ZERO, Vec3::ONE), "plastic/plasticwall001a", crate::brush::Contents::Solid, 1.0, false)), Vec3::new(0.0, 0.5, -8.0)));
+        d.objects.push(Object::sized(Kind::Platform { travel: Vec3::new(0.0, 0.0, -6.0), speed: 2.0, inputs: Inputs::always() }, Vec3::new(3.0, 0.25, -6.0), Vec3::new(3.0, 0.5, 3.0)));
+        let sim = crate::Sim::new(d.build());
+        assert!(sim.level.source.is_some());
+        assert_eq!(sim.map_movers, 0);
+        assert_eq!(sim.movers.len(), 1);
+    }
+
     /// Every built chamber reads into a document, saves, loads back the same, and builds into
     /// a level with the same boxes and pieces.
     #[test]

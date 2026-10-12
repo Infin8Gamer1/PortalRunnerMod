@@ -286,19 +286,19 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
     }
     // High energy pellet launchers and catchers: Portal's, at 60%. A launcher's mouth (1.09 m
     // along the model's front) is where the pellet leaves; a catcher's opening faces its way.
-    // A source map already places these as props, and those are the ones its logic animates.
-    if sim.level.source.is_none() {
+    // A source map already places its own as props, and those are the ones its logic animates.
+    {
         if let (Some(launcher), Some(catcher)) = (models.get("pellet_launcher"), models.get("pellet_catcher")) {
             r.pellets = true;
             let s = 0.6;
-            for (i, l) in sim.launchers.iter().enumerate() {
+            for (i, l) in sim.launchers.iter().enumerate().skip(sim.map_launchers) {
                 let (right, up) = frame_for(l.dir);
                 let tf = Transform::from_translation(l.at - l.dir * 1.09 * s).with_rotation(basis(right, up, -l.dir)).with_scale(Vec3::splat(s));
                 spawn_model(commands, launcher.clone(), tf, PropKind::PelletLauncher(i));
             }
             // A catcher's opening is its model's front (-Z) once its idle stands it up, as Portal's
             // maps place it: facing out of its wall, the lens in its cup.
-            for (i, c) in sim.pellet_catchers.iter().enumerate() {
+            for (i, c) in sim.pellet_catchers.iter().enumerate().skip(sim.map_catchers) {
                 let (right, up) = frame_for(c.facing);
                 let tf = Transform::from_translation(c.at).with_rotation(basis(right, up, -c.facing)).with_scale(Vec3::splat(s));
                 spawn_model(commands, catcher.clone(), tf, PropKind::PelletCatcher(i));

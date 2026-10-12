@@ -886,20 +886,21 @@ fn place(doc: &LevelDoc, lib: &Library, pick: Pick, p: Vec3, n: Vec3, look: Vec3
 fn surface(doc: &LevelDoc, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
     let mut best: Option<(f32, Vec3)> = None;
     for obj in &doc.objects {
-        let solid = match &obj.kind {
-            Kind::Block { .. } | Kind::Platform { .. } | Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. } => true,
-            // (An angled brush: its box.)
-            Kind::Brush(b) => matches!(b.collision(), aperture::brush::Collision::Solid(_)),
-            _ => false,
-        };
-        if !solid {
+        if !matches!(&obj.kind, Kind::Block { .. } | Kind::Platform { .. } | Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. } | Kind::Brush(_)) {
             continue;
         }
-        if let Some((t, n)) = ray_box(o, d, &obj.bounds()) {
-            if best.is_none_or(|(bt, _)| t < bt) {
-                best = Some((t, n));
+        let Some((t, n)) = ray_box(o, d, &obj.bounds()) else { continue };
+        if best.is_some_and(|(bt, _)| t >= bt) {
+            continue;
+        }
+        // (An angled brush: its box. Whether a brush is solid only for those the ray meets
+        // first: working it out takes a while, and a map has thousands.)
+        if let Kind::Brush(b) = &obj.kind {
+            if !matches!(b.collision(), aperture::brush::Collision::Solid(_)) {
+                continue;
             }
         }
+        best = Some((t, n));
     }
     if let Some((t, n)) = best {
         return (o + d * t, n);
@@ -1159,8 +1160,10 @@ fn interact(
                 if let Ok(mut tf) = handles.get_mut(h) {
                     tf.translation = obj.at;
                     // (A box is sized along the world's axes, whichever way it faces: scaled
-                    // unturned, or its handles would size it along the wrong ones.)
-                    let sized = obj.kind.is_box() && settings.mode == TransformGizmoMode::Scale;
+                    // unturned, or its handles would size it along the wrong ones. So is a brush
+                    // entity's brushes: they don't turn with it.)
+                    let world_sized = obj.kind.is_box() || matches!(&obj.kind, Kind::Entity { brushes, .. } if !brushes.is_empty());
+                    let sized = world_sized && settings.mode == TransformGizmoMode::Scale;
                     tf.rotation = if obj.kind.turns().is_some() && !sized { obj.rotation() } else { Quat::IDENTITY };
                     tf.scale = match &obj.kind {
                         _ if obj.kind.is_box() => obj.size,
@@ -1423,8 +1426,8 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
                 if std::ptr::eq(o, sel) {
                     continue;
                 }
-                let lname = o.name.to_ascii_lowercase();
-                if !lname.is_empty() && targets.contains(&lname) {
+                // (Compared as they are: no copies of thousands of names a frame.)
+                if !o.name.is_empty() && targets.iter().any(|t| t.eq_ignore_ascii_case(&o.name)) {
                     gizmos.arrow(from, o.bounds().center(), Color::srgb(0.3, 1.0, 0.4));
                 }
                 if !name.is_empty() && o.outputs.iter().any(|out| out.target.eq_ignore_ascii_case(&name)) {
