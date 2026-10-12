@@ -441,8 +441,9 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                     l.grill_edges.push(at);
                 }
             }
-            "light" | "light_spot" => {
-                let Some(at) = origin(e) else { continue };
+            // (What's left out still has its place in the logic: each entity is one there.)
+            "light" | "light_spot" if origin(e).is_some() => {
+                let at = origin(e).unwrap_or(Vec3::ZERO);
                 let v = key(e, "_light").map(floats).unwrap_or_default();
                 let (color, brightness) = match v.as_slice() {
                     [r, g, b, k, ..] => (Vec3::new(*r, *g, *b) / 255.0, *k),
@@ -473,8 +474,8 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                 buttons.push(b);
                 l.hidden_models.push(model.unwrap());
             }
-            "func_door" | "func_movelinear" | "func_door_rotating" | "func_brush" | "func_wall_toggle" | "func_physbox" | "func_rotating" | "func_tracktrain" | "func_breakable_surf" => {
-                let Some(m) = model else { continue };
+            "func_door" | "func_movelinear" | "func_door_rotating" | "func_brush" | "func_wall_toggle" | "func_physbox" | "func_rotating" | "func_tracktrain" | "func_breakable_surf" if model.is_some() => {
+                let m = model.unwrap_or_default();
                 let mut solids = model_boxes.remove(&m).unwrap_or_default();
                 let mut speed = num(e, "speed", 100.0).max(1.0) * 0.0254;
                 let mut shift = Vec3::ZERO;
@@ -935,12 +936,33 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
     let lowest = l.solids.iter().map(|s| s.b.min.y).fold(f32::MAX, f32::min);
     l.kill_y = if lowest.is_finite() { lowest - 10.0 } else { -30.0 };
     l.map_solids = l.solids.len();
+    l.map_items = l.items.len();
     l
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_entity_has_its_place_in_the_logic() {
+        // A brush entity with no brushes (a point entity whose class the editor changed) and a
+        // light with nowhere: still one each in the logic, so the rest line up.
+        let solids = "bounds 0 -10 -1 -10 10 5 10\nwhite 0 -10 -1 -10 10 0 10\n";
+        let ents = r#"{ "classname" "worldspawn" }
+{ "classname" "info_player_start" "origin" "0 0 0" "angles" "0 0 0" }
+{ "classname" "func_door" "targetname" "nobrushes" }
+{ "classname" "light" "targetname" "nowhere" }
+{ "classname" "logic_relay" "targetname" "after" }"#;
+        let l = level("t", "T", solids, ents);
+        let sim = crate::sim::Sim::new(l);
+        let io = sim.io.as_ref().unwrap();
+        let parsed = parse_entities(ents);
+        assert_eq!(io.ents.len(), parsed.len());
+        for (e, p) in io.ents.iter().zip(&parsed) {
+            assert_eq!(e.class, key(p, "classname").unwrap());
+        }
+    }
 
     #[test]
     fn entities_keep_repeated_keys() {

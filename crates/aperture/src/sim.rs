@@ -624,6 +624,11 @@ pub struct Sim {
     pub launchers: Vec<PelletLauncher>,
     pub pellets: Vec<Pellet>,
     pub pellet_catchers: Vec<PelletCatcher>,
+    /// How many of the movers, launchers and pellet catchers (the first) are a Portal map's
+    /// own (from its first [`Level::map_items`]): drawn as its props, not the game's.
+    pub map_movers: usize,
+    pub map_launchers: usize,
+    pub map_catchers: usize,
     pub rocket_turrets: Vec<RocketTurret>,
     pub rockets: Vec<Rocket>,
     /// What rockets can hit besides the world (GLaDOS): centre and radius.
@@ -704,6 +709,9 @@ impl Sim {
             launchers: Vec::new(),
             pellets: Vec::new(),
             pellet_catchers: Vec::new(),
+            map_movers: 0,
+            map_launchers: 0,
+            map_catchers: 0,
             rocket_turrets: Vec::new(),
             rockets: Vec::new(),
             rocket_targets: Vec::new(),
@@ -747,7 +755,10 @@ impl Sim {
             rng: Rng::new(0x5eed_1234),
             level: level.clone(),
         };
-        for it in &level.items {
+        for (k, it) in level.items.iter().enumerate() {
+            if k == level.map_items {
+                sim.count_map_items();
+            }
             match it.clone() {
                 Item::FloorButton { sig, at, cube_only } => {
                     let i = sim.buttons.len();
@@ -842,6 +853,9 @@ impl Sim {
                 }
             }
         }
+        if level.map_items >= level.items.len() {
+            sim.count_map_items();
+        }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
         sim.statics = statics;
         for p in level.portals.clone() {
@@ -849,6 +863,13 @@ impl Sim {
             sim.set_portal(p.color, Some(portal));
         }
         sim
+    }
+
+    /// What's been made so far is the map's own (its items are first).
+    fn count_map_items(&mut self) {
+        self.map_movers = self.movers.len();
+        self.map_launchers = self.launchers.len();
+        self.map_catchers = self.pellet_catchers.len();
     }
 
     // ------------------------------------------------------------ portals

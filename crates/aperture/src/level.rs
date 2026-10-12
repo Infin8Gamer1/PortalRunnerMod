@@ -352,6 +352,9 @@ pub struct Level {
     pub source: Option<String>,
     /// How many of [`Level::solids`] (the first) are the map's, drawn from its faces.
     pub map_solids: usize,
+    /// And how many of [`Level::items`] (the first): the map's own movers, launchers and
+    /// catchers are drawn as its props; the pieces after them (a level's own) as the game's.
+    pub map_items: usize,
     /// What's drawn of the map: its faces, props, overlays and cables.
     pub art: Option<std::sync::Arc<crate::art::MapArt>>,
     /// Its lights (Portal's `light` and `light_spot` entities).
@@ -508,6 +511,7 @@ impl Level {
             ambient: None,
             source: None,
             map_solids: 0,
+            map_items: 0,
             art: None,
             lights: Vec::new(),
             grill_edges: Vec::new(),
