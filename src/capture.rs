@@ -1129,6 +1129,43 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("e02_native"),
             ]
         }
+        // From Portal's Chamber 00 as imported into the editor (its native copy opens), a wall
+        // moved, Portal's brushes and a trigger dropped in, then played.
+        "nativeedit" => {
+            use crate::LevelGroup::PortalImported as I;
+            vec![
+                Chamber(I, "testchmb_a_00"),
+                Wait(60),
+                Edit(|_, menu| menu.edit = Some(false)),
+                Wait(150),
+                Shot("nativeedit_01_opened"),
+                Edit(|ed, _| {
+                    // The nearest white wall in front of the camera, a metre up.
+                    let (pos, look) = (ed.cam.pos, Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0) * Vec3::NEG_Z);
+                    let i = ed.doc.objects.iter().enumerate().filter(|(_, o)| matches!(&o.kind, aperture::doc::Kind::Brush(b) if b.faces.iter().any(|f| f.mat.starts_with("plastic/plasticwall"))) && (o.at - pos).normalize_or_zero().dot(look) > 0.8).min_by(|a, b| a.1.at.distance(pos).total_cmp(&b.1.at.distance(pos))).map(|(i, _)| i);
+                    if let Some(i) = i {
+                        ed.selected = Some(i);
+                        ed.change(|d| d.objects[i].at.y += 1.0);
+                    }
+                }),
+                Wait(90),
+                Shot("nativeedit_02_moved"),
+                Edit(|ed, _| {
+                    use crate::editor::catalog::find;
+                    let (pos, look) = (ed.cam.pos, Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0) * Vec3::NEG_Z);
+                    let floor = pos + Vec3::new(look.x, 0.0, look.z).normalize_or_zero() * 4.0 - Vec3::Y * 2.5;
+                    ed.add_entry(find("Portal black metal"), floor, Vec3::Y, look);
+                    ed.add_entry(find("Portal light panel"), floor + Vec3::new(2.0, 0.0, 0.0), Vec3::Y, look);
+                    ed.add_entry(find("Trigger"), floor + Vec3::new(-3.0, 0.0, 0.0), Vec3::Y, look);
+                    ed.add_entry(find("Relay"), floor + Vec3::new(-3.0, 0.0, 2.0), Vec3::Y, look);
+                }),
+                Wait(90),
+                Shot("nativeedit_03_added"),
+                Edit(|ed, menu| ed.play(menu)),
+                Wait(120),
+                Shot("nativeedit_04_playing"),
+            ]
+        }
         // The chambers menu's folders.
         "chambersmenu" => {
             use crate::menu::Screen;
