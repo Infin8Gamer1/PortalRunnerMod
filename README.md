@@ -80,8 +80,8 @@ of portals in view: off (TAA) 5.4 / 13.3 ms, DLAA 11.7 / 19.1, Quality 6.2 / 10.
 **Lighting is ray traced** (Bevy's Solari) on GPUs with hardware ray tracing (NVIDIA RTX,
 AMD RX 6000 and later, on Vulkan): the sun, the ceiling panels and everything that glows light
 the chambers directly and by bouncing, traced every frame, through portal views too. Nothing
-is baked. Other GPUs (or Settings > Graphics > Ray-traced lighting off, after a restart, or
-`PORTAL_NORT=1` for one run) light them the ordinary way.
+is baked. Other GPUs (or Settings > Graphics > Ray-traced lighting off, which switches straight
+away, or `PORTAL_NORT=1` for one run) light them the ordinary way.
 
 It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were
 in, **Chambers** lists them all with your best times, and **Settings** and **Controls** are

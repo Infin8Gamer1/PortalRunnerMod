@@ -2,8 +2,9 @@
 
 ## bevy_solari 0.19.1
 
-Bevy's ray tracer, as published, plus one fix in `src/scene/blas.rs`
-(`prepare_raytracing_blas`, marked "Portal Runner patch").
+Bevy's ray tracer, as published, plus two fixes marked "Portal Runner patch": one in
+`src/scene/blas.rs` (`prepare_raytracing_blas`), and one in `src/realtime/prepare.rs`
+(`prepare_solari_lighting_resources`).
 
 Solari compacts each mesh's BLAS through a queue, and compacts at most 400k vertices of them a
 frame. If a mesh is uploaded again before its queue entry has been reached, the queue holds two
@@ -13,5 +14,11 @@ happens when big meshes use up the per-frame budget (Portal with RTX's floor but
 others are being re-uploaded (Faith's third-person body). The fix drops a mesh's older queue
 entries when it's queued again.
 
-Drop this, and the `[patch.crates-io]` entry in the root `Cargo.toml`, once Bevy's own release
-carries a fix.
+A camera's lighting resources are made once for its size, with DLSS ray reconstruction's
+textures only if it has ray reconstruction then. Ray-traced lighting is switched on and off while
+the game runs, and DLSS goes between ray reconstruction and plain upscaling with it: the second
+fix makes them again when ray reconstruction comes or goes (else it denoises nothing, and the
+traced light stays grainy).
+
+Drop these, and the `[patch.crates-io]` entry in the root `Cargo.toml`, once Bevy's own release
+carries fixes.

@@ -553,7 +553,7 @@ fn setup(mut commands: Commands, mut ed: ResMut<Editor>, mut store: ResMut<Gizmo
 fn gizmo_cameras(
     mut commands: Commands,
     ed: Res<Editor>,
-    player: Query<(Entity, Ref<Msaa>, Option<&CameraMainTextureUsages>, Option<&Exposure>, Has<TransformGizmoCamera>, &Projection), With<PlayerCamera>>,
+    player: Query<(Entity, Ref<Msaa>, Option<Ref<CameraMainTextureUsages>>, Option<&Exposure>, Has<TransformGizmoCamera>, &Projection), With<PlayerCamera>>,
     mut cams: Query<(Entity, &RenderLayers, &mut Camera, &mut Projection, Has<crate::graphics::OverlayCamera>), (With<Camera3d>, Without<PlayerCamera>)>,
 ) {
     let Ok((player, msaa, usages, exposure, marked, proj)) = player.single() else { return };
@@ -568,9 +568,9 @@ fn gizmo_cameras(
         if ed.active {
             *gizmo_proj = proj.clone();
         }
-        if !tagged || msaa.is_changed() {
+        if !tagged || msaa.is_changed() || usages.as_ref().is_some_and(|u| u.is_changed()) {
             let mut ec = commands.entity(e);
-            ec.insert((crate::graphics::OverlayCamera, *msaa, Hdr, Tonemapping::TonyMcMapface, usages.cloned().unwrap_or_default()));
+            ec.insert((crate::graphics::OverlayCamera, *msaa, Hdr, Tonemapping::TonyMcMapface, usages.as_deref().cloned().unwrap_or_default()));
             if let Some(x) = exposure {
                 ec.insert(*x);
             }
@@ -1368,7 +1368,7 @@ struct Lit {
     emissive: LinearRgba,
     emissive_texture: Option<Handle<Image>>,
     weight: f32,
-    scaled: bool,
+    scaled: Option<(f32, f32)>,
 }
 
 /// The unlit view: every material shows its own colour, as glow alone (no colour lit by
@@ -1393,8 +1393,9 @@ fn unlit(
         if m.unlit {
             return;
         }
-        let was_scaled = scaled.as_ref().is_some_and(|s| s.0.contains(&id));
+        let was_scaled = scaled.as_ref().and_then(|s| s.0.get(&id).copied());
         saved.insert(id, Lit { base: m.base_color, emissive: m.emissive, emissive_texture: m.emissive_texture.clone(), weight: m.emissive_exposure_weight, scaled: was_scaled });
+        let weight = m.emissive_exposure_weight;
         let c = m.base_color.to_linear();
         // Its colour as glow: in physical units when the light's traced (as every glow is then).
         let scale = if rt { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
@@ -1402,8 +1403,10 @@ fn unlit(
         m.emissive_texture = m.base_color_texture.clone();
         m.emissive_exposure_weight = if rt { 1.0 } else { 0.0 };
         m.base_color = Color::linear_rgba(0.0, 0.0, 0.0, c.alpha);
-        if let Some(s) = scaled.as_mut() {
-            s.0.insert(id);
+        // (Marked as scaled already, so the traced light doesn't scale it again; with the
+        // lighting switched off meanwhile, it's unscaled like any other.)
+        if let (true, Some(s)) = (rt, scaled.as_mut()) {
+            s.0.entry(id).or_insert((scale, weight));
         }
     };
     if want && !*on {
@@ -1426,9 +1429,15 @@ fn unlit(
                 m.emissive_texture = lit.emissive_texture;
                 m.emissive_exposure_weight = lit.weight;
             }
-            if !lit.scaled {
-                if let Some(s) = scaled.as_mut() {
-                    s.0.remove(&id);
+            // As the traced light had it (or hadn't).
+            if let Some(s) = scaled.as_mut() {
+                match lit.scaled {
+                    Some(v) => {
+                        s.0.insert(id, v);
+                    }
+                    None => {
+                        s.0.remove(&id);
+                    }
                 }
             }
         }

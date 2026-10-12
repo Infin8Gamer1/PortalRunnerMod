@@ -590,22 +590,9 @@ pub fn sync(
     // The map's lights, brightest first.
     let mut lights = level.lights.clone();
     lights.sort_by(|a, b| b.brightness.total_cmp(&a.brightness));
-    let bulb = crate::raytrace::active().then(|| {
-        let mut m = Sphere::new(BULB_RADIUS).mesh().ico(1).unwrap();
-        crate::raytrace::make_ready(&mut m);
-        meshes.add(m)
-    });
     for l in lights.iter().take(MAX_LIGHTS) {
         let color = Color::linear_rgb(l.color.x, l.color.y, l.color.z);
         let intensity = l.brightness * LUMENS_PER_BRIGHTNESS;
-        // Ray tracing lights by what glows, not by lights: a bulb where each one is. It's in
-        // the traced scene only, not drawn: Portal's lights are often fill lights in mid-air.
-        if let Some(bulb) = &bulb {
-            if l.brightness >= BULB_MIN_BRIGHTNESS {
-                let glow = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::from_vec3(l.color * l.brightness * BULB_GLOW), ..default() });
-                commands.spawn((ChamberGeom, RaytracingMesh3d(bulb.clone()), MeshMaterial3d(glow), Transform::from_translation(l.at)));
-            }
-        }
         match l.spot {
             Some((dir, cone)) => {
                 commands.spawn((
@@ -668,6 +655,49 @@ fn cable_mesh(ropes: &[aperture::rope::Rope]) -> Mesh {
 
 /// Brush models (and props parented to them) follow their movers: doors slide, elevators
 /// ride, walls come and go.
+/// A map light's bulb (see [`bulbs`]).
+#[derive(Component)]
+pub struct Bulb;
+
+/// Ray tracing lights by what glows, not by lights: under it, a bulb where each of the map's
+/// brighter lights is, in the traced scene only, not drawn (Portal's lights are often fill
+/// lights in mid-air). Made when a map loads or the lighting's switched to traced, gone when
+/// it's switched back.
+pub fn bulbs(
+    mut commands: Commands,
+    game: Res<Game>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    existing: Query<Entity, With<Bulb>>,
+    mut built: Local<Option<Option<u64>>>,
+) {
+    let want = crate::raytrace::active().then_some(game.loads);
+    if *built == Some(want) {
+        return;
+    }
+    *built = Some(want);
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    if want.is_none() {
+        return;
+    }
+    let mut lights = game.sim.level.lights.clone();
+    lights.sort_by(|a, b| b.brightness.total_cmp(&a.brightness));
+    let mut bulb = None;
+    for l in lights.iter().take(MAX_LIGHTS).filter(|l| l.brightness >= BULB_MIN_BRIGHTNESS) {
+        let bulb = bulb
+            .get_or_insert_with(|| {
+                let mut m = Sphere::new(BULB_RADIUS).mesh().ico(1).unwrap();
+                crate::raytrace::make_ready(&mut m);
+                meshes.add(m)
+            })
+            .clone();
+        let glow = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::from_vec3(l.color * l.brightness * BULB_GLOW), ..default() });
+        commands.spawn((ChamberGeom, Bulb, RaytracingMesh3d(bulb), MeshMaterial3d(glow), Transform::from_translation(l.at)));
+    }
+}
+
 pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mut Visibility)>, mut props: Query<(&MapProp, &mut Transform, Has<MapSprite>, &mut Visibility), Without<MapModel>>) {
     let movers = &game.sim.movers;
     for (p, mut tf, sprite, mut vis) in &mut props {

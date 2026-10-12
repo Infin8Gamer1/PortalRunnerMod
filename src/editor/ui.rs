@@ -203,9 +203,11 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
         ui.radio_value(&mut v.unlit, false, "Lit");
         ui.radio_value(&mut v.unlit, true, "Unlit").on_hover_text("Everything at its own colour (textures as they are)");
         ui.separator();
-        // (Ray-traced lighting is set up as the game starts: a change takes a restart.)
+        // (Not while unlit: that view takes the materials' glow over, as switching does.)
         let mut rt = game_settings.ray_tracing >= 0.5;
-        if ui.checkbox(&mut rt, format!("Ray-traced lighting: {}", crate::raytrace::label(game_settings.ray_tracing))).on_hover_text("Set as the game starts: a change takes effect after a restart").changed() {
+        let r = ui.add_enabled(!v.unlit, egui::Checkbox::new(&mut rt, format!("Ray-traced lighting: {}", crate::raytrace::label(game_settings.ray_tracing))));
+        let r = if v.unlit { r.on_disabled_hover_text("Switch to Lit first") } else { r.on_hover_text("Switched straight away (the game's setting too)") };
+        if r.changed() {
             game_settings.ray_tracing = if rt { 1.0 } else { 0.0 };
             game_settings.save();
         }

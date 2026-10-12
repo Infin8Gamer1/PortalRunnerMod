@@ -36,7 +36,7 @@ new one: a white room with lamps and a start.
   (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
 - **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
   coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
-  unlit; and ray-traced lighting (set as the game starts, so a change takes a restart).
+  unlit; and ray-traced lighting, on or off straight away (the game's setting too).
 - **Outliner** and **details** (right): every object; the selected one's position, size,
   facing and settings (material, signal, what turns it on, cube kind, gel...). With nothing
   selected, the level's name, intro line, indoors or out, and which portals the gun shoots.

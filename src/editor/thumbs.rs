@@ -89,6 +89,10 @@ pub fn setup(mut commands: Commands, mut thumbs: ResMut<Thumbs>, mut images: Res
                 RenderTarget::Image(thumbs.target.clone().into()),
                 Projection::Perspective(PerspectiveProjection { fov: FOV, near: 0.01, ..default() }),
                 Msaa::Off,
+                // (Ray-traced lighting draws materials deferred, and it can be switched on at
+                // any time: a view without a deferred pass can't draw them.)
+                DepthPrepass,
+                DeferredPrepass,
                 layer.clone(),
             ))
             .id(),
@@ -160,10 +164,7 @@ pub fn run(
                     *tf = Transform::from_translation(c + dir * (r / (FOV * 0.5).sin()) * 1.02).looking_at(c, Vec3::Y);
                     camera.is_active = true;
                 }
-                // (Ray-traced lighting draws everything deferred: so must this.)
-                if crate::raytrace::active() {
-                    commands.entity(cam).insert((DepthPrepass, DeferredPrepass));
-                }
+
             }
             job.drawn += 1;
             // A few frames for its textures to arrive, then read it back.

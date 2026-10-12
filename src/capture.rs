@@ -79,6 +79,8 @@ enum Act {
     Edit(fn(&mut crate::editor::Editor, &mut crate::menu::Menu)),
     /// Work the mouse, as if by hand.
     Mouse(Hand),
+    /// Ray-traced lighting on or off (the setting, not saved).
+    RayTracing(bool),
 }
 
 /// What the mouse does.
@@ -1305,6 +1307,20 @@ fn script(name: &str) -> Vec<Act> {
             Wait(30),
             Shot("view_05_lit_again"),
         ],
+        // Ray-traced lighting switched off and on again while playing: a chamber, a rooftop
+        // outdoors, one of Portal's maps.
+        "rtswitch" => {
+            let mut v = Vec::new();
+            let maps: [(usize, u32, [&'static str; 3]); 3] = [
+                (1, 120, ["rt_chamber_1_on", "rt_chamber_2_off", "rt_chamber_3_on_again"]),
+                (7, 120, ["rt_rooftop_1_on", "rt_rooftop_2_off", "rt_rooftop_3_on_again"]),
+                (11, 240, ["rt_portal_map_1_on", "rt_portal_map_2_off", "rt_portal_map_3_on_again"]),
+            ];
+            for (map, wait, [on, off, again]) in maps {
+                v.extend([Map(map), Wait(wait), Shot(on), RayTracing(false), Wait(90), Shot(off), RayTracing(true), Wait(150), Shot(again)]);
+            }
+            v
+        }
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
@@ -1537,6 +1553,7 @@ pub fn run(
     mut menu: ResMut<crate::menu::Menu>,
     mut editor: ResMut<crate::editor::Editor>,
     mut mouse: MouseHand,
+    mut settings: ResMut<crate::settings::Settings>,
 ) {
     let fps = diagnostics.get(&bevy::diagnostic::FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
     cap.frame += 1;
@@ -1634,6 +1651,7 @@ pub fn run(
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Edit(f) => f(&mut editor, &mut menu),
         Act::Mouse(m) => mouse.act(*m, &editor),
+        Act::RayTracing(on) => settings.ray_tracing = if *on { 1.0 } else { 0.0 },
         Act::AtLight(k, of) => {
             let lights = &game.sim.level.lights;
             if !lights.is_empty() {
