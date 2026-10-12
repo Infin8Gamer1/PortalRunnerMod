@@ -110,7 +110,8 @@ fn origin(e: &Entity) -> Option<Vec3> {
     (v.len() >= 3).then(|| to_ours(Vec3::new(v[0], v[1], v[2])))
 }
 
-/// One line of a `.solids` file.
+/// A box of a map's brushes: what it's made of (`white`, `black`, `glass`, `goo`, `bounds`...)
+/// and the brush model it's part of (0: the world).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapBox {
     pub kind: String,
@@ -118,7 +119,9 @@ pub struct MapBox {
     pub b: Aabb,
 }
 
-pub fn parse_solids(text: &str) -> Vec<MapBox> {
+/// Boxes as text, a line each (`kind model x y z x y z`): the tests' small maps.
+#[cfg(test)]
+fn parse_solids(text: &str) -> Vec<MapBox> {
     text.lines()
         .filter_map(|l| {
             let mut it = l.split_whitespace();
@@ -132,7 +135,8 @@ pub fn parse_solids(text: &str) -> Vec<MapBox> {
 
 /// Faces that take portals (`slope model nx ny nz x y z ...`): the still world's tilted ones
 /// (model 0) and brush entities' (any way they face), with their model.
-pub fn parse_slopes(text: &str) -> Vec<(usize, crate::level::Slope)> {
+#[cfg(test)]
+fn parse_slopes(text: &str) -> Vec<(usize, crate::level::Slope)> {
     text.lines()
         .filter_map(|l| {
             let mut it = l.split_whitespace();
@@ -289,18 +293,14 @@ pub fn parse_scenes(text: &str) -> Scenes {
         .collect()
 }
 
-/// A map as a level. `name` is the map's (`testchmb_a_00`), `title` what the game calls it.
-pub fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level {
-    level_with_scenes(name, title, solids, ents, &Scenes::new())
+/// A small map for the tests: its boxes (and slopes) as text, its entities as Source's.
+#[cfg(test)]
+pub(crate) fn level(name: &str, title: &'static str, solids: &str, ents: &str) -> Level {
+    level_from(name, title, &parse_solids(solids), parse_slopes(solids), &parse_entities(ents), &Scenes::new())
 }
 
-/// The same, GLaDOS speaking her scenes' lines.
-pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &str, scenes: &Scenes) -> Level {
-    level_from(name, title, &parse_solids(solids), parse_slopes(solids), &parse_entities(ents), scenes)
-}
-
-/// A map as a level, from its boxes (each brush model's bounds, and its brushes' boxes), its
-/// faces that take portals at a slant, and its entities.
+/// A map as a level, from its boxes, slopes and entities. `name` is the map's
+/// (`testchmb_a_00`), `title` what the game calls it.
 pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec<(usize, crate::level::Slope)>, ents: &[Entity], scenes: &Scenes) -> Level {
     let mut l = Level::new(title);
     l.source = Some(name.to_string());

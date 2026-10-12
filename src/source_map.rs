@@ -1,11 +1,11 @@
-//! Portal's own maps, extracted by `portal_extract` into `assets/extracted/maps/`: listed
-//! after the game's chambers, made into levels by `aperture::source`, and drawn here from their
-//! faces (a mesh per brush model and material) with Portal's textures, and Portal with RTX's
-//! maps where it has them. Light panels glow (under ray tracing they light the chamber); the
-//! map's light entities are lights for the ordinary path.
+//! Portal's maps, as the game's own copies of them (level files in `levels/portal/`, listed
+//! after the game's chambers): drawn here from their faces (a mesh per brush model and
+//! material) with Portal's textures from `assets/extracted/`, and Portal with RTX's maps where
+//! it has them. Light panels glow (under ray tracing they light the chamber); the map's light
+//! entities are lights for the ordinary path.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use bevy::asset::RenderAssetUsages;
@@ -26,16 +26,6 @@ pub type LevelFn = Arc<dyn Fn() -> Level + Send + Sync>;
 /// Portal's maps, in order, with what the game calls them.
 const MAPS: &[(&str, &str)] = aperture::port::MAPS;
 
-fn available(dir: &Path) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
-    MAPS.iter().copied().filter(move |(name, _)| dir.join(format!("{name}.mesh")).is_file())
-}
-
-/// BSP names of the extracted maps, in the same order as [`levels`].
-pub fn map_names(root: Option<&Path>) -> Vec<String> {
-    let Some(dir) = root.map(|r| r.join("maps")) else { return Vec::new() };
-    available(&dir).map(|(name, _)| name.to_string()).collect()
-}
-
 /// GLaDOS's scenes (`maps/scenes.txt`), shared by every map and every level file with
 /// Portal's entities.
 pub fn scenes() -> Arc<aperture::source::Scenes> {
@@ -48,34 +38,14 @@ pub fn scenes() -> Arc<aperture::source::Scenes> {
         .clone()
 }
 
-/// Each of Portal's materials' flags (`maps/materials.txt`: as the mesh files have them),
-/// for what the game's own copies of the maps draw.
+/// Each of Portal's materials' flags (`maps/materials.txt`: 1 translucent, 2 alphatest, 4
+/// glows, 8 additive, 16 takes portals, 32 textured), for what the maps draw.
 pub fn material_flags() -> &'static HashMap<String, u8> {
     static FLAGS: OnceLock<HashMap<String, u8>> = OnceLock::new();
     FLAGS.get_or_init(|| {
         let text = crate::extracted::find_root().and_then(|r| std::fs::read_to_string(r.join("maps").join("materials.txt")).ok()).unwrap_or_default();
         text.lines().filter_map(|l| l.split_once(' ')).filter_map(|(f, n)| Some((n.to_string(), f.parse().ok()?))).collect()
     })
-}
-
-/// The extracted maps there are, as levels.
-pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
-    let Some(dir) = root.map(|r| r.join("maps")) else { return Vec::new() };
-    available(&dir)
-        .map(|(name, title)| {
-            let dir: PathBuf = dir.clone();
-            let f: LevelFn = Arc::new(move || {
-                let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-                let ents = read("ents");
-                let mut l = aperture::source::level_with_scenes(name, title, &read("solids"), &ents, &scenes());
-                let art = aperture::art::MapArt::from_files(name, &read("props"), &read("overlays"), &ents);
-                l.bodies = aperture::art::bodies(&art);
-                l.art = Some(Arc::new(art));
-                l
-            });
-            (title.to_string(), f)
-        })
-        .collect()
 }
 
 /// The game's own copies of Portal's maps (`levels/portal/`, made by `portal_extract
@@ -187,66 +157,6 @@ const BULB_MIN_BRIGHTNESS: f32 = 80.0;
 /// How brightly an elevator's cabin lamp glows.
 const CABIN_GLOW: f32 = 25.0;
 
-struct Group {
-    /// The brush model it's part of (0: the world).
-    model: u32,
-    material: usize,
-    mesh: Mesh,
-}
-
-struct MeshFile {
-    /// (name, flags: 1 translucent, 2 alphatest, 4 glows, 8 additive, 16 takes portals, 32
-    /// textured).
-    materials: Vec<(String, u8)>,
-    groups: Vec<Group>,
-}
-
-fn read_mesh(bytes: &[u8]) -> Option<MeshFile> {
-    if bytes.get(..8)? != b"PRMESH1\0" {
-        return None;
-    }
-    let mut at = 8;
-    let u32_at = |at: &mut usize| -> Option<u32> {
-        let v = u32::from_le_bytes(bytes.get(*at..*at + 4)?.try_into().ok()?);
-        *at += 4;
-        Some(v)
-    };
-    let n = u32_at(&mut at)? as usize;
-    let mut materials = Vec::with_capacity(n);
-    for _ in 0..n {
-        let len = u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?) as usize;
-        at += 2;
-        let name = String::from_utf8_lossy(bytes.get(at..at + len)?).into_owned();
-        at += len;
-        let flags = *bytes.get(at)?;
-        at += 1;
-        materials.push((name, flags));
-    }
-    let ng = u32_at(&mut at)? as usize;
-    let mut groups = Vec::with_capacity(ng);
-    for _ in 0..ng {
-        let model = u32_at(&mut at)?;
-        let material = u32_at(&mut at)? as usize;
-        let nv = u32_at(&mut at)? as usize;
-        let floats: &[u8] = bytes.get(at..at + nv * 32)?;
-        at += nv * 32;
-        let f = |i: usize| f32::from_le_bytes(floats[i * 4..i * 4 + 4].try_into().unwrap());
-        let pos: Vec<[f32; 3]> = (0..nv).map(|v| [f(v * 8), f(v * 8 + 1), f(v * 8 + 2)]).collect();
-        let nrm: Vec<[f32; 3]> = (0..nv).map(|v| [f(v * 8 + 3), f(v * 8 + 4), f(v * 8 + 5)]).collect();
-        let uv: Vec<[f32; 2]> = (0..nv).map(|v| [f(v * 8 + 6), f(v * 8 + 7)]).collect();
-        let ni = u32_at(&mut at)? as usize;
-        let idx: Vec<u32> = bytes.get(at..at + ni * 4)?.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
-        at += ni * 4;
-        let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-            .with_inserted_indices(Indices::U32(idx));
-        groups.push(Group { model, material, mesh });
-    }
-    Some(MeshFile { materials, groups })
-}
-
 /// The material for one of a map's textures.
 fn material(name: &str, flags: u8, extracted: &Extracted, images: &mut Assets<Image>, materials: &mut Assets<StandardMaterial>, m: &ChamberMats, lamps: &mut Lamps) -> Handle<StandardMaterial> {
     if name.starts_with("glass/") {
@@ -323,17 +233,8 @@ fn glow_mask(img: &Image) -> Option<Image> {
     Some(out)
 }
 
-/// A map's faces to draw: (brush model, material, its flags, the mesh), from its mesh file
-/// or (the game's own copy of a map) its brushes.
-fn face_meshes(art: &aperture::art::MapArt, root: &Path) -> Vec<(u32, String, u8, Mesh)> {
-    if let Some(mesh) = &art.mesh {
-        let path = root.join("maps").join(format!("{mesh}.mesh"));
-        let Some(file) = std::fs::read(&path).ok().and_then(|b| read_mesh(&b)) else {
-            warn!("{}: can't read", path.display());
-            return Vec::new();
-        };
-        return file.groups.into_iter().map(|g| (g.model, file.materials[g.material].0.clone(), file.materials[g.material].1, g.mesh)).collect();
-    }
+/// A map's faces to draw: (brush model, material, its flags, the mesh), from its brushes.
+fn face_meshes(art: &aperture::art::MapArt) -> Vec<(u32, String, u8, Mesh)> {
     let flags = material_flags();
     art.faces
         .iter()
@@ -382,9 +283,11 @@ pub fn sync(
     let level = &game.sim.level;
     let Some(art) = level.art.clone() else { return };
     let name = level.source.clone().unwrap_or_default();
-    let Some(root) = extracted.root.clone() else { return };
+    if extracted.root.is_none() {
+        return;
+    }
     let mut frames: HashMap<String, Vec<Handle<Image>>> = HashMap::new();
-    for (model, mat, flags, mut mesh) in face_meshes(&art, &root) {
+    for (model, mat, flags, mut mesh) in face_meshes(&art) {
         if level.hidden_models.contains(&(model as usize)) {
             continue;
         }

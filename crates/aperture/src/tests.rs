@@ -10,6 +10,17 @@ use crate::sim::{Aim, Sim, SimEvent};
 
 const DT: f32 = 1.0 / 60.0;
 
+/// One of Portal's chambers: the game's own copy of the map (`levels/portal/<name>.ron`), with
+/// GLaDOS's scenes where they've been extracted.
+fn portal_map(name: &str) -> Level {
+    crate::port::native_level(name).unwrap_or_else(|| panic!("no levels/portal/{name}.ron"))
+}
+
+/// Portal's maps, in order.
+fn portal_maps() -> Vec<String> {
+    crate::port::MAPS.iter().map(|(n, _)| n.to_string()).collect()
+}
+
 fn start(level: Level) -> (Sim, Controller) {
     let cp = level.checkpoints[0].clone();
     let sim = Sim::new(level);
@@ -794,14 +805,10 @@ fn speed_gel_doesnt_skid_and_leaving_it_waits_before_skidding() {
 /// Faith standing (not falling, not stuck), and walking about doesn't drop her out of the map.
 #[test]
 fn portals_maps_stand_her_up() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
+    let names = portal_maps();
     let mut bad = Vec::new();
     for name in &names {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let level = portal_map(name);
         let spawn = level.checkpoints[0].spawn;
         let (mut sim, mut c) = start(level);
         run(&mut sim, &mut c, 1.0, |_, _| Input::default());
@@ -840,11 +847,7 @@ fn portals_maps_stand_her_up() {
 /// room's button opens the way out.
 #[test]
 fn portals_chamber_00_runs_its_logic() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let scenes = std::fs::read_to_string(dir.join("scenes.txt")).map(|t| crate::source::parse_scenes(&t)).unwrap_or_default();
-    let level = crate::source::level_with_scenes("testchmb_a_00", "00", &solids, &ents, &scenes);
+    let level = portal_map("testchmb_a_00");
     let (mut sim, mut c) = start(level);
     run(&mut sim, &mut c, 5.0, |_, _| Input::default());
     assert!(sim.portals.iter().all(|p| p.is_none()), "portals open too soon");
@@ -855,7 +858,7 @@ fn portals_chamber_00_runs_its_logic() {
     // A cube on the first room's button: the exit doors open.
     let button = sim.buttons.iter().position(|b| (b.at - Vec3::new(23.58, 3.56, 13.0)).length() < 1.0).expect("the first room's button");
     let at = sim.buttons[button].at;
-    let cube = sim.props.iter().position(|p| p.alive).unwrap();
+    let cube = sim.props.iter().position(|p| p.alive && p.kind != CubeKind::Physics).unwrap();
     sim.props[cube].pos = at + Vec3::Y * 0.8;
     sim.props[cube].vel = Vec3::ZERO;
     run(&mut sim, &mut c, 4.0, |_, _| Input::default());
@@ -895,10 +898,7 @@ fn portals_chamber_00_runs_its_logic() {
 /// its shaft (576 units, 14.6 m) to the second room.
 #[test]
 fn portals_chamber_00_lift_carries_her_up() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let mut level = crate::source::level("testchmb_a_00", "00", &solids, &ents);
+    let mut level = portal_map("testchmb_a_00");
     level.spawn([21.95, 3.75, 37.39], 0.0);
     let (mut sim, mut c) = start(level);
     run(&mut sim, &mut c, 1.0, |_, _| Input::default());
@@ -913,10 +913,7 @@ fn portals_chamber_00_lift_carries_her_up() {
 /// last node changes the level).
 #[test]
 fn portals_chamber_00_exit_elevator_finishes_it() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_00.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let mut level = crate::source::level("testchmb_a_00", "00", &solids, &ents);
+    let mut level = portal_map("testchmb_a_00");
     level.spawn([6.50, 15.1, 9.75], 0.0);
     let (mut sim, mut c) = start(level);
     let ev = run(&mut sim, &mut c, 40.0, |_, _| Input::default());
@@ -925,9 +922,7 @@ fn portals_chamber_00_exit_elevator_finishes_it() {
     let tr = sim.transition.clone().expect("the ride didn't record which map it changes to");
     assert_eq!(tr.map, "testchmb_a_01");
     assert_eq!(tr.landmark, "a00-a01_landmark_elevator");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_01.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let level = crate::source::level("testchmb_a_01", "01", &solids, &ents);
+    let level = portal_map("testchmb_a_01");
     let (feet, yaw) = tr.spawn_in(&level).expect("chamber 01 has no landmark of that name");
     let mut arrived = Sim::new(level);
     let start = arrived.level.checkpoints[0].spawn;
@@ -970,14 +965,10 @@ fn walks_a_sixteen_unit_stair() {
 /// of its big white walls open portals on them.
 #[test]
 fn portals_maps_white_walls_take_portals() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
+    let names = portal_maps();
     let mut bad = Vec::new();
     for name in &names {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let level = portal_map(name);
         if !level.gun.blue {
             continue;
         }
@@ -1096,10 +1087,7 @@ fn a_cube_on_a_faith_plate_is_launched() {
 /// pellet in the catcher is taken and raises the lift.
 #[test]
 fn portals_chamber_06_pellet_catcher_raises_the_lift() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_03.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let level = crate::source::level("testchmb_a_03", "06", &solids, &ents);
+    let level = portal_map("testchmb_a_03");
     let (mut sim, mut c) = start(level);
     let ev = run(&mut sim, &mut c, 3.0, |_, _| Input::default());
     assert!(ev.iter().any(|e| matches!(e, SimEvent::PelletLaunched { .. })), "the launcher didn't fire");
@@ -1223,10 +1211,7 @@ fn a_punch_knocks_a_turret_over() {
 /// in, and her first line 20.4 s into it.
 #[test]
 fn portals_chamber_00_glados_speaks_on_cue() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |f: &str| std::fs::read_to_string(dir.join(f));
-    let (Ok(solids), Ok(ents), Ok(scenes)) = (text("testchmb_a_00.solids"), text("testchmb_a_00.ents"), text("scenes.txt")) else { return };
-    let level = crate::source::level_with_scenes("testchmb_a_00", "00", &solids, &ents, &crate::source::parse_scenes(&scenes));
+    let level = portal_map("testchmb_a_00");
     let (mut sim, mut c) = start(level);
     run(&mut sim, &mut c, 26.0, |_, _| Input::default());
     let said = |sim: &Sim| sim.io.as_ref().unwrap().voice.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>();
@@ -1239,11 +1224,8 @@ fn portals_chamber_00_glados_speaks_on_cue() {
 /// 32-unit treads, a clip ramp over them), down and back up without jumping.
 #[test]
 fn portals_stairs_walk() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_01.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
     for x in [-26.0f32, -22.7, -19.4] {
-        let mut level = crate::source::level("testchmb_a_01", "02", &solids, &ents);
+        let mut level = portal_map("testchmb_a_01");
         // Top of the stair, facing down it (+Z).
         level.spawn([x, 14.64, 20.3], std::f32::consts::PI);
         let (mut sim, mut c) = start(level);
@@ -1275,15 +1257,14 @@ fn portals_stairs_walk() {
 /// head-on and at shallow angles, and never ends up more than grazing one.
 #[test]
 fn portals_maps_walls_stop_her() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
+    let names = portal_maps();
     let mut bad = Vec::new();
     let (mut tried_all, mut runs) = (0, 0);
     for name in &names {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        // (Walls only: without the maps' physics props, which take a while to step, thousands
+        // of times over.)
+        let mut level = portal_map(name);
+        level.bodies.clear();
         let (sim0, _) = start(level.clone());
         let statics: Vec<faith_move::Aabb> = sim0.statics.iter().map(|s| s.b).collect();
         let free = |b: &faith_move::Aabb| !statics.iter().any(|s| s.overlaps(b));
@@ -1362,15 +1343,11 @@ fn portals_maps_walls_stop_her() {
 /// sends `Open` to (Portal's exits mostly open that way: #31).
 #[test]
 fn portals_buttons_open_their_doors() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
+    let names = portal_maps();
     let mut bad = Vec::new();
     let mut checked = 0;
     for name in &names {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let level = portal_map(name);
         let (sim0, _) = start(level.clone());
         let io = sim0.io.as_ref().unwrap();
         for (k, e) in io.ents.iter().enumerate() {
@@ -1415,10 +1392,7 @@ fn portals_buttons_open_their_doors() {
 /// open as it fires and shut again, and a door built to turn 90 degrees gets there.
 #[test]
 fn portals_rotating_doors_swing() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_14.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let level = crate::source::level("testchmb_a_14", "18", &solids, &ents);
+    let level = portal_map("testchmb_a_14");
     let (mut sim, mut c) = start(level);
     let io = sim.io.as_ref().unwrap();
     let door = io.ents.iter().find_map(|e| match e.kind {
@@ -1456,19 +1430,16 @@ fn portals_rotating_doors_swing() {
 /// start or made in the first seconds (droppers, makers) aren't inside anything solid.
 #[test]
 fn portals_cubes_rest_on_floors() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
+    let names = portal_maps();
     let mut bad = Vec::new();
     let mut seen = 0;
     for name in &names {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let level = portal_map(name);
         let (mut sim, mut c) = start(level);
         c.feet = Vec3::new(1000.0, 1000.0, 1000.0);
         run(&mut sim, &mut c, 4.0, |_, _| Input::default());
-        for p in sim.props.iter().filter(|p| p.alive) {
+        // (Cubes: not the maps' physics props, some of which stand behind an invisible wall.)
+        for p in sim.props.iter().filter(|p| p.alive && p.kind != CubeKind::Physics) {
             seen += 1;
             let b = p.aabb();
             let inner = faith_move::Aabb::new(b.min + Vec3::splat(0.05), b.max - Vec3::splat(0.05));
@@ -1486,14 +1457,10 @@ fn portals_cubes_rest_on_floors() {
 /// pellet in its trigger is taken and shows it.
 #[test]
 fn portals_catchers_take_pellets() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
+    let names = portal_maps();
     let (mut bad, mut seen) = (Vec::new(), 0);
     for name in &names {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        let level = crate::source::level(name, "map", &text("solids"), &text("ents"));
+        let level = portal_map(name);
         let (sim0, _) = start(level.clone());
         let io = sim0.io.as_ref().unwrap();
         let catchers: Vec<(usize, String, faith_move::Aabb)> = io.ents.iter().enumerate().filter_map(|(k, e)| match &e.kind {
@@ -1533,10 +1500,7 @@ fn portals_catchers_take_pellets() {
 /// on the flat brush under them.
 #[test]
 fn portals_displacements_hold_her_up() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |ext: &str| std::fs::read_to_string(dir.join(format!("testchmb_a_15.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return };
-    let level = crate::source::level("testchmb_a_15", "19", &solids, &ents);
+    let level = portal_map("testchmb_a_15");
     // The highest of the dirt's cells.
     let top = level.solids.iter().filter(|s| s.b.min.x > -15.5 && s.b.max.x < -7.2 && s.b.min.z > 34.0 && s.b.max.z < 54.2 && s.b.min.y > -8.2 && s.b.size().x < 0.3).max_by(|a, b| a.b.max.y.total_cmp(&b.b.max.y)).expect("the dirt's cells").b;
     assert!(top.max.y > -7.5, "no mounds: {top:?}");
@@ -1589,10 +1553,7 @@ fn movers_push_but_dont_crush() {
 /// she takes it, which gives her the gun; Chamber 11's adds orange to the blue she has.
 #[test]
 fn portals_pedestal_guns() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |m: &str, ext: &str| std::fs::read_to_string(dir.join(format!("{m}.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("testchmb_a_01", "solids"), text("testchmb_a_01", "ents")) else { return };
-    let level = crate::source::level("testchmb_a_01", "02", &solids, &ents);
+    let level = portal_map("testchmb_a_01");
     let (mut sim, mut c) = start(level);
     assert_eq!(sim.gun, crate::level::Gun::NONE, "she has a gun before she's found it");
     assert_eq!(sim.gun_pickups.len(), 1);
@@ -1610,8 +1571,7 @@ fn portals_pedestal_guns() {
     run(&mut sim, &mut c, 0.3, |_, _| Input::default());
     assert!(sim.gun_pickups[0].taken && sim.gun.blue && !sim.gun.orange, "picking it up: {:?} (gun at {at}, she's at {})", sim.gun, c.feet);
 
-    let (Ok(solids), Ok(ents)) = (text("testchmb_a_07", "solids"), text("testchmb_a_07", "ents")) else { return };
-    let level = crate::source::level("testchmb_a_07", "11", &solids, &ents);
+    let level = portal_map("testchmb_a_07");
     let (mut sim, mut c) = start(level);
     assert!(sim.gun.blue && !sim.gun.orange, "Chamber 11 starts with blue: {:?}", sim.gun);
     let (at, _) = sim.gun_pose(0);
@@ -1694,10 +1654,7 @@ fn a_rocket_through_portals_hits_its_target() {
 /// and escape_02's rides its lift and is shut off by a rocket into GLaDOS.
 #[test]
 fn portals_rocket_turrets() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let text = |map: &str, ext: &str| std::fs::read_to_string(dir.join(format!("{map}.{ext}")));
-    let (Ok(solids), Ok(ents)) = (text("escape_01", "solids"), text("escape_01", "ents")) else { return };
-    let level = crate::source::level("escape_01", "map", &solids, &ents);
+    let level = portal_map("escape_01");
     let (mut sim, mut c) = start(level);
     assert_eq!(sim.rocket_turrets.len(), 1);
     let io = sim.io.as_ref().unwrap();
@@ -1726,8 +1683,7 @@ fn portals_rocket_turrets() {
     assert!(glass.iter().any(|&m| !sim.movers[m].present), "no glass broke");
     assert!(ev.contains(&SimEvent::PlayerDied), "didn't get her");
 
-    let (Ok(solids), Ok(ents)) = (text("escape_02", "solids"), text("escape_02", "ents")) else { return };
-    let level = crate::source::level("escape_02", "map", &solids, &ents);
+    let level = portal_map("escape_02");
     let (mut sim, mut c) = start(level);
     assert_eq!(sim.rocket_turrets.len(), 1);
     assert!(sim.rocket_turrets[0].mover.is_some(), "not on its lift");
@@ -1748,7 +1704,6 @@ fn portals_rocket_turrets() {
 /// car, or the way out she walks into (the escape's), ends the map with the next one named.
 #[test]
 fn portals_maps_lead_on() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
     let order = [
         "testchmb_a_00", "testchmb_a_01", "testchmb_a_02", "testchmb_a_03", "testchmb_a_04", "testchmb_a_05", "testchmb_a_06", "testchmb_a_07", "testchmb_a_08",
         "testchmb_a_09", "testchmb_a_10", "testchmb_a_11", "testchmb_a_13", "testchmb_a_14", "testchmb_a_15", "escape_00", "escape_01", "escape_02",
@@ -1757,10 +1712,8 @@ fn portals_maps_lead_on() {
     let mut seen = 0;
     for w in order.windows(2) {
         let (name, next) = (w[0], w[1]);
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}")));
-        let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { continue };
         seen += 1;
-        let level = crate::source::level(name, "map", &solids, &ents);
+        let level = portal_map(name);
         let (sim, _) = start(level.clone());
         let io = sim.io.as_ref().unwrap();
         let Some((k, touch)) = io.ents.iter().enumerate().find_map(|(k, e)| match &e.kind {
@@ -1886,14 +1839,8 @@ fn on_the_way(io: &crate::io::Io, e: usize, depth: usize, out: &mut Vec<usize>) 
 /// waiting one and puts another in the tube; so does losing it out of the world.
 #[test]
 fn portals_droppers_hold_the_next_cube() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-    let Ok(read) = std::fs::read_dir(&dir) else { return };
-    let mut names: Vec<String> = read.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".solids").map(str::to_string)).collect();
-    names.sort();
-    let load = |name: &str| {
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-        crate::source::level(name, "map", &text("solids"), &text("ents"))
-    };
+    let names = portal_maps();
+    let load = |name: &str| portal_map(name);
     // Each hatch's cube waiting on it, and the cubes out of the tube.
     let waiting = |sim: &Sim, m: usize| {
         let b = sim.movers[m].def.boxes[0].b;

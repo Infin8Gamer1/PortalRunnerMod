@@ -34,31 +34,13 @@ const OVERLAYS: usize = 45;
 const DISPINFO: usize = 26;
 const DISP_VERTS: usize = 33;
 
-pub const CONTENTS_SOLID: i32 = 0x1;
-pub const CONTENTS_WINDOW: i32 = 0x2;
-pub const CONTENTS_GRATE: i32 = 0x8;
-pub const CONTENTS_SLIME: i32 = 0x10;
-pub const CONTENTS_WATER: i32 = 0x20;
-pub const CONTENTS_PLAYERCLIP: i32 = 0x10000;
 
 /// Texinfo flags of faces that aren't drawn: sky, nodraw, hint, skip, trigger.
 pub const SURF_HIDDEN: i32 = 0x4 | 0x80 | 0x100 | 0x200 | 0x40;
 
-/// Angled brushes are cut into slices at most this thick (metres), across the way their
-/// angled sides face...
-const SLICE: f32 = 0.25;
-/// ...and thin enough that a slope climbs no more than this in one (a slice is as tall as the
-/// slope's highest point in it: on a stair's clip ramp, too coarse a slice makes a step too
-/// tall to walk)...
-const SLICE_RISE: f32 = 0.03;
-/// ...but no more than this many.
-const MAX_SLICES: usize = 160;
-
 pub struct Plane {
     pub normal: Vec3,
     pub dist: f32,
-    /// 0-2: along X, Y or Z (axial).
-    pub axial: bool,
 }
 
 pub struct TexInfo {
@@ -92,8 +74,6 @@ pub struct Disp {
 }
 
 pub struct Model {
-    pub mins: Vec3,
-    pub maxs: Vec3,
     pub headnode: i32,
     pub first_face: usize,
     pub num_faces: usize,
@@ -206,7 +186,7 @@ impl Bsp {
         let planes = (0..n)
             .map(|i| {
                 let a = i * 20;
-                Plane { normal: Vec3::new(f32_at(b, a), f32_at(b, a + 4), f32_at(b, a + 8)), dist: f32_at(b, a + 12), axial: i32_at(b, a + 16) < 3 }
+                Plane { normal: Vec3::new(f32_at(b, a), f32_at(b, a + 4), f32_at(b, a + 8)), dist: f32_at(b, a + 12) }
             })
             .collect();
         let (b, n) = recs(TEXINFO, 72)?;
@@ -251,8 +231,7 @@ impl Bsp {
         let models = (0..n)
             .map(|i| {
                 let a = i * 48;
-                let v = |k: usize| Vec3::new(f32_at(b, a + k), f32_at(b, a + k + 4), f32_at(b, a + k + 8));
-                Model { mins: v(0), maxs: v(12), headnode: i32_at(b, a + 36), first_face: i32_at(b, a + 40) as usize, num_faces: i32_at(b, a + 44) as usize }
+                Model { headnode: i32_at(b, a + 36), first_face: i32_at(b, a + 40) as usize, num_faces: i32_at(b, a + 44) as usize }
             })
             .collect();
         let (b, n) = recs(NODES, 32)?;
@@ -331,28 +310,6 @@ impl Bsp {
         Some((td, ti))
     }
 
-    /// A displacement face's grid: (points, side), rows from the corner nearest its start,
-    /// as Source builds it. Each point is (its place, the flat place under it).
-    pub fn disp_grid(&self, f: &Face) -> Option<(Vec<(Vec3, Vec3)>, usize)> {
-        let d = self.disps.get(f.disp?)?;
-        let pts = self.face_points(f);
-        if pts.len() != 4 {
-            return None;
-        }
-        let s = (0..4).min_by(|&a, &b| pts[a].distance(d.start).total_cmp(&pts[b].distance(d.start)))?;
-        let c: [Vec3; 4] = std::array::from_fn(|k| pts[(s + k) % 4]);
-        let side = (1usize << d.power) + 1;
-        let last = (side - 1) as f32;
-        let mut out = Vec::with_capacity(side * side);
-        for i in 0..side {
-            let (a, b) = (c[0] + (c[1] - c[0]) * (i as f32 / last), c[3] + (c[2] - c[3]) * (i as f32 / last));
-            for j in 0..side {
-                let flat = a + (b - a) * (j as f32 / last);
-                out.push((flat + d.offsets.get(i * side + j).copied().unwrap_or(Vec3::ZERO), flat));
-            }
-        }
-        Some((out, side))
-    }
 
     /// A face's corners, in order.
     pub fn face_points(&self, f: &Face) -> Vec<Vec3> {
@@ -382,48 +339,8 @@ impl Bsp {
         v
     }
 
-    /// A brush's corners (Source space), from its planes taken three at a time; with, for
-    /// each, the planes it's on.
-    pub fn brush_corners(&self, b: &Brush) -> Vec<(Vec3, Vec<usize>)> {
-        let planes: Vec<&Plane> = (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| &self.planes[s.plane]).collect();
-        let mut out: Vec<(Vec3, Vec<usize>)> = Vec::new();
-        let n = planes.len();
-        for i in 0..n {
-            for j in i + 1..n {
-                for k in j + 1..n {
-                    let (a, b2, c) = (planes[i], planes[j], planes[k]);
-                    let det = a.normal.dot(b2.normal.cross(c.normal));
-                    if det.abs() < 1e-6 {
-                        continue;
-                    }
-                    let p = (b2.normal.cross(c.normal) * a.dist + c.normal.cross(a.normal) * b2.dist + a.normal.cross(b2.normal) * c.dist) / det;
-                    if planes.iter().all(|q| q.normal.dot(p) - q.dist <= 0.01) {
-                        let on: Vec<usize> = (0..n).filter(|&q| (planes[q].normal.dot(p) - planes[q].dist).abs() < 0.01).collect();
-                        if let Some(o) = out.iter_mut().find(|(q, _)| q.distance(p) < 0.01) {
-                            for x in on {
-                                if !o.1.contains(&x) {
-                                    o.1.push(x);
-                                }
-                            }
-                        } else {
-                            out.push((p, on));
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
 
-    /// Whether every (non-bevel) side of a brush is axis-aligned.
-    pub fn brush_axial(&self, b: &Brush) -> bool {
-        (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).all(|s| self.planes[s.plane].axial)
-    }
 
-    /// The textures on a brush's sides (texinfo indices).
-    pub fn brush_textures(&self, b: &Brush) -> Vec<i32> {
-        (0..b.num_sides).map(|k| &self.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| s.texinfo).collect()
-    }
 }
 
 /// The static props in the game lump (`sprp`, versions 4-6). Its entries' offsets are into
@@ -469,69 +386,6 @@ fn static_props(lump: &[u8], file: &[u8]) -> Option<Vec<StaticProp>> {
     Some(Vec::new())
 }
 
-/// A brush's collision in boxes (Source space): its box when it's axis-aligned, slices of it
-/// when it isn't.
-pub fn brush_boxes(bsp: &Bsp, b: &Brush) -> Vec<(Vec3, Vec3)> {
-    let corners = bsp.brush_corners(b);
-    if corners.len() < 4 {
-        return Vec::new();
-    }
-    let lo = corners.iter().fold(Vec3::splat(f32::MAX), |m, (p, _)| m.min(*p));
-    let hi = corners.iter().fold(Vec3::splat(f32::MIN), |m, (p, _)| m.max(*p));
-    if bsp.brush_axial(b) {
-        return vec![(lo, hi)];
-    }
-    // Edges: corners sharing two planes.
-    let mut edges = Vec::new();
-    for i in 0..corners.len() {
-        for j in i + 1..corners.len() {
-            if corners[i].1.iter().filter(|p| corners[j].1.contains(p)).count() >= 2 {
-                edges.push((corners[i].0, corners[j].0));
-            }
-        }
-    }
-    // Across the way its angled sides face, on the ground (a ramp becomes a stair, a
-    // diagonal wall a row of posts), finely enough that a slope's steps stay small.
-    let angled: Vec<Vec3> = (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel).map(|s| &bsp.planes[s.plane]).filter(|p| !p.axial).map(|p| p.normal).collect();
-    let across = angled.iter().fold(Vec3::ZERO, |m, n| m + n.abs());
-    // (A tie, a round brush's, goes to X, whatever the rounding in its planes: the game's own
-    // copy of the map slices it the same way.)
-    let axis = if across.x >= across.y - 1e-3 { 0 } else { 1 };
-    let size = hi - lo;
-    let len = size[axis];
-    // (Only for something you'd walk on, or under: a wall that leans has no steps to keep small.)
-    let sloped = angled.iter().any(|n| n.z.abs() > 0.5 && n[axis].abs() > 0.05);
-    let by_rise = if sloped { (size.z * 0.0254 / SLICE_RISE).ceil() as usize } else { 1 };
-    let n = ((len * 0.0254 / SLICE).ceil() as usize).max(by_rise).clamp(1, MAX_SLICES);
-    let mut out = Vec::new();
-    for k in 0..n {
-        let (s0, s1) = (lo[axis] + len * k as f32 / n as f32, lo[axis] + len * (k + 1) as f32 / n as f32);
-        let (mut a, mut z) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        let mut take = |p: Vec3| {
-            a = a.min(p);
-            z = z.max(p);
-        };
-        for (p, _) in &corners {
-            if p[axis] >= s0 - 1e-3 && p[axis] <= s1 + 1e-3 {
-                take(*p);
-            }
-        }
-        for &(p, q) in &edges {
-            for s in [s0, s1] {
-                let (u, v) = (p[axis] - s, q[axis] - s);
-                if (u < 0.0) != (v < 0.0) && (u - v).abs() > 1e-6 {
-                    take(p + (q - p) * (u / (u - v)));
-                }
-            }
-        }
-        if a.x <= z.x {
-            a[axis] = s0;
-            z[axis] = s1;
-            out.push((a, z));
-        }
-    }
-    out
-}
 
 /// A Source entity: its keys in order (a key can repeat: outputs).
 pub type Entity = Vec<(String, String)>;

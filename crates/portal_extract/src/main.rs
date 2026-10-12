@@ -1178,7 +1178,7 @@ fn port_maps(out: &Path) {
                 continue;
             }
         }
-        let doc = aperture::port::convert(name, &aperture::port::native_title(title), &aperture::port::MapFiles { brushes: &brushes, ents: &ents, props: &read("props").unwrap_or_default(), overlays: &read("overlays").unwrap_or_default() });
+        let doc = aperture::port::convert(name, title, &aperture::port::MapFiles { brushes: &brushes, ents: &ents, props: &read("props").unwrap_or_default(), overlays: &read("overlays").unwrap_or_default() });
         let text = doc.to_ron();
         if std::fs::write(&file, &text).is_ok() {
             written.insert(name.to_string(), fingerprint(text.as_bytes()));

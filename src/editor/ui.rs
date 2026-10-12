@@ -287,7 +287,7 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
                 ui.weak("None in levels/portal (cargo run --release -p portal_extract -- --port-maps makes them)");
             }
             for (p, map) in files {
-                let title = aperture::port::MAPS.iter().find(|(m, _)| *m == map).map(|(_, t)| aperture::port::native_title(t)).unwrap_or(map);
+                let title = aperture::port::MAPS.iter().find(|(m, _)| *m == map).map(|(_, t)| t.to_string()).unwrap_or(map);
                 if ui.button(title).clicked() {
                     match super::read_doc(&p) {
                         Ok(d) => {

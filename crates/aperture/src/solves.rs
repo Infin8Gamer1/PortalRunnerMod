@@ -5,8 +5,8 @@
 //! Portal's solution uses, carries cubes to buttons and rides the lifts. A chamber that can't
 //! be finished this way fails here, saying where she got stuck.
 //!
-//! The maps are read from `assets/extracted/maps` (`cargo run --release -p portal_extract`);
-//! without them these pass trivially.
+//! The chambers are the game's own copies of Portal's maps (`levels/portal/`), so these run
+//! without anything extracted (GLaDOS's scenes, when they are, set her waits).
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -63,28 +63,11 @@ impl PartialOrd for Open {
     }
 }
 
-thread_local! {
-    /// Play the game's own copy of each map (a level file: [`crate::port`]), saved and read
-    /// back, instead of the map (the `copy_` tests).
-    static COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 impl Play {
-    /// Portal's map `name` (with GLaDOS's scenes, so the waits are hers), or `None` when it
-    /// hasn't been extracted.
+    /// Portal's map `name`: the game's own copy of it (`levels/portal/`), with GLaDOS's
+    /// scenes (so the waits are hers) where they've been extracted.
     pub fn load(name: &str) -> Option<Play> {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
-        let text = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}")));
-        let (Ok(solids), Ok(ents)) = (text("solids"), text("ents")) else { return None };
-        let scenes = std::fs::read_to_string(dir.join("scenes.txt")).map(|t| crate::source::parse_scenes(&t)).unwrap_or_default();
-        let level = if COPY.with(|c| c.get()) {
-            let (brushes, props, overlays) = (text("brushes").ok()?, text("props").unwrap_or_default(), text("overlays").unwrap_or_default());
-            let doc = crate::port::convert(name, "map", &crate::port::MapFiles { brushes: &brushes, ents: &ents, props: &props, overlays: &overlays });
-            let doc = crate::doc::LevelDoc::from_ron(&doc.to_ron()).expect("the copy reads back");
-            doc.build_with(&scenes)
-        } else {
-            crate::source::level_with_scenes(name, "map", &solids, &ents, &scenes)
-        };
+        let level = crate::port::native_level(name)?;
         let cp = level.checkpoints[0].clone();
         let sim = Sim::new(level);
         let mut c = Controller::new(crate::tuning(5.3, 15.0), cp.spawn, cp.yaw);
@@ -2065,42 +2048,6 @@ fn chamber_15_grills_reach_their_emitters() {
         assert!(f.is_some(), "an emitter at {at} is off every grill");
     }
 }
-
-/// Each of these played on the game's own copy of its map, as on the map.
-macro_rules! on_the_copy {
-    ($($test:ident => $copy:ident),* $(,)?) => {
-        $(
-            #[test]
-            fn $copy() {
-                COPY.with(|c| c.set(true));
-                $test();
-            }
-        )*
-    };
-}
-
-on_the_copy!(
-    solve_testchmb_a_00 => copy_solve_testchmb_a_00,
-    solve_testchmb_a_01 => copy_solve_testchmb_a_01,
-    solve_testchmb_a_02 => copy_solve_testchmb_a_02,
-    solve_testchmb_a_03 => copy_solve_testchmb_a_03,
-    solve_testchmb_a_04 => copy_solve_testchmb_a_04,
-    solve_testchmb_a_05 => copy_solve_testchmb_a_05,
-    solve_testchmb_a_06 => copy_solve_testchmb_a_06,
-    solve_testchmb_a_07 => copy_solve_testchmb_a_07,
-    solve_testchmb_a_08 => copy_solve_testchmb_a_08,
-    solve_testchmb_a_09 => copy_solve_testchmb_a_09,
-    tilted_faces_take_portals => copy_tilted_faces_take_portals,
-    solve_testchmb_a_10 => copy_solve_testchmb_a_10,
-    solve_testchmb_a_11 => copy_solve_testchmb_a_11,
-    solve_testchmb_a_13 => copy_solve_testchmb_a_13,
-    chamber_00_clock_runs => copy_chamber_00_clock_runs,
-    chamber_15_pellet_comes_out_of_its_launcher => copy_chamber_15_pellet_comes_out_of_its_launcher,
-    chamber_15_rail_carts_run => copy_chamber_15_rail_carts_run,
-    chamber_16_cubes_hold_the_hideout_panel => copy_chamber_16_cubes_hold_the_hideout_panel,
-    chamber_16_props_sit_on_their_cube => copy_chamber_16_props_sit_on_their_cube,
-    chamber_15_grills_reach_their_emitters => copy_chamber_15_grills_reach_their_emitters,
-);
 
 /// Chamber 15's section 3 fling (#57): over the glass (x 23) from the room by the lift, as
 /// Portal has it. Blue high on the east wall, orange on the floor: into orange, out of blue,

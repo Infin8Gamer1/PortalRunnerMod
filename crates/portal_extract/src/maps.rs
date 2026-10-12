@@ -128,33 +128,7 @@ fn material(name: &str, read: &dyn Fn(&str) -> Option<Vec<u8>>, remix: Option<&c
     m
 }
 
-/// A face's triangles (corner indices), a fan wound to face `n`. Which way the corners go
-/// round is the whole polygon's (Newell's normal): a face's first three corners can lie on a
-/// line (Source adds corners along an edge where faces meet), and judged by those alone such
-/// faces came out wound either way, half of them backwards and culled from the room's side (a
-/// hole in the wall you could walk into). The slivers between corners on one line are left out.
-fn fan(q: &[Vec3], n: Vec3) -> Vec<u32> {
-    let winding = q.iter().zip(q.iter().cycle().skip(1)).fold(Vec3::ZERO, |w, (a, b)| w + a.cross(*b));
-    let flip = winding.dot(n) < 0.0;
-    let mut out = Vec::new();
-    for k in 1..q.len().saturating_sub(1) {
-        let (a, b, c) = (q[0], q[k], q[k + 1]);
-        if (b - a).cross(c - a).length_squared() < 1e-10 {
-            continue;
-        }
-        let k = k as u32;
-        out.extend(if flip { [0, k + 1, k] } else { [0, k, k + 1] });
-    }
-    out
-}
 
-#[derive(Default)]
-struct Group {
-    pos: Vec<[f32; 3]>,
-    nrm: Vec<[f32; 3]>,
-    uv: Vec<[f32; 2]>,
-    idx: Vec<u32>,
-}
 
 /// Models the game draws its own way in Portal's maps (cubes, buttons, grills).
 const OWN_MODELS: &[&str] = &["models/props/metal_box.mdl", "models/props/button_top_reference.mdl", "models/props/button_base_reference.mdl"];
@@ -489,12 +463,6 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     let origins = bsp::model_origins(&ents);
     // Templates made as the map starts, moved to where they're made (their brushes too).
     let placed = crate::templates::place(&mut ents);
-    let place = |mi: usize, p: Vec3| placed.get(&mi).map_or(p, |t| t.point(p));
-    let turn = |mi: usize, d: Vec3| placed.get(&mi).map_or(d, |t| t.turn * d);
-    let place_box = |mi: usize, lo: Vec3, hi: Vec3| -> (Vec3, Vec3) {
-        let corners = [0, 1, 2, 3, 4, 5, 6, 7].map(|k| ours(place(mi, Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z }))));
-        (corners.iter().fold(Vec3::splat(f32::MAX), |a, c| a.min(*c)), corners.iter().fold(Vec3::splat(f32::MIN), |a, c| a.max(*c)))
-    };
     let tex_dir = out.join("textures").join("map");
     let map_dir = out.join("maps");
     std::fs::create_dir_all(&map_dir).map_err(|e| e.to_string())?;
@@ -519,167 +487,11 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
         })
     };
 
-    // Faces: a group per (brush model, material).
-    let mut groups: Vec<((usize, usize), Group)> = Vec::new();
-    let mut group_at: HashMap<(usize, usize), usize> = HashMap::new();
-    for (mi, model) in bsp.models.iter().enumerate() {
-        let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };
+    // The materials its faces show (their textures written out as they're met).
+    for model in &bsp.models {
         for f in &bsp.faces[model.first_face..model.first_face + model.num_faces] {
-            let Some((td, ti)) = bsp.texture(f.texinfo) else { continue };
-            if ti.flags & bsp::SURF_HIDDEN != 0 {
-                continue;
-            }
-            let Some(mat) = material_of(f.texinfo, &mut materials) else { continue };
-            let (w, h) = (td.width.max(1) as f32, td.height.max(1) as f32);
-            let pts = bsp.face_points(f);
-            if pts.len() < 3 {
-                continue;
-            }
-            // Source winds a face clockwise seen from its front (the plane's `side` isn't to be
-            // trusted): its normal is the winding's, turned round.
-            let newell = pts.iter().zip(pts.iter().cycle().skip(1)).fold(Vec3::ZERO, |n, (a, b)| n + Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y)));
-            let n = ours(turn(mi, -newell)).normalize_or_zero();
-            let gi = *group_at.entry((mi, mat)).or_insert_with(|| {
-                groups.push(((mi, mat), Group::default()));
-                groups.len() - 1
-            });
-            let g = &mut groups[gi].1;
-            let base = g.pos.len() as u32;
-            // A displacement: its grid, textured as its flat face is, each triangle wound to
-            // face the way the face does, normals from the grid.
-            if let Some((grid, side)) = bsp.disp_grid(f) {
-                let q: Vec<Vec3> = grid.iter().map(|(p, _)| ours(place(mi, *p + origin))).collect();
-                let mut nrm = vec![Vec3::ZERO; q.len()];
-                let mut tris = Vec::new();
-                for i in 0..side - 1 {
-                    for j in 0..side - 1 {
-                        let (a, b, c, d) = (i * side + j, (i + 1) * side + j, (i + 1) * side + j + 1, i * side + j + 1);
-                        for t in [[a, b, c], [a, c, d]] {
-                            let w = (q[t[1]] - q[t[0]]).cross(q[t[2]] - q[t[0]]);
-                            let t = if w.dot(n) < 0.0 { [t[0], t[2], t[1]] } else { t };
-                            let w = w.length() * if w.dot(n) < 0.0 { -1.0 } else { 1.0 };
-                            let face_n = (q[t[1]] - q[t[0]]).cross(q[t[2]] - q[t[0]]).normalize_or_zero() * w.abs();
-                            for k in t {
-                                nrm[k] += face_n;
-                            }
-                            tris.extend(t.map(|k| base + k as u32));
-                        }
-                    }
-                }
-                for (k, (_, flat)) in grid.iter().enumerate() {
-                    let u = (ti.s[0] * flat.x + ti.s[1] * flat.y + ti.s[2] * flat.z + ti.s[3]) / w;
-                    let v = (ti.t[0] * flat.x + ti.t[1] * flat.y + ti.t[2] * flat.z + ti.t[3]) / h;
-                    g.pos.push(q[k].to_array());
-                    g.nrm.push(nrm[k].normalize_or(n).to_array());
-                    g.uv.push([u, v]);
-                }
-                g.idx.extend(tris);
-                continue;
-            }
-            for p in &pts {
-                let u = (ti.s[0] * p.x + ti.s[1] * p.y + ti.s[2] * p.z + ti.s[3]) / w;
-                let v = (ti.t[0] * p.x + ti.t[1] * p.y + ti.t[2] * p.z + ti.t[3]) / h;
-                g.pos.push(ours(place(mi, *p + origin)).to_array());
-                g.nrm.push(n.to_array());
-                g.uv.push([u, v]);
-            }
-            let q: Vec<Vec3> = pts.iter().map(|p| ours(turn(mi, *p))).collect();
-            g.idx.extend(fan(&q, n).into_iter().map(|k| base + k));
-        }
-    }
-
-    // Collision boxes; first, each brush model's bounds (triggers and the like are these).
-    let mut solids = String::new();
-    for (mi, model) in bsp.models.iter().enumerate() {
-        let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };
-        let (a, z) = place_box(mi, model.mins + origin, model.maxs + origin);
-        solids.push_str(&format!("bounds {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));
-    }
-    // A floor displacement stands on its brush: a box a grid cell, up to the cell's highest
-    // corner, so the walk follows its mounds (steps no taller than the slope's).
-    for f in &bsp.faces[bsp.models[0].first_face..bsp.models[0].first_face + bsp.models[0].num_faces] {
-        let Some((grid, side)) = bsp.disp_grid(f) else { continue };
-        let q: Vec<(Vec3, Vec3)> = grid.iter().map(|(p, flat)| (ours(*p), ours(*flat))).collect();
-        let up = (q[side].1 - q[0].1).cross(q[1].1 - q[0].1).normalize_or_zero();
-        if up.y.abs() < 0.7 {
-            continue;
-        }
-        let kind = if material_of(f.texinfo, &mut materials).is_some_and(|m| materials[m].portalable) { "white" } else { "black" };
-        for i in 0..side - 1 {
-            for j in 0..side - 1 {
-                let cell = [q[i * side + j], q[(i + 1) * side + j], q[(i + 1) * side + j + 1], q[i * side + j + 1]];
-                let lo = cell.iter().fold(Vec3::splat(f32::MAX), |m, (p, flat)| m.min(*p).min(*flat));
-                let hi = cell.iter().fold(Vec3::splat(f32::MIN), |m, (p, _)| m.max(*p));
-                if hi.y - lo.y < 0.01 {
-                    continue;
-                }
-                solids.push_str(&format!("{kind} 0 {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z));
-            }
-        }
-    }
-    for mi in 0..bsp.models.len() {
-        let origin = if mi == 0 { Vec3::ZERO } else { origins.get(&mi).copied().unwrap_or(Vec3::ZERO) };
-        for bi in bsp.model_brushes(mi) {
-            let b = &bsp.brushes[bi];
-            let c = b.contents;
-            let kind = if c & bsp::CONTENTS_SLIME != 0 {
-                "goo"
-            } else if c & bsp::CONTENTS_WATER != 0 {
-                "water"
-            } else if c & bsp::CONTENTS_WINDOW != 0 {
-                "glass"
-            } else if c & bsp::CONTENTS_GRATE != 0 {
-                "grate"
-            } else if c & bsp::CONTENTS_SOLID != 0 {
-                let textures = bsp.brush_textures(b);
-                let mats: Vec<usize> = textures.iter().filter_map(|&t| material_of(t, &mut materials)).collect();
-                // All nodraw: invisible, but portals stick to it as to anything not marked
-                // otherwise (Portal's Chamber 14 floors its sunken stairs with one).
-                let nodraw = !textures.is_empty() && textures.iter().all(|&t| bsp.texture(t).is_some_and(|(d, _)| d.name.eq_ignore_ascii_case("tools/toolsnodraw")));
-                if nodraw {
-                    "white"
-                } else if mats.iter().any(|&m| materials[m].name.starts_with("glass/")) {
-                    "glass"
-                } else {
-                    let yes = mats.iter().filter(|&&m| materials[m].portalable).count();
-                    if yes > 0 && yes * 2 >= mats.len() { "white" } else { "black" }
-                }
-            } else if c & bsp::CONTENTS_PLAYERCLIP != 0 {
-                "clip"
-            } else {
-                continue;
-            };
-            // A tilted side that takes portals: its outline too, for a portal to go on its true
-            // plane (its boxes only step along it). A brush entity's, any way it faces: it may
-            // swing round (a panel on a rotating door).
-            if kind == "white" || kind == "black" {
-                let corners = bsp.brush_corners(b);
-                let sides: Vec<&bsp::BrushSide> = (0..b.num_sides).map(|k| &bsp.sides[b.first_side + k]).filter(|s| !s.bevel).collect();
-                for (k, side) in sides.iter().enumerate() {
-                    let plane = &bsp.planes[side.plane];
-                    if (mi == 0 && (plane.axial || plane.normal.abs().max_element() > 0.999)) || !material_of(side.texinfo, &mut materials).is_some_and(|m| materials[m].portalable) {
-                        continue;
-                    }
-                    let mut pts: Vec<Vec3> = corners.iter().filter(|(_, on)| on.contains(&k)).map(|(p, _)| ours(place(mi, *p + origin))).collect();
-                    pts.dedup_by(|a, b| a.distance(*b) < 1e-3);
-                    if pts.len() < 3 {
-                        continue;
-                    }
-                    let n = ours(turn(mi, plane.normal)).normalize_or_zero();
-                    let c = pts.iter().copied().sum::<Vec3>() / pts.len() as f32;
-                    let e1 = (pts[0] - c).normalize_or_zero();
-                    let e2 = n.cross(e1);
-                    pts.sort_by(|a, b| (*a - c).dot(e2).atan2((*a - c).dot(e1)).total_cmp(&(*b - c).dot(e2).atan2((*b - c).dot(e1))));
-                    solids.push_str(&format!("slope {mi} {:.5} {:.5} {:.5}", n.x, n.y, n.z));
-                    for p in &pts {
-                        solids.push_str(&format!(" {:.4} {:.4} {:.4}", p.x, p.y, p.z));
-                    }
-                    solids.push('\n');
-                }
-            }
-            for (lo, hi) in bsp::brush_boxes(&bsp, b) {
-                let (a, z) = place_box(mi, lo + origin, hi + origin);
-                solids.push_str(&format!("{kind} {mi} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}\n", a.x, a.y, a.z, z.x, z.y, z.z));
+            if bsp.texture(f.texinfo).is_some_and(|(_, ti)| ti.flags & bsp::SURF_HIDDEN == 0) {
+                material_of(f.texinfo, &mut materials);
             }
         }
     }
@@ -687,62 +499,10 @@ pub fn extract(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>,
     let brushes = brushes_text(&bsp, &origins, &placed, &mut materials, &mut material_of);
     std::fs::write(map_dir.join(format!("{name}.brushes")), brushes).map_err(|e| e.to_string())?;
 
-    // The mesh file.
-    let mut m = Vec::new();
-    m.extend_from_slice(b"PRMESH1\0");
-    m.extend_from_slice(&(materials.len() as u32).to_le_bytes());
-    for mat in &materials {
-        m.extend_from_slice(&(mat.name.len() as u16).to_le_bytes());
-        m.extend_from_slice(mat.name.as_bytes());
-        m.push(mat.flags());
-    }
-    m.extend_from_slice(&(groups.len() as u32).to_le_bytes());
-    for ((model, mat), g) in &groups {
-        m.extend_from_slice(&(*model as u32).to_le_bytes());
-        m.extend_from_slice(&(*mat as u32).to_le_bytes());
-        m.extend_from_slice(&(g.pos.len() as u32).to_le_bytes());
-        for i in 0..g.pos.len() {
-            for v in g.pos[i].iter().chain(&g.nrm[i]).chain(&g.uv[i]) {
-                m.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        m.extend_from_slice(&(g.idx.len() as u32).to_le_bytes());
-        for i in &g.idx {
-            m.extend_from_slice(&i.to_le_bytes());
-        }
-    }
-    std::fs::write(map_dir.join(format!("{name}.mesh")), m).map_err(|e| e.to_string())?;
-    std::fs::write(map_dir.join(format!("{name}.solids")), solids).map_err(|e| e.to_string())?;
     let lump = if placed.is_empty() { bsp.entities.clone() } else { crate::templates::write(&ents) };
     std::fs::write(map_dir.join(format!("{name}.ents")), lump).map_err(|e| e.to_string())?;
     let used = props(&bsp, &ents, &map_dir.join(format!("{name}.props")), read)?;
     let mut mats: Vec<(String, u8)> = materials.iter().map(|m| (m.name.clone(), m.flags())).collect();
     mats.extend(overlays(&bsp, &ents, &map_dir.join(format!("{name}.overlays")), read, remix, &tex_dir)?);
     Ok(Extracted { materials: mats, used })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A wall whose first three corners are on one line (an extra corner where another face
-    /// meets its edge) is still wound to face the way it faces, every triangle of it.
-    #[test]
-    fn faces_are_wound_by_the_whole_polygon() {
-        // A 2 x 1 rectangle in the XY plane, corners going round counter-clockwise seen from
-        // +Z, starting along its bottom edge with a corner in the middle of it.
-        let q = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
-        for n in [Vec3::Z, Vec3::NEG_Z] {
-            let idx = fan(&q, n);
-            assert!(!idx.is_empty());
-            let mut area = 0.0;
-            for t in idx.chunks(3) {
-                let (a, b, c) = (q[t[0] as usize], q[t[1] as usize], q[t[2] as usize]);
-                let w = (b - a).cross(c - a);
-                assert!(w.dot(n) > 0.0, "a triangle faces away from {n}: {t:?}");
-                area += w.length() * 0.5;
-            }
-            assert!((area - 2.0).abs() < 1e-5, "covers {area} of 2");
-        }
-    }
 }
