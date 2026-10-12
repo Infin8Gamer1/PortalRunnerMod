@@ -186,6 +186,11 @@ pub enum Kind {
     Shake { at: Vec3, amplitude: f32, frequency: f32, duration: f32, radius: f32 },
     /// Fades the screen (env_fade): see [`Io::fades`].
     Fade { color: Vec3, alpha: f32, duration: f32, hold: f32, from: bool, stays: bool },
+    /// Colour correction (color_correction): a table (`file`, its name without the folder:
+    /// `cc_testchamber.raw`) weighed in fully within `near` metres, fading out by `far`
+    /// (infinite: anywhere), at most `weight`, while it's on; it fades in and out over
+    /// `fade_in` and `fade_out` seconds.
+    Correction { at: Vec3, near: f32, far: f32, weight: f32, file: String, enabled: bool, fade_in: f32, fade_out: f32 },
     /// One of the sim's switched regions (a push, a hurt, a no-portal volume, a portal bumper
     /// or detector).
     Volume { index: usize },
@@ -286,6 +291,11 @@ impl Io {
             }
         }
         Io { ents, by_name, initial, signals, rng: 0x1234_5678, ..Default::default() }
+    }
+
+    /// Sends an entity an input at once, as an output would (for tools: the scripted runs).
+    pub fn send(&mut self, sim: &mut Sim, e: usize, input: &str, param: &str) {
+        self.input(sim, e, input, param, e);
     }
 
     pub fn signal_count(&self) -> usize {
@@ -1093,6 +1103,17 @@ impl Io {
                     *enabled = on;
                 }
             }
+            Kind::Correction { .. } => {
+                if let Kind::Correction { enabled, fade_in, fade_out, .. } = &mut self.ents[e].kind {
+                    match i.as_str() {
+                        "enable" => *enabled = true,
+                        "disable" => *enabled = false,
+                        "setfadeinduration" => *fade_in = num(param).max(0.0),
+                        "setfadeoutduration" => *fade_out = num(param).max(0.0),
+                        _ => {}
+                    }
+                }
+            }
             Kind::Shake { at, amplitude, frequency, duration, radius } => {
                 let amplitude = match i.as_str() {
                     "startshake" => amplitude,
@@ -1144,8 +1165,14 @@ impl Io {
                 _ => {}
             },
             // Whoever receives it, a tonemap controller's inputs are kept for the host.
-            Kind::Other if i.starts_with("setautoexposure") || i.starts_with("setbloom") || i == "settonemaprate" || i == "usedefaultautoexposure" || i == "usedefaultbloomscale" => {
+            Kind::Other if i.starts_with("setautoexposure") || i.starts_with("setbloom") || i == "settonemaprate" => {
                 self.tonemap.insert(i.clone(), num(param));
+            }
+            Kind::Other if i == "usedefaultautoexposure" => {
+                self.tonemap.retain(|k, _| !k.starts_with("setautoexposure"));
+            }
+            Kind::Other if i == "usedefaultbloomscale" => {
+                self.tonemap.remove("setbloomscale");
             }
             Kind::Sprite => match i.as_str() {
                 "showsprite" => {

@@ -200,11 +200,12 @@ pub fn sync(
         if let Some(look) = look {
             seed += 1;
             let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, Vec::<[f32; 4]>::new());
-            mesh.insert_indices(Indices::U32(Vec::new()));
+            // (Never empty: Bevy's mesh buffers can't hold nothing. An unseen triangle.)
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; 3]);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; 3]);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32; 2]; 3]);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; 3]);
+            mesh.insert_indices(Indices::U32(vec![0, 1, 2]));
             commands.spawn((
                 ChamberGeom,
                 Fx { look, at: p.at, axes: [fwd, a, b], ent, start_on: p.kind.starts_on(), mover, seed },
@@ -416,6 +417,13 @@ pub fn update(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera
                 col.push(p.color.to_array());
             }
             idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        if idx.is_empty() {
+            pos = vec![[0.0; 3]; 3];
+            nrm = vec![n.to_array(); 3];
+            uv = vec![[0.0; 2]; 3];
+            col = vec![[0.0; 4]; 3];
+            idx = vec![0, 1, 2];
         }
         if let Some(mut m) = meshes.get_mut(&mesh.0) {
             m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);

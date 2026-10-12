@@ -89,6 +89,8 @@ enum Act {
     /// `sparks`, `beam`, or a particle effect's name), `d` metres from it, looking at it
     /// (from beside it, or a little below one that's high up).
     ViewArt(&'static str, usize, f32),
+    /// Send each of the map's entities of a class an input (and parameter).
+    Send(&'static str, &'static str, &'static str),
 }
 
 /// What the mouse does.
@@ -1179,6 +1181,12 @@ fn script(name: &str) -> Vec<Act> {
             vec![
                 Chamber(N, "testchmb_a_00"),
                 Wait(60),
+                Shot("fx_lit"),
+                // (The vault's lights dimmed, as GLaDOS has them.)
+                Send("color_correction", "Enable", ""),
+                Wait(30),
+                Shot("fx_dimmed"),
+                Send("color_correction", "Disable", ""),
                 ViewArt("camera", 0, 3.0),
                 Wait(40),
                 Shot("fx_camera"),
@@ -1186,6 +1194,7 @@ fn script(name: &str) -> Vec<Act> {
                 Wait(20),
                 Shot("fx_beam"),
                 ViewArt("sparks", 0, 2.5),
+                Send("env_spark", "StartSpark", ""),
                 Wait(90),
                 Shot("fx_sparks"),
                 ViewArt("spotlight", 0, 5.0),
@@ -1193,6 +1202,9 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("fx_spotlight"),
                 Chamber(N, "escape_01"),
                 Wait(60),
+                Send("trigger_hurt", "Disable", ""),
+                Send("env_steam", "TurnOn", ""),
+                Send("info_particle_system", "Start", ""),
                 ViewArt("steam", 0, 3.0),
                 Wait(40),
                 Shot("fx_steam"),
@@ -1894,17 +1906,19 @@ pub fn run(
             });
             if let Some((at, turn)) = found {
                 // Where there's a clear view of it: round it (the way it faces first), a
-                // little below it, nothing in between.
+                // little below it (or above), nothing in between.
                 let fwd = turn * Vec3::NEG_Z;
                 let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::Z);
                 let clear = |eye: Vec3| {
                     let to = at - eye;
                     let (_, hit) = game.sim.trace(eye, to.normalize_or(Vec3::Z), to.length(), aperture::Mask::SHOT, 0);
-                    hit.is_none_or(|h| h.t > to.length() - 0.3) && !game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, eye))
+                    // (Her body well clear of goo: she sinks a little between frames.)
+                    let body = faith_move::Aabb { min: eye - Vec3::new(0.4, 2.2, 0.4), max: eye + Vec3::splat(0.4) };
+                    hit.is_none_or(|h| h.t > to.length() - 0.3) && !game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, eye)) && !game.sim.goo.iter().any(|g| g.overlaps(&body)) && body.min.y > game.sim.level.kill_y
                 };
                 let eye = (0..8)
                     .map(|k| Quat::from_rotation_y(k as f32 * std::f32::consts::FRAC_PI_4) * flat)
-                    .flat_map(|dir| [0.3f32, 0.0, 0.6].map(move |down| at + dir * *d - Vec3::Y * (*d * down)))
+                    .flat_map(|dir| [0.3f32, 0.0, 0.6, -0.3].map(move |down| at + dir * *d - Vec3::Y * (*d * down)))
                     .find(|e| clear(*e))
                     .unwrap_or(at + flat * *d);
                 game.ctrl.feet = eye - Vec3::Y * 1.7;
@@ -1936,6 +1950,16 @@ pub fn run(
                 p.pos = *at;
                 p.vel = *v;
                 p.age = 0.0;
+            }
+        }
+        Act::Send(class, input, param) => {
+            if let Some(mut io) = game.sim.io.take() {
+                for e in 0..io.ents.len() {
+                    if io.ents[e].class.eq_ignore_ascii_case(class) {
+                        io.send(&mut game.sim, e, input, param);
+                    }
+                }
+                game.sim.io = Some(io);
             }
         }
         Act::TurretsOff => {

@@ -761,6 +761,7 @@ fn main() {
     if !args.iter().any(|a| a == "--no-sounds") {
         sound_library(&games, &out, args.iter().any(|a| a == "--sounds"));
     }
+    correction_tables(&games, &out);
     // The game's own copies of the maps, to play and edit (`levels/portal/` in the repository:
     // made again only when asked, `--port-maps`).
     if maps_dir.is_some() && !args.iter().any(|a| a == "--no-maps") && args.iter().any(|a| a == "--port-maps") {
@@ -1114,6 +1115,34 @@ fn sound_library(games: &[Game], out: &Path, again: bool) {
     own.retain(|p| p.ends_with(".wav") || p.ends_with(".mp3"));
     let (written, kept) = sounds::library(&read, &own, &wanted, out, again);
     println!("  sound library: {} files ({written} written, {kept} kept), {} soundscripts", written + kept, scripts.len());
+}
+
+/// The colour correction tables the maps use (32x32x32 RGB bytes each), and the ones Portal
+/// shows when Chell dies and at its end, as `correction/<name>.raw`.
+fn correction_tables(games: &[Game], out: &Path) {
+    let Some(portal) = games.iter().find(|g| g.name == "portal") else { return };
+    let mut files: std::collections::BTreeSet<String> = ["materials/correction/cc_death.raw", "materials/correction/cc_ending_blackout.raw"].iter().map(|s| s.to_string()).collect();
+    for (map, _) in aperture::port::MAPS {
+        let Ok(text) = std::fs::read_to_string(out.join("maps").join(format!("{map}.ents"))) else { continue };
+        for e in bsp::parse_entities(&text) {
+            if bsp::key(&e, "classname") == Some("color_correction") {
+                if let Some(f) = bsp::key(&e, "filename") {
+                    files.insert(f.replace('\\', "/").to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    let dir = out.join("correction");
+    let _ = std::fs::create_dir_all(&dir);
+    let mut n = 0;
+    for f in &files {
+        let Some(bytes) = portal.read(f).filter(|b| b.len() == 32 * 32 * 32 * 3) else { continue };
+        let name = f.rsplit('/').next().unwrap_or(f);
+        if std::fs::write(dir.join(name), bytes).is_ok() {
+            n += 1;
+        }
+    }
+    println!("  {n} colour correction tables");
 }
 
 /// A file's fingerprint (FNV-1a): whether it's as it was written.

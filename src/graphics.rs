@@ -121,8 +121,7 @@ fn auto_exposure_reference() -> f32 {
 /// The compensation for a metered brightness `l` (log2), as the curve Bevy's auto exposure
 /// takes: it aims for `curve(l) - l` stops, which is the way back to `reference`, held within
 /// `AUTO_EXPOSURE_RANGE`.
-fn exposure_curve(reference: f32) -> AutoExposureCompensationCurve {
-    let (down, up) = AUTO_EXPOSURE_RANGE;
+fn exposure_curve(reference: f32, (down, up): (f32, f32)) -> AutoExposureCompensationCurve {
     let points = [Vec2::new(-8.0, -8.0 + up), Vec2::new(reference - up, reference), Vec2::new(reference - down, reference), Vec2::new(8.0, 8.0 + down)];
     AutoExposureCompensationCurve::from_curve(LinearSpline::new(points)).expect("a valid exposure curve")
 }
@@ -135,7 +134,7 @@ pub struct GraphicsPlugin;
 
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(AutoExposurePlugin).add_systems(Update, (apply, reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
+        app.add_plugins(AutoExposurePlugin).add_systems(Update, (apply, map_tone.after(apply), reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
         #[cfg(feature = "dlss")]
         app.add_systems(
             PreUpdate,
@@ -240,7 +239,7 @@ fn apply(
             }
             ec.remove::<(Bloom, ScreenSpaceAmbientOcclusion, bevy::core_pipeline::prepass::NormalPrepass, AutoExposure)>();
             if auto {
-                let curve = curve.get_or_insert_with(|| curves.add(exposure_curve(auto_exposure_reference()))).clone();
+                let curve = curve.get_or_insert_with(|| curves.add(exposure_curve(auto_exposure_reference(), AUTO_EXPOSURE_RANGE))).clone();
                 ec.insert(AutoExposure { speed_brighten: AUTO_EXPOSURE_SPEED, speed_darken: AUTO_EXPOSURE_SPEED, compensation_curve: curve, ..default() });
             }
             // HDR, tonemapped once here (the portal views arrive linear), with bloom.
@@ -326,6 +325,45 @@ fn apply(
 
 /// Through a portal the view jumps: TAA's (and DLSS's) history would smear the old view
 /// over the new.
+/// Portal's maps' tonemap controllers (env_tonemap_controller), as their logic sets them: how
+/// far the auto exposure may turn the picture down and up (Source's scales: 0.75x is down 0.42
+/// stops), how fast it adjusts (1: ours), and the bloom (Portal's chambers set 0.3: ours as it
+/// is). What isn't set stays as ours.
+#[allow(clippy::type_complexity)]
+fn map_tone(
+    game: Res<Game>,
+    settings: Res<Settings>,
+    mut cams: Query<(Option<&mut AutoExposure>, Option<&mut Bloom>), With<PlayerCamera>>,
+    mut curves: ResMut<Assets<AutoExposureCompensationCurve>>,
+    mut made: Local<std::collections::HashMap<(i32, i32), Handle<AutoExposureCompensationCurve>>>,
+) {
+    let get = |k: &str| game.sim.io.as_ref().and_then(|io| io.tonemap.get(k)).copied();
+    // (In sixteenths of a stop, as the curve wants; and as far as it can go either way.)
+    let sixteenths = |v: f32| (v * 16.0).round() as i32;
+    let stops = |scale: f32| sixteenths(scale.max(1e-3).log2().clamp(-9.5, 6.0));
+    let down = get("setautoexposuremin").map_or(sixteenths(AUTO_EXPOSURE_RANGE.0), stops);
+    let up = get("setautoexposuremax").map_or(sixteenths(AUTO_EXPOSURE_RANGE.1), stops).max(down + 1);
+    let speed = AUTO_EXPOSURE_SPEED * get("settonemaprate").map_or(1.0, |r| r.clamp(0.05, 4.0));
+    let bloom = 0.15 * settings.bloom * get("setbloomscale").map_or(1.0, |b| (b / 0.3).clamp(0.0, 4.0));
+    for (auto, glow) in &mut cams {
+        if let Some(mut auto) = auto {
+            let curve = made.entry((down, up)).or_insert_with(|| curves.add(exposure_curve(auto_exposure_reference(), (down as f32 / 16.0, up as f32 / 16.0)))).clone();
+            if auto.compensation_curve != curve {
+                auto.compensation_curve = curve;
+            }
+            if auto.speed_brighten != speed {
+                auto.speed_brighten = speed;
+                auto.speed_darken = speed;
+            }
+        }
+        if let Some(mut glow) = glow {
+            if glow.intensity != bloom {
+                glow.intensity = bloom;
+            }
+        }
+    }
+}
+
 fn reset_taa_on_teleport(
     game: Res<Game>,
     mut taa: Query<&mut TemporalAntiAliasing, With<PlayerCamera>>,
@@ -392,8 +430,12 @@ mod tests {
 
     #[test]
     fn the_auto_exposure_curve_builds() {
-        exposure_curve(AUTO_EXPOSURE_REFERENCE);
-        exposure_curve(-6.0);
-        exposure_curve(5.0);
+        exposure_curve(AUTO_EXPOSURE_REFERENCE, AUTO_EXPOSURE_RANGE);
+        exposure_curve(-6.0, AUTO_EXPOSURE_RANGE);
+        exposure_curve(5.0, AUTO_EXPOSURE_RANGE);
+        // As far as a map's tonemap controller can take it, either way (`map_tone`).
+        exposure_curve(AUTO_EXPOSURE_REFERENCE, (-9.5, -9.4375));
+        exposure_curve(AUTO_EXPOSURE_REFERENCE, (6.0, 6.0625));
+        exposure_curve(AUTO_EXPOSURE_REFERENCE, (-9.5, 6.0));
     }
 }

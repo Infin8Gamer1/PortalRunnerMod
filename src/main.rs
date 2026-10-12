@@ -19,6 +19,7 @@ mod me_props;
 mod me_viewmodel;
 mod map_audio;
 mod map_fx;
+mod map_grade;
 mod menu;
 mod model_props;
 mod placed_lights;
@@ -97,6 +98,7 @@ fn main() {
     .init_resource::<source_map::MapMats>()
     .init_resource::<source_map::Lamps>()
     .init_resource::<map_fx::FxMats>()
+    .init_resource::<map_grade::Grades>()
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
     .insert_resource(GlobalAmbientLight { color: Color::srgb(0.85, 0.92, 1.0), brightness: 400.0, affects_lightmapped_meshes: true })
     .add_systems(
@@ -129,7 +131,7 @@ fn main() {
         switch_level,
         play.run_if(editor::idle),
         speed_fx::update,
-        (chamber::update, chamber::scroll_goo, (map_fx::sync, map_fx::update, map_fx::beams, map_fx::tag_cameras, map_fx::cameras, map_fx::screen), source_map::sync, source_map::bulbs, source_map::move_models, source_map::move_bodies, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
+        (chamber::update, chamber::scroll_goo, (map_fx::sync, map_fx::update, map_fx::beams, map_fx::tag_cameras, map_fx::cameras, map_fx::screen, map_grade::update), source_map::sync, source_map::bulbs, source_map::move_models, source_map::move_bodies, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
         me_props::spawn_for_level,
         model_props::spawn_for_level,
         placed_lights::spawn_for_level,

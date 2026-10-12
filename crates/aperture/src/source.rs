@@ -478,6 +478,21 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                 let r = num(e, "radius", 128.0);
                 kind = io::Kind::Soundscape { at: origin(e).unwrap_or(Vec3::ZERO), radius: if r < 0.0 { f32::INFINITY } else { r * 0.0254 }, scape: key(e, "soundscape").unwrap_or("").to_ascii_lowercase(), enabled: !start_disabled };
             }
+            "color_correction" => {
+                let (lo, hi) = (num(e, "minfalloff", -1.0), num(e, "maxfalloff", -1.0));
+                let global = lo < 0.0 || hi < 0.0;
+                let file = key(e, "filename").unwrap_or("").replace('\\', "/").rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+                kind = io::Kind::Correction {
+                    at: origin(e).unwrap_or(Vec3::ZERO),
+                    near: if global { f32::INFINITY } else { lo * 0.0254 },
+                    far: if global { f32::INFINITY } else { hi.max(lo) * 0.0254 },
+                    weight: num(e, "maxweight", 1.0).clamp(0.0, 1.0),
+                    file,
+                    enabled: !start_disabled,
+                    fade_in: num(e, "fadeInDuration", 0.0).max(0.0),
+                    fade_out: num(e, "fadeOutDuration", 0.0).max(0.0),
+                };
+            }
             "env_shake" => {
                 let global = flags(e) & 1 != 0;
                 kind = io::Kind::Shake { at: origin(e).unwrap_or(Vec3::ZERO), amplitude: num(e, "amplitude", 4.0), frequency: num(e, "frequency", 2.5), duration: num(e, "duration", 1.0), radius: if global { f32::INFINITY } else { num(e, "radius", 500.0) * 0.0254 } };
@@ -1088,6 +1103,36 @@ mod tests {
         }
         let m = sim.movers.iter().find(|m| m.def.spin.is_some()).expect("the fan");
         assert!((m.spin_rate - std::f32::consts::PI).abs() < 0.01 && m.spin_angle != 0.0, "{} {}", m.spin_rate, m.spin_angle);
+    }
+
+    #[test]
+    fn colour_correction_and_tonemaps_are_kept() {
+        use crate::sim::Sim;
+        let solids = "bounds 0 -10 -1 -10 10 5 10\nwhite 0 -10 -1 -10 10 0 10\n";
+        let ents = r#"{ "classname" "worldspawn" }
+{ "classname" "info_player_start" "origin" "0 0 0" "angles" "0 0 0" }
+{ "classname" "color_correction" "targetname" "cc" "origin" "64 0 0" "minfalloff" "100" "maxfalloff" "400" "maxweight" "0.8" "filename" "materials\\correction\\cc_dim_lights.raw" "StartDisabled" "1" "fadeInDuration" "2" }
+{ "classname" "env_tonemap_controller" "targetname" "tone" }
+{ "classname" "logic_auto" "OnMapSpawn" "tone,SetAutoExposureMax,1.5,0,-1" "OnMapSpawn" "tone,SetBloomScale,0.3,0,-1" }"#;
+        let l = level("t", "T", solids, ents);
+        let mut sim = Sim::new(l);
+        let mut c = faith_move::Controller::new(crate::tuning(5.3, 15.0), Vec3::ZERO, 0.0);
+        sim.step(1.0 / 60.0, &mut c);
+        let mut io = sim.io.take().unwrap();
+        let cc = io.ents.iter().position(|e| e.name == "cc").unwrap();
+        match &io.ents[cc].kind {
+            io::Kind::Correction { near, far, weight, file, enabled, fade_in, .. } => {
+                assert!((near - 2.54).abs() < 1e-3 && (far - 10.16).abs() < 1e-3 && *weight == 0.8 && file == "cc_dim_lights.raw" && !enabled && *fade_in == 2.0);
+            }
+            k => panic!("{k:?}"),
+        }
+        io.input(&mut sim, cc, "Enable", "", cc);
+        assert!(matches!(io.ents[cc].kind, io::Kind::Correction { enabled: true, .. }));
+        assert_eq!(io.tonemap.get("setautoexposuremax"), Some(&1.5));
+        assert_eq!(io.tonemap.get("setbloomscale"), Some(&0.3));
+        let tone = io.ents.iter().position(|e| e.name == "tone").unwrap();
+        io.input(&mut sim, tone, "UseDefaultAutoExposure", "", tone);
+        assert!(!io.tonemap.contains_key("setautoexposuremax") && io.tonemap.contains_key("setbloomscale"));
     }
 
     #[test]
