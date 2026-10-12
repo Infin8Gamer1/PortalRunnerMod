@@ -2565,6 +2565,21 @@ impl Sim {
                                     },
                                     _ => (hit.point, hit.normal),
                                 };
+                                // A portal on that tilted face takes it there (its boxes stand out
+                                // of the face in front of the portal).
+                                let through = (0..2).find(|&c| {
+                                    self.portals[c].is_some_and(|q| {
+                                        let l = q.to_local(point);
+                                        q.normal.dot(normal) > 0.999 && l.z.abs() < 0.05 && l.x.abs() < q.half.x && l.y.abs() < q.half.y && d.dot(q.normal) < 0.0
+                                    }) && self.portals[1 - c].is_some()
+                                });
+                                if let Some(c) = through {
+                                    let link = self.link([PortalColor::Blue, PortalColor::Orange][c]).unwrap();
+                                    p.vel = link.dir(p.vel);
+                                    p.pos = link.point(point) + p.vel.normalize_or_zero() * 2e-3;
+                                    p.age = p.age.min(p.life - p.after_portal);
+                                    continue;
+                                }
                                 p.vel -= 2.0 * p.vel.dot(normal) * normal;
                                 p.pos = point + normal * 0.01;
                                 self.events.push(SimEvent::PelletBounced { at: point, normal });

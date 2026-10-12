@@ -1660,8 +1660,71 @@ fn solve_testchmb_a_10() {
     p.wait_for(15.0, "the lift to stop", |p| p.sim.movers[lift].goal.is_none());
     eprintln!("up the lift at {}", p.c.feet);
     p.assert_alive("up to section 3");
-    // (Section 3 and on aren't played yet: its flings over the glass, as Portal's walkthrough
-    // has them, don't carry Faith far enough (#57).)
+    // Section 3: over the glass (x 23) by a fling. Orange on the white floor by the glass, blue
+    // high on the wall over it: in, and down out of blue into orange again (shot where she'll
+    // land, should she miss it); falling the second time, blue onto the panels high over the
+    // hallway's end, facing the glass: she comes out of them fast, and over.
+    let g = p.sim.level.gravity.unwrap_or(crate::FAITH_GRAVITY);
+    p.go(Vec3::new(25.6, -6.5, 12.0), 0.3);
+    p.shoot(PortalColor::Blue, Vec3::new(25.6, 4.68, 16.26));
+    // (Orange under her own feet: she drops in from standing, and out of blue slowly.)
+    p.go(Vec3::new(25.6, -6.5, 14.4), 0.2);
+    p.c.pitch = -1.5;
+    p.wait(0.2);
+    assert!(p.sim.fire(PortalColor::Orange, Aim::of(&p.c)), "orange didn't open on the floor by the glass");
+    let land_at = |p: &Play| {
+        let (v, y) = (p.c.vel, p.c.feet.y + 6.5);
+        let t = (v.y + (v.y * v.y + 2.0 * g * y).sqrt()) / g;
+        Vec3::new(p.c.feet.x + v.x * t, -6.5, p.c.feet.z + v.z * t)
+    };
+    let (mut passes, mut fixed, mut panels) = (0, false, false);
+    let end = p.time + 10.0;
+    while p.time < end && !(passes >= 2 && p.c.state == State::Ground) {
+        let seen = p.events.len();
+        if passes == 0 {
+            p.c.yaw = std::f32::consts::PI;
+        }
+        // Coming down from blue the first time: orange where she'll land (if it isn't).
+        if passes == 1 && !fixed && p.c.vel.y < -1.0 && p.sim.player_env.is_none() {
+            let land = land_at(&p);
+            let o = p.sim.portals[1].unwrap();
+            if Vec2::new(land.x - o.center.x, land.z - o.center.z).length() > 0.5 {
+                let eye = p.c.view().eye;
+                p.sim.fire(PortalColor::Orange, Aim { eye, dir: (land - eye).normalize(), yaw: p.c.yaw });
+            }
+            fixed = true;
+        }
+        // Falling into orange the second time: blue onto the panels.
+        if passes == 1 && fixed && !panels && p.c.feet.y < 1.0 {
+            let target = Vec3::new(42.27, 4.0, p.c.feet.z);
+            let eye = p.c.view().eye;
+            p.c.yaw = (-(target.x - eye.x)).atan2(-(target.z - eye.z));
+            panels = p.sim.fire(PortalColor::Blue, Aim { eye, dir: (target - eye).normalize(), yaw: p.c.yaw });
+        }
+        p.step(&Input::default());
+        passes += p.events[seen..].iter().filter(|e| matches!(e, SimEvent::Teleported { .. })).count();
+    }
+    assert!(passes >= 2 && p.c.feet.x < 22.0, "short of the glass in section 3 (at {})", p.c.feet);
+    p.assert_alive("flung over the glass in section 3");
+    // Section 4's first pellet: its launcher fires south, over a partition with a grill above
+    // it, to the far wall, and its catcher's on the wall behind the launcher. Over the
+    // partition (she climbs it). At the far end it turns off an angled panel west, to the side
+    // wall: orange there, blue on the other side wall; out of blue, it comes back west into the
+    // other angled panel, which turns it north, over the partition and through the grill, into
+    // the catcher. (It starts the scaffolds.)
+    p.go(Vec3::new(12.0, -6.5, 3.0), 0.3);
+    p.c.yaw = 0.0;
+    let end = p.time + 5.0;
+    while p.time < end && !(p.c.feet.z < -0.8 && p.c.state == State::Ground) {
+        let near = p.c.feet.z < 1.4 && p.c.state == State::Ground;
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: near, jump_held: true, ..Default::default() });
+    }
+    assert!(p.c.feet.z < -0.8, "didn't climb the partition (at {})", p.c.feet);
+    p.safe_shot(PortalColor::Orange, Vec3::new(9.76, -1.7, -14.52), Vec3::new(16.0, -6.5, -9.0), 5.0);
+    p.safe_shot(PortalColor::Blue, Vec3::new(22.75, -1.7, -14.52), Vec3::new(14.0, -6.5, -9.0), 5.0);
+    let trap = |p: &Play, name: &str| p.sim.io.as_ref().unwrap().ents.iter().any(|e| e.name == name && e.alive && matches!(e.kind, crate::io::Kind::Trigger { enabled: true, .. }));
+    p.wait_for(30.0, "the first catcher to take the pellet", |p| !trap(p, "ball_trap_11"));
+    p.assert_alive("catching section 4's first pellet");
 }
 
 /// Chamber 16 (testchmb_a_11), the turrets' chamber, much as Portal's walkthrough has it: each
