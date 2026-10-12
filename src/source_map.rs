@@ -792,11 +792,11 @@ pub fn tag_prop_players(mut commands: Commands, added: Query<Entity, Added<Anima
     }
 }
 
-/// A pellet launcher's model: shut at rest, with an open clip and a close clip, and no
-/// `opened` (trap housings ask for that).
-fn is_pellet_launcher(gltf: &bevy::gltf::Gltf) -> bool {
-    let n = &gltf.named_animations;
-    n.contains_key("idle_closed") && n.contains_key("open") && n.contains_key("close") && !n.contains_key("opened")
+/// A pellet launcher's model (Portal's `combine_ball_launcher`). (Not known by its clips:
+/// the round elevator's doors have the same open, close and idle_closed, and told to close,
+/// they'd fire as a launcher does, opening first, #58.)
+fn is_pellet_launcher(model: &str) -> bool {
+    model.ends_with("/combine_ball_launcher")
 }
 
 fn clip_duration(clips: &Assets<AnimationClip>, gltf: &bevy::gltf::Gltf, name: &str) -> Option<f32> {
@@ -843,7 +843,7 @@ pub fn animate_props(
         if let Some((name, n)) = io.animations.get(&pp.ent) {
             if *n != pp.played {
                 pp.played = *n;
-                if name == "close" && is_pellet_launcher(gltf) {
+                if name == "close" && is_pellet_launcher(&pp.model) {
                     pp.cycle = Some(0.0);
                     pp.showing = 0;
                 } else {

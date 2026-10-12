@@ -524,6 +524,16 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Chamber 00's exit elevator doors (testchmb_a_00, #58): opened as she comes up to
+        // them, then closing behind her once she's in, once, frame by frame.
+        "elevatordoors" => {
+            let map = aperture::levels::all().len();
+            let mut v = vec![Map(map), Wait(100), Teleport(Vec3::new(6.5, 15.1, 19.0)), Look(0.0, -5.0), Wait(120), Shot("elevatordoors_a_open"), Teleport(Vec3::new(6.5, 15.1, 9.3)), Look(180.0, -5.0)];
+            for k in 0..16 {
+                v.extend([Wait(6), Shot(Box::leak(format!("elevatordoors_b{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
         // Pellet pieces in Portal's maps up close, the camera held where it's put:
         // PORTAL_FIRST_MAP and PORTAL_TP ("x,y,z,yaw,pitch;...") as for `p1`, PORTAL_WAIT frames
         // into the map first (default 200).
