@@ -2434,13 +2434,13 @@ fn solve_testchmb_a_14() {
 }
 
 impl Play {
-    /// Fire `color` from where she stands, aimed about `yaw` and `pitch` (searching a degree
+    /// Fire `color` from where she stands, aimed about `yaw` and `pitch` (searching two degrees
     /// round them, a tenth of one at a time): the first shot that opens one `fits` (one through
     /// a narrow gap: a vent's slats, a grate).
     pub fn shoot_near(&mut self, color: PortalColor, yaw: f32, pitch: f32, fits: impl Fn(&crate::portal::Portal) -> bool) {
         let eye = self.c.view().eye;
         // (Outward from the middle.)
-        let mut tries: Vec<(i32, i32)> = (-10..=10).flat_map(|i| (-10..=10).map(move |j| (i, j))).collect();
+        let mut tries: Vec<(i32, i32)> = (-20..=20).flat_map(|i| (-20..=20).map(move |j| (i, j))).collect();
         tries.sort_by_key(|(i, j)| i * i + j * j);
         for (i, j) in tries {
             let (y, pi) = (yaw + (i as f32 * 0.1).to_radians(), pitch + (j as f32 * 0.1).to_radians());
@@ -2452,6 +2452,13 @@ impl Play {
             (self.sim.portals, self.sim.portal_mover) = (saved, on);
         }
         panic!("{}: no {color:?} portal to be had from {} about yaw {yaw}, pitch {pitch}", self.name, self.c.feet);
+    }
+
+    /// [`shoot_near`](Self::shoot_near) aimed at `at`, for one that opens within a metre of it.
+    pub fn shoot_past(&mut self, color: PortalColor, at: Vec3) {
+        let d = at - self.c.view().eye;
+        let (yaw, pitch) = ((-d.x).atan2(-d.z), d.y.atan2(Vec2::new(d.x, d.z).length()));
+        self.shoot_near(color, yaw, pitch, |q| q.center.distance(at) < 1.0);
     }
 
     /// Walk into the portal at `at` (one she can't stop in front of: a floor one beside her,
@@ -2908,4 +2915,105 @@ fn chamber_15_section_3_fling_clears_the_glass() {
     }
     assert_eq!(p.deaths, 0);
     assert!(p.c.state == State::Ground && p.c.feet.x < 22.0, "short of the glass: at {}", p.c.feet);
+}
+
+#[test]
+#[ignore]
+fn dbg_survey() {
+    let map = std::env::var("MAP").unwrap();
+    let Some(mut p) = Play::load(&map) else { return };
+    if let Ok(at) = std::env::var("AT") {
+        let v: Vec<f32> = at.split(',').map(|x| x.parse().unwrap()).collect();
+        p.c.feet = Vec3::new(v[0], v[1], v[2]);
+        p.wait(0.5);
+    }
+    let text: String = p.sim.statics.iter().map(|s| format!("{} {} {} {} {} {} {:?}\n", s.b.min.x, s.b.min.y, s.b.min.z, s.b.max.x, s.b.max.y, s.b.max.z, s.mat)).collect();
+    std::fs::write(format!("/tmp/{map}.boxes"), text).unwrap();
+    p.dump_reach(&format!("/tmp/{map}.reach"));
+    eprintln!("spawn {} yaw {} cubes {:?}", p.c.feet, p.c.yaw, p.sim.props.iter().filter(|q| q.kind != crate::level::CubeKind::Physics).map(|q| q.pos).collect::<Vec<_>>());
+    eprintln!("turrets {:?}", p.sim.turrets.iter().map(|t| (t.at, t.facing())).collect::<Vec<_>>());
+    eprintln!("launchers {:?}", p.sim.launchers.iter().map(|l| (l.at, l.dir)).collect::<Vec<_>>());
+    eprintln!("goo {:?}", p.sim.goo);
+    let io = p.sim.io.as_ref().unwrap();
+    for e in io.ents.iter().filter(|e| matches!(e.kind, crate::io::Kind::ChangeLevel { .. } | crate::io::Kind::Mover { .. })) {
+        eprintln!("ent {} {:?}", e.name, e.kind);
+    }
+    if std::env::var("PROBE").is_ok() {
+        let at = p.c.feet;
+        p.probe_portals(at);
+    }
+}
+
+#[allow(dead_code)]
+fn dbg_can(p: &mut Play, stands: &[Vec3]) {
+    let eye_off = Vec3::new(0.0, p.c.view().eye.y - p.c.feet.y, 0.0);
+    let mut seen: Vec<(Vec3, Vec3)> = Vec::new();
+    for &stand in stands {
+        let eye = stand + eye_off;
+        for yaw_deg in (0..360).step_by(3) { for pitch_deg in (-87..=87).step_by(3) {
+            let (y, pi) = ((yaw_deg as f32).to_radians(), (pitch_deg as f32).to_radians());
+            let dir = crate::portal::view_dir(y, pi);
+            let (saved, on) = (p.sim.portals, p.sim.portal_mover);
+            let ok = p.sim.fire(PortalColor::Orange, Aim { eye, dir, yaw: y });
+            let got = p.sim.portals[1];
+            (p.sim.portals, p.sim.portal_mover) = (saved, on);
+            if let Some(g) = got.filter(|_| ok) {
+                if !seen.iter().any(|(c, n)| c.distance(g.center) < 1.2 && n.dot(g.normal) > 0.9) {
+                    seen.push((g.center, g.normal));
+                    let out = g.center + g.normal * 0.8;
+                    let land = p.floors(out.x, out.z, out.y - 30.0, out.y).into_iter().reduce(f32::max);
+                    eprintln!("DBG can {:.2} n {:.0} from {stand} lands {land:.2?}", g.center, g.normal);
+                }
+            }
+        } }
+    }
+}
+
+#[test]
+#[ignore]
+fn dbg_e0() {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let Some(mut p) = Play::load("escape_00") else { return };
+    // (The head on the piston by the ladder's wall.)
+    let head = (0..p.sim.movers.len()).find(|&m| p.sim.movers[m].def.parent == Some(p.mover("crusher_room_1_2")) && p.sim.movers[m].def.follows).unwrap();
+    let top = |p: &Play| p.sim.movers[head].boxes().map(|b| b.max.y).fold(-1e9, f32::max);
+    p.go(Vec3::new(18.6, -21.1, -6.6), 0.2);
+    eprintln!("DBG at {:.1} {} top {}", p.time, p.c.feet, top(&p));
+    p.wait_for(30.0, "the head down", |p| top(p) < -20.0);
+    p.run_jump(0.0, |_| true);
+    eprintln!("DBG on {:.1} {} top {}", p.time, p.c.feet, top(&p));
+    p.nudge(Vec3::new(20.0, p.c.feet.y, -9.0));
+    eprintln!("DBG nudged {:.1} {} {:?} top {}", p.time, p.c.feet, p.c.state, top(&p));
+    p.wait_for(30.0, "the head up", |p| top(p) > -11.45);
+    eprintln!("DBG up {:.1} {} {:?}", p.time, p.c.feet, p.c.state);
+    let mut jumped = false;
+    p.c.yaw = 0.0;
+    let end = p.time + 5.0;
+    while !(jumped && p.c.state == State::Ground) && p.time < end {
+        let jump = (!jumped && p.c.feet.z < -10.3) || matches!(p.c.state, State::LedgeHang { .. });
+        jumped |= jump;
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: jump, jump_held: true, ..Default::default() });
+    }
+    eprintln!("DBG climbed {:.1} {} {:?}", p.time, p.c.feet, p.c.state);
+    p.go(Vec3::new(18.69, -8.13, -16.46), 0.3);
+    p.go(Vec3::new(-3.0, -14.63, -16.0), 0.3);
+    eprintln!("DBG room2 {:.1} {}", p.time, p.c.feet);
+    p.go(Vec3::new(-1.0, -17.88, -31.0), 0.3);
+    p.shoot_past(PortalColor::Blue, Vec3::new(-13.0, -6.31, -20.59));
+    eprintln!("DBG blue {:?}", p.sim.portals[0].map(|q| (q.center, q.normal)));
+    p.go(Vec3::new(-13.3, -17.88, -30.0), 0.2);
+    p.run_jump(FRAC_PI_2, |_| true);
+    eprintln!("DBG tube {} {:?}", p.c.feet, p.c.state);
+    p.go(Vec3::new(-21.5, -16.3, -30.0), 0.3);
+    let end = Vec3::new(-24.38, -14.8, -30.0);
+    p.shoot(PortalColor::Orange, end);
+    p.walk_into_portal(end, 0.5);
+    eprintln!("DBG out {:.1} {} {:?}", p.time, p.c.feet, p.c.state);
+    p.c.yaw = -FRAC_PI_2;
+    for _ in 0..40 { p.step(&Input { move_axis: Vec2::new(0.0, 0.5), ..Default::default() }); }
+    p.wait(0.5);
+    eprintln!("DBG walked {} {:?}", p.c.feet, p.c.state);
+    p.dump_reach("/tmp/escape_00.reach");
+    dbg_can(&mut p, &[Vec3::new(-11.0, -8.13, -20.0), Vec3::new(-5.0, -8.13, -16.0), Vec3::new(-8.0, -8.13, -15.0), Vec3::new(-4.0, -8.13, -22.0)]);
+    let _ = (FRAC_PI_2, PI);
 }
