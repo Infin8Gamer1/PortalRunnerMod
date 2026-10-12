@@ -545,6 +545,22 @@ fn script(name: &str) -> Vec<Act> {
             v.extend([Teleport(Vec3::new(0.0, 3.8, -21.0)), Look(180.0, 0.0), Wait(20), Shot("car13_outside")]);
             v
         }
+        // Chamber 15's tall emancipation grills (testchmb_a_10, #60): their emitter posts, of
+        // Portal's size, stacked up each side.
+        "grills15" => {
+            let map = aperture::levels::all().len() + 10;
+            let mut v = vec![Map(map), Wait(150)];
+            let views: [(&str, Vec3, f32, f32); 4] = [
+                ("grills15_a_section2", Vec3::new(54.4, -9.7, 8.0), 0.0, 12.0),
+                ("grills15_b_section2_west", Vec3::new(50.5, -9.7, 3.0), 35.0, 15.0),
+                ("grills15_c_section2_east", Vec3::new(58.5, -9.7, 3.0), -35.0, 15.0),
+                ("grills15_d_middle", Vec3::new(16.2, -3.2, 9.0), 0.0, 20.0),
+            ];
+            for (name, at, yaw, pitch) in views {
+                v.extend([Teleport(at), Launch(Vec3::ZERO), Look(yaw, pitch), Wait(30), Shot(name)]);
+            }
+            v
+        }
         // Pellet pieces in Portal's maps up close, the camera held where it's put:
         // PORTAL_FIRST_MAP and PORTAL_TP ("x,y,z,yaw,pitch;...") as for `p1`, PORTAL_WAIT frames
         // into the map first (default 200).

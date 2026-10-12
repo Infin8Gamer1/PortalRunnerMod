@@ -333,7 +333,21 @@ pub fn spawn(commands: &mut Commands, models: &PropModels, sim: &Sim) -> Replace
     if let Some((scene, which)) = models.first(&["rtx_fizzler_emitter", "fizzler_emitter"]) {
         r.fizzlers = true;
         let height = if which == "rtx_fizzler_emitter" { 3.29 } else { 3.26 };
-        for f in &sim.fizzlers {
+        // In Portal's maps, a post of Portal's size (128 units) at each of its emitters' edges,
+        // its inside face towards the field it's at the end of. (Not at the ends of the grill's
+        // trigger: Chamber 15's runs past a pillar between two grills, its end well off the
+        // wall, and its grills are two and three emitters high, #60.)
+        let near = |f: &aperture::sim::Fizzler, at: Vec3| at.cmpgt(f.b.min - Vec3::splat(2.0)).all() && at.cmplt(f.b.max + Vec3::splat(2.0)).all();
+        for &at in &sim.level.grill_edges {
+            let Some(f) = sim.fizzlers.iter().find(|f| near(f, at)) else { continue };
+            let s = f.b.size();
+            let along = if s.x >= s.z { Vec3::X } else { Vec3::Z };
+            let inward = if (f.b.center() - at).dot(along) >= 0.0 { along } else { -along };
+            let tf = Transform::from_translation(at).with_rotation(basis(inward, Vec3::Y, inward.cross(Vec3::Y))).with_scale(Vec3::splat(128.0 * 0.0254 / height));
+            spawn_model(commands, scene.clone(), tf, PropKind::Static);
+        }
+        // Elsewhere, one at each end of the grill.
+        for f in sim.fizzlers.iter().filter(|f| !sim.level.grill_edges.iter().any(|&at| near(f, at))) {
             let s = f.b.size();
             let c = f.b.center();
             let along = if s.x >= s.z { Vec3::X } else { Vec3::Z };

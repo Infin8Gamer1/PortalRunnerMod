@@ -339,6 +339,10 @@ pub struct Level {
     pub source: Option<String>,
     /// Its lights (Portal's `light` and `light_spot` entities).
     pub lights: Vec<SourceLight>,
+    /// Where its emancipation grills' emitters are: the middle of each one's edge, a grill's
+    /// height (128 units) of it (Portal's `cleanser_edge_1` particles, a column of them up a
+    /// tall grill's sides). Empty in the game's own chambers.
+    pub grill_edges: Vec<Vec3>,
     /// Its brush models not to draw (stood in for by the game's own pieces: buttons, grills).
     pub hidden_models: Vec<usize>,
     /// Its logic.
@@ -447,6 +451,7 @@ impl Level {
             me_props: Vec::new(),
             source: None,
             lights: Vec::new(),
+            grill_edges: Vec::new(),
             hidden_models: Vec::new(),
             io: None,
             landmarks: Vec::new(),

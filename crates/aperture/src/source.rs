@@ -408,6 +408,11 @@ pub fn level_with_scenes(name: &str, title: &'static str, solids: &str, ents: &s
                     l.repaint(Mat::Black, b.min.to_array(), b.max.to_array());
                 }
             }
+            "info_particle_system" if key(e, "effect_name").is_some_and(|n| n.eq_ignore_ascii_case("cleanser_edge_1")) => {
+                if let Some(at) = origin(e) {
+                    l.grill_edges.push(at);
+                }
+            }
             "light" | "light_spot" => {
                 let Some(at) = origin(e) else { continue };
                 let v = key(e, "_light").map(floats).unwrap_or_default();
