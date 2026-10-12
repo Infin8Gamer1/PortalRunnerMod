@@ -1558,6 +1558,7 @@ fn movers_push_but_dont_crush() {
         parent: None,
         follows: false,
         faces: Vec::new(),
+        spin: None,
         reset: None,
     }));
     let (mut sim, mut c) = start(l);
@@ -2037,4 +2038,25 @@ fn a_carried_turret_stays_out_of_walls() {
     run(&mut sim, &mut c, 3.0, |_, _| forward());
     let b = sim.turrets[0].aabb();
     assert!(b.min.z > -5.6 + 0.01, "the turret's in the wall: {:?} (her at {})", b, c.feet);
+}
+
+/// A physics prop turned where the map stands it: hit where its box is as it stands (not
+/// turned again).
+#[test]
+fn a_turned_physics_prop_is_hit_where_it_stands() {
+    let mut l = flat();
+    // A long thing turned a quarter round: along Z, as it stands.
+    let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    l.bodies.push(crate::level::Body { at: Vec3::new(0.0, 0.2, -4.0), half: Vec3::new(0.1, 0.2, 0.6), turn, origin: Vec3::ZERO, art: 0 });
+    let (mut sim, mut c) = start(l);
+    let id = sim.bodies[0];
+    let i = sim.props.iter().position(|p| p.id == id).unwrap();
+    assert_eq!(sim.props[i].rot, Quat::IDENTITY);
+    run(&mut sim, &mut c, 0.5, |_, _| Input::default());
+    let at = sim.props[i].pos;
+    // From the side (along X), it's 0.1 thick; from the end (along Z), 0.6 long.
+    let side = sim.raycast(at + Vec3::new(2.0, 0.0, 0.0), Vec3::NEG_X, 5.0, crate::sim::Mask::SHOT).expect("hit from the side");
+    assert!((side.t - 1.9).abs() < 0.02, "{}", side.t);
+    let end = sim.raycast(at + Vec3::new(0.0, 0.0, 2.0), Vec3::NEG_Z, 5.0, crate::sim::Mask::SHOT).expect("hit from the end");
+    assert!((end.t - 1.4).abs() < 0.02, "{}", end.t);
 }

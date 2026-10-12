@@ -20,11 +20,13 @@ pub enum Category {
     PortalBrushes,
     /// Portal's entities: logic, triggers, moving brushes.
     PortalLogic,
+    /// Portal's sounds, effects and the screen's looks (and decals).
+    PortalEffects,
     Props,
 }
 
 impl Category {
-    pub const ALL: [Category; 10] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Lights, Category::Parkour, Category::PortalBrushes, Category::PortalLogic, Category::Props];
+    pub const ALL: [Category; 11] = [Category::Geometry, Category::Puzzle, Category::Light, Category::Gel, Category::Gameplay, Category::Lights, Category::Parkour, Category::PortalBrushes, Category::PortalLogic, Category::PortalEffects, Category::Props];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -37,6 +39,7 @@ impl Category {
             Category::Parkour => "Parkour",
             Category::PortalBrushes => "Portal brushes",
             Category::PortalLogic => "Portal logic",
+            Category::PortalEffects => "Portal sound & effects",
             Category::Props => "Props",
         }
     }
@@ -101,6 +104,12 @@ fn brush(mat: &str, contents: Contents, noportal: bool) -> Kind {
 /// One of Portal's point entities, with these keys.
 fn point(class: &str, keys: &[(&str, &str)]) -> Kind {
     Kind::Entity { class: class.into(), keys: keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), brushes: Vec::new() }
+}
+
+/// A decal (an overlay) a metre across, facing out of what it's on.
+fn decal(mat: &str) -> Kind {
+    let h = 0.5;
+    Kind::Overlay { mat: mat.into(), corners: [Vec3::new(-h, -h, 0.0), Vec3::new(h, -h, 0.0), Vec3::new(h, h, 0.0), Vec3::new(-h, h, 0.0)], uv: [[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]], normal: Vec3::NEG_Z }
 }
 
 /// One of Portal's brush entities (one box brush of `mat`, sized where it's placed).
@@ -192,6 +201,26 @@ pub static CATALOG: &[Entry] = &[
     e("Landmark", Category::PortalLogic, Place::Out(0.5), P, || point("info_landmark", &[]), [80, 220, 120], "⚓"),
     e("Level change", Category::PortalLogic, Place::Box, Vec3::new(3.0, 3.0, 3.0), || brushed("trigger_changelevel", &[("map", ""), ("landmark", "")], "tools/toolstrigger", Contents::Empty), [80, 220, 120], "⇥"),
     e("Portal gun pickup", Category::PortalLogic, Place::Out(0.6), P, || point("weapon_portalgun", &[("CanFirePortal1", "1"), ("CanFirePortal2", "0")]), [240, 240, 240], "🔫"),
+    e("Target (point)", Category::PortalLogic, Place::Out(0.5), P, || point("info_target", &[]), [255, 215, 60], "✛"),
+    e("Fan (brush)", Category::PortalLogic, Place::Box, Vec3::new(3.0, 0.2, 3.0), || brushed("func_rotating", &[("maxspeed", "180"), ("fanfriction", "20"), ("spawnflags", "17"), ("message", "")], "metal/metalwall048b", Contents::Solid), [150, 150, 160], "🌀"),
+    e("Push volume", Category::PortalLogic, Place::Box, Vec3::new(3.0, 3.0, 3.0), || brushed("trigger_push", &[("pushdir", "-90 0 0"), ("speed", "300"), ("spawnflags", "9")], "tools/toolstrigger", Contents::Empty), [120, 200, 255], "⇧"),
+    e("Hurt volume", Category::PortalLogic, Place::Box, Vec3::new(3.0, 3.0, 3.0), || brushed("trigger_hurt", &[("damage", "20"), ("spawnflags", "1")], "tools/toolstrigger", Contents::Empty), [220, 60, 50], "✚"),
+    e("Portal detector", Category::PortalLogic, Place::Through, Vec3::new(3.0, 3.0, 0.4), || brushed("func_portal_detector", &[], "tools/toolstrigger", Contents::Empty), [90, 170, 255], "◎"),
+    e("Portal bumper", Category::PortalLogic, Place::Through, Vec3::new(2.0, 2.0, 0.4), || brushed("func_portal_bumper", &[], "tools/toolsinvisible", Contents::Empty), [200, 140, 255], "⊟"),
+    e("No-portal volume", Category::PortalLogic, Place::Through, Vec3::new(3.0, 3.0, 0.4), || brushed("func_noportal_volume", &[], "tools/toolsinvisible", Contents::Empty), [90, 90, 100], "⊘"),
+    e("Security camera", Category::PortalLogic, Place::Wall, P, || point("npc_security_camera", &[]), [235, 235, 235], "📷"),
+    e("Sound", Category::PortalEffects, Place::Out(0.5), P, || point("ambient_generic", &[("message", ""), ("health", "10"), ("radius", "1250"), ("pitch", "100"), ("spawnflags", "0")]), [120, 220, 160], "🔊"),
+    e("Soundscape", Category::PortalEffects, Place::Out(1.5), P, || point("env_soundscape", &[("soundscape", "portal_testchmb.explore_space"), ("radius", "512")]), [120, 200, 220], "🎶"),
+    e("Particles", Category::PortalEffects, Place::Out(1.5), P, || point("info_particle_system", &[("effect_name", "water_mist_256"), ("start_active", "1")]), [200, 220, 255], "✨"),
+    e("Steam", Category::PortalEffects, Place::Wall, P, || point("env_steam", &[("InitialState", "1"), ("Speed", "120"), ("JetLength", "80"), ("StartSize", "10"), ("EndSize", "25"), ("Rate", "26"), ("rendercolor", "210 210 210"), ("renderamt", "255")]), [220, 220, 225], "♨"),
+    e("Sparks", Category::PortalEffects, Place::Wall, P, || point("env_spark", &[("spawnflags", "64"), ("MaxDelay", "2"), ("Magnitude", "2"), ("TrailLength", "1")]), [255, 210, 80], "✴"),
+    e("Spotlight beam", Category::PortalEffects, Place::Wall, P, || point("point_spotlight", &[("spawnflags", "3"), ("SpotlightLength", "300"), ("SpotlightWidth", "40"), ("rendercolor", "255 255 255")]), [255, 245, 220], "🔦"),
+    e("Beam", Category::PortalEffects, Place::Out(0.5), P, || point("env_beam", &[("LightningStart", ""), ("LightningEnd", ""), ("BoltWidth", "2"), ("rendercolor", "255 255 255"), ("texture", "sprites/laserbeam.spr"), ("spawnflags", "1")]), [255, 120, 90], "〰"),
+    e("Screen shake", Category::PortalEffects, Place::Out(0.5), P, || point("env_shake", &[("amplitude", "4"), ("frequency", "2.5"), ("duration", "1"), ("radius", "500")]), [230, 180, 120], "📳"),
+    e("Screen fade", Category::PortalEffects, Place::Out(0.5), P, || point("env_fade", &[("duration", "2"), ("holdtime", "0"), ("renderamt", "255"), ("rendercolor", "0 0 0")]), [60, 60, 70], "◐"),
+    e("Colour correction", Category::PortalEffects, Place::Out(0.5), P, || point("color_correction", &[("filename", "materials/correction/cc_dim_lights.raw"), ("minfalloff", "-1"), ("maxfalloff", "-1"), ("maxweight", "1"), ("StartDisabled", "1"), ("fadeInDuration", "1"), ("fadeOutDuration", "1")]), [220, 120, 200], "🎨"),
+    e("Tonemap controller", Category::PortalEffects, Place::Out(0.5), P, || point("env_tonemap_controller", &[]), [255, 220, 120], "☼"),
+    e("Decal", Category::PortalEffects, Place::Wall, P, || decal("decals/decalsigncaution001c"), [230, 200, 60], "⚠"),
 ];
 
 /// The entry with this name.

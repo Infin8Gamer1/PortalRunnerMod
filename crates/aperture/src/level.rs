@@ -118,6 +118,9 @@ pub enum CubeKind {
     Companion,
     /// Discouragement redirection cube: a laser that hits it comes out of its front.
     Reflector,
+    /// Not a cube: one of a Portal map's physics props (a radio, a chair), its own size. It
+    /// doesn't hold buttons down.
+    Physics,
 }
 
 /// Portal 2's paints.
@@ -237,6 +240,57 @@ pub struct MoverDef {
     /// Its sides that take portals, big enough to hold one, as the map has them (portals go
     /// on these however it's turned: a panel on a swinging door).
     pub faces: Vec<Slope>,
+    /// A fan, spinning (func_rotating).
+    pub spin: Option<Spin>,
+}
+
+/// How a fan spins (func_rotating): about `axis` through `pivot`, up to `speed` radians a
+/// second (signed), getting there (or stopping) in about `ramp` seconds; on from the start, or
+/// not. The sound it makes while it spins (a soundscript or a file), if any.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spin {
+    pub pivot: Vec3,
+    pub axis: Vec3,
+    pub speed: f32,
+    pub ramp: f32,
+    pub on: bool,
+    pub sound: String,
+}
+
+/// A physics prop to knock about (Portal's maps'): its box's centre and half size, how its
+/// model's turned, where the model's origin is from the box's centre, and its prop in the
+/// map's art.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Body {
+    pub at: Vec3,
+    pub half: Vec3,
+    pub turn: glam::Quat,
+    pub origin: Vec3,
+    pub art: usize,
+}
+
+/// A region a Portal map's logic can switch on and off (from the start, `on`). `mover`: what
+/// it's parented to (it rides it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Volume {
+    pub b: Aabb,
+    pub kind: VolumeKind,
+    pub on: bool,
+    pub mover: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VolumeKind {
+    /// Pushes Faith (`players`) and cubes (`cubes`) along `dir` at `speed` (m/s: trigger_push).
+    Push { dir: Vec3, speed: f32, players: bool, cubes: bool },
+    /// Hurts Faith `damage` a second (100 kills her: trigger_hurt).
+    Hurt { damage: f32 },
+    /// No portal opens on anything in it (func_noportal_volume).
+    NoPortal,
+    /// Portals fit themselves away from it (func_portal_bumper).
+    Bumper,
+    /// Says when a portal opens in it (func_portal_detector: the map's logic hears).
+    Detector,
 }
 
 /// How a swinging door turns: about `axis` through `pivot`, by `angle` (radians, signed) when
@@ -373,6 +427,11 @@ pub struct Level {
     /// Tilted faces that take portals (Portal's maps): its boxes only step along these, so a
     /// portal shot at one goes on its true plane.
     pub slopes: Vec<Slope>,
+    /// Regions its logic switches (Portal's maps: pushes, hurts, no-portal volumes, portal
+    /// bumpers and detectors).
+    pub volumes: Vec<Volume>,
+    /// Physics props to knock about (Portal's maps').
+    pub bodies: Vec<Body>,
 }
 
 /// A flat, tilted face that takes portals: its outward normal and its corners, in order round.
@@ -519,6 +578,8 @@ impl Level {
             io: None,
             landmarks: Vec::new(),
             slopes: Vec::new(),
+            volumes: Vec::new(),
+            bodies: Vec::new(),
         }
     }
 
@@ -707,7 +768,7 @@ impl Level {
     /// its inputs are on.
     pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
         let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
-        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None, faces: Vec::new() }))
+        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None }))
     }
 
     pub fn turret(&mut self, at: [f32; 3], yaw_deg: f32) -> &mut Self {

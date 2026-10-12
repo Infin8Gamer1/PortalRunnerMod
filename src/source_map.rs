@@ -68,7 +68,9 @@ pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
                 let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
                 let ents = read("ents");
                 let mut l = aperture::source::level_with_scenes(name, title, &read("solids"), &ents, &scenes());
-                l.art = Some(Arc::new(aperture::art::MapArt::from_files(name, &read("props"), &read("overlays"), &ents)));
+                let art = aperture::art::MapArt::from_files(name, &read("props"), &read("overlays"), &ents);
+                l.bodies = aperture::art::bodies(&art);
+                l.art = Some(Arc::new(art));
                 l
             });
             (title.to_string(), f)
@@ -445,15 +447,17 @@ pub fn sync(
         })
         .collect();
     let sprites = of_kind(aperture::io::Kind::Sprite);
+    // Physics props knocked about: the sim's prop each one's art is.
+    let bodies: HashMap<usize, (u32, Vec3, Quat)> = level.bodies.iter().zip(&game.sim.bodies).map(|(b, id)| (b.art, (*id, b.origin, b.turn))).collect();
     let mut cabin_lamp: Option<(Handle<Mesh>, Handle<StandardMaterial>)> = None;
     let mut sprite_quad: Option<Handle<Mesh>> = None;
     let (mut grill_mats, mut grill_seed) = (crate::grill_fx::Mats::default(), 1u32);
-    for p in &art.props {
+    for (pi, p) in art.props.iter().enumerate() {
         let mover = movers.get(&p.parent).copied();
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
         match &p.kind {
             // An emancipation grill's particles.
-            aperture::art::PropKind::Particles => {
+            aperture::art::PropKind::Particles { .. } => {
                 if let Some(kind) = crate::grill_fx::Kind::of(&p.model) {
                     let seed = grill_seed;
                     grill_seed += 1;
@@ -486,6 +490,8 @@ pub fn sync(
                     NotShadowCaster,
                 ));
             }
+            // (Effects and cameras are `map_fx`'s.)
+            aperture::art::PropKind::Spotlight { .. } | aperture::art::PropKind::Steam { .. } | aperture::art::PropKind::Sparks { .. } | aperture::art::PropKind::Beam { .. } | aperture::art::PropKind::Camera => {}
             kind => {
                 let Some(path) = extracted.model(&p.model) else { continue };
                 let at = p.at + shift;
@@ -512,9 +518,14 @@ pub fn sync(
                         });
                     continue;
                 }
+                // A physics prop that's a body of the sim's: drawn where that is.
+                if let Some(&(id, origin, turn0)) = bodies.get(&pi) {
+                    commands.spawn((ChamberGeom, BodyProp { id, origin, turn0 }, WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), Visibility::default(), Transform::from_translation(at).with_rotation(turn)));
+                    continue;
+                }
                 // A loose prop on one of the map's cubes stands on ours.
                 let perched = match kind {
-                    aperture::art::PropKind::Physics { bottom } => aperture::source::Perched::find(&game.sim, at, *bottom),
+                    aperture::art::PropKind::Physics { bottom, .. } => aperture::source::Perched::find(&game.sim, at, *bottom),
                     _ => None,
                 };
                 let at = perched.map_or(at, |q| q.at);
@@ -659,6 +670,31 @@ fn cable_mesh(ropes: &[aperture::rope::Rope]) -> Mesh {
     mesh
 }
 
+/// A physics prop the sim knocks about: its prop's id, where the model's origin is from the
+/// prop's middle (as it was turned to start with), and that turn.
+#[derive(Component)]
+pub struct BodyProp {
+    id: u32,
+    origin: Vec3,
+    turn0: Quat,
+}
+
+/// Physics props go where the sim has them (turned as it's turned them), gone when they are.
+pub fn move_bodies(game: Res<Game>, mut q: Query<(&BodyProp, &mut Transform, &mut Visibility)>) {
+    for (b, mut tf, mut vis) in &mut q {
+        let p = game.sim.props.iter().find(|p| p.id == b.id && p.alive);
+        let want = if p.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want {
+            *vis = want;
+        }
+        if let Some(p) = p {
+            // (Its turn in the sim is from as it stood.)
+            tf.translation = p.pos + p.rot * b.origin;
+            tf.rotation = p.rot * b.turn0;
+        }
+    }
+}
+
 /// A map light's bulb (see [`bulbs`]).
 #[derive(Component)]
 pub struct Bulb;
@@ -714,12 +750,17 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
         } else if mv.present && *vis == Visibility::Hidden && p.animated.is_none() {
             *vis = Visibility::Inherited;
         }
-        let (at, turn) = match mv.def.swing {
-            Some(sw) => {
+        let (at, turn) = match (mv.def.swing, &mv.def.spin) {
+            (Some(sw), _) => {
                 let r = sw.rotation(mv.at.x);
                 (mv.carried + sw.pivot + r * (p.base - sw.pivot), r * p.turn)
             }
-            None => (p.base + mv.offset(), p.turn),
+            // On a fan: round with it.
+            (None, Some(spin)) => {
+                let r = Quat::from_axis_angle(spin.axis, mv.spin_angle);
+                (mv.offset() + spin.pivot + r * (p.base - spin.pivot), r * p.turn)
+            }
+            (None, None) => (p.base + mv.offset(), p.turn),
         };
         // (A sprite turns to the camera, not with what it rides.)
         let turn = if sprite { tf.rotation } else { turn };
@@ -730,13 +771,18 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
     }
     for (m, mut tf, mut vis) in &mut q {
         let Some(mv) = movers.iter().find(|v| v.def.model == m.0) else { continue };
-        let want = match mv.def.swing {
+        let want = match (mv.def.swing, &mv.def.spin) {
             // A swinging door turns about its hinge.
-            Some(sw) => {
+            (Some(sw), _) => {
                 let r = sw.rotation(mv.at.x);
                 Transform { translation: mv.carried + sw.pivot - r * sw.pivot, rotation: r, ..default() }
             }
-            None => Transform::from_translation(mv.offset()),
+            // A fan spins about its middle.
+            (None, Some(spin)) => {
+                let r = Quat::from_axis_angle(spin.axis, mv.spin_angle);
+                Transform { translation: mv.offset() + spin.pivot - r * spin.pivot, rotation: r, ..default() }
+            }
+            (None, None) => Transform::from_translation(mv.offset()),
         };
         if tf.translation != want.translation || tf.rotation != want.rotation {
             tf.translation = want.translation;

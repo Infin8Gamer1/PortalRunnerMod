@@ -83,7 +83,26 @@ Each of Portal's maps is a level file in the repository (`levels/portal/`, made 
 **Portal brushes** and **Portal logic** in the content browser make new ones: brushes of
 Portal's white panels, concrete, black metal, glass, light panels and tool textures, and
 relays, timers, map-start, counters, cases, triggers, sliding doors and toggled walls (brush
-entities), GLaDOS scenes, Portal's lights, landmarks, level changes and the portal gun.
+entities), GLaDOS scenes, Portal's lights, landmarks, level changes, the portal gun, targets,
+fans (`func_rotating`: they spin up and down, and hum), push and hurt volumes, portal detectors
+(their outputs fire as a portal's put in them), portal bumpers (which nudge a portal off their
+edge) and no-portal volumes, and security cameras (which follow her, and fall when a portal's
+opened under them).
+
+**Portal sound & effects** has the rest: sounds (`ambient_generic`: looping or once, heard from
+where it is or everywhere, started and stopped by the logic), soundscapes (an area's ambience,
+the nearest in sight), particles (mist, the elevator shafts' beams, fire, neurotoxin), steam,
+sparks, spotlights' beams, beams between two named targets, screen shakes and fades, colour
+correction (one of Portal's tables, weighed in near it or everywhere, faded in and out by the
+logic), tonemap controllers (the logic sets the auto exposure's range and rate, and the bloom)
+and decals. A sound's message has a **…** beside it: the sound browser, with Portal's
+soundscripts and files and Mirror's Edge's cues (named `me:<package>.<group>.<cue>`, read from
+its install), to search, listen to (▶) and pick. A soundscape, a particle effect and a colour
+correction table have menus of what the game has.
+
+A Portal model from the props browser can be made a physics prop (**Knock it about** in its
+details): a `prop_physics` with its model's hull, that falls, is knocked about and can be
+picked up as a cube can (one too big to lift stays as it is).
 
 The files hold the maps' layouts, not their assets: materials, models and scenes are named,
 and drawn from the extracted folder. Saving one writes its file in `levels/portal/` (commit it

@@ -106,6 +106,7 @@ pub fn play(
     camera: Query<&GlobalTransform, With<PlayerCamera>>,
     mut prop_sounds: ResMut<PropSounds>,
     stopping: Query<(Entity, &StopAt)>,
+    lib: Option<Res<crate::map_audio::SoundLib>>,
 ) {
     if ex.sounds.is_empty() {
         return;
@@ -217,7 +218,7 @@ pub fn play(
                 one_shot(&mut commands, ex.sound("elevator_chime"), 0.7 * fx, 1.0);
             }
             SimEvent::PlayerDied => one_shot(&mut commands, ex.sound("chamber_fail"), 0.6 * fx, 1.0),
-            SimEvent::Checkpoint { .. } | SimEvent::MoverAt { .. } | SimEvent::MoverUsed { .. } => {}
+            SimEvent::Checkpoint { .. } | SimEvent::MoverAt { .. } | SimEvent::MoverUsed { .. } | SimEvent::PortalDetected { .. } => {}
         }
     }
     // GLaDOS, over the speakers (not from anywhere in particular).
@@ -265,8 +266,11 @@ pub fn play(
         commands.spawn((AudioPlayer::new(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(v)).with_speed(speed)));
     }
 
-    // ---- loops: their volume follows what's near.
-    let indoor = sim.level.indoor;
+    // ---- loops: their volume follows what's near. (A Portal map with an ambience of its own
+    // has its own hum and music, `map_audio`: when its sound library's there to play them.)
+    let library = lib.as_ref().is_some_and(|l| !l.files.is_empty());
+    let own = library && sim.io.as_ref().is_some_and(|io| io.ents.iter().any(|e| matches!(e.kind, aperture::io::Kind::Soundscape { .. })));
+    let indoor = sim.level.indoor && !own;
     let near_portal = sim.portals.iter().flatten().map(|p| p.center.distance(ear)).fold(f32::INFINITY, f32::min);
     let laser_near = sim.lasers.iter().filter(|l| l.on).flat_map(|l| l.path.iter()).map(|(a, b)| aperture::geom::segment_point(*a, *b, ear).0).fold(f32::INFINITY, f32::min);
     let bridge_near = sim.bridges.iter().flat_map(|b| b.segs.iter()).map(|s| aperture::geom::segment_point(s.a, s.b, ear).0).fold(f32::INFINITY, f32::min);

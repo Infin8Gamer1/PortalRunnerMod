@@ -26,14 +26,38 @@ pub enum PropKind {
     Static,
     /// A prop the logic can animate, hide or reskin (prop_dynamic).
     Dynamic,
-    /// A physics prop (one the game only draws), its lowest point `bottom` below its origin
-    /// as it's turned, if its model says.
-    Physics { bottom: Option<f32> },
+    /// A physics prop: its lowest point `bottom` below its origin as it's turned, and its
+    /// model's hull (unturned, ours), if its model says: what it is to collide with.
+    Physics { bottom: Option<f32>, hull: Option<(Vec3, Vec3)> },
     /// A glow sprite (env_sprite): `size` metres across, glowing in `color` (0-1) at `alpha`;
     /// the game shows it once the logic turns it on, unless it starts on.
     Sprite { size: f32, color: Vec3, alpha: f32 },
-    /// An emancipation grill's particle system (`model` is its effect).
-    Particles,
+    /// A particle system (info_particle_system: `model` is its effect), on from the start or
+    /// not (a grill's always is).
+    Particles { start_on: bool },
+    /// A spotlight's beam (point_spotlight): `length` and `width` metres across where it's
+    /// widest, in `color`; on from the start or not; lighting what it shines on, or (as almost
+    /// all of Portal's: No Dynamic Light) only a beam.
+    Spotlight { length: f32, width: f32, color: Vec3, start_on: bool, light: bool },
+    /// Steam (env_steam): puffs at `speed` (m/s) along it for `length` metres, from `start` to
+    /// `end` metres across, `rate` a second, in `color` at `alpha`.
+    Steam { speed: f32, length: f32, start: f32, end: f32, rate: f32, color: Vec3, alpha: f32, start_on: bool },
+    /// Sparks (env_spark): a burst of `magnitude` (1-8), at most `delay` seconds apart.
+    Sparks { magnitude: f32, delay: f32, start_on: bool },
+    /// A beam (env_beam) to `to` (ours), `width` metres across, in `color`.
+    Beam { to: Vec3, width: f32, color: Vec3, start_on: bool },
+    /// A security camera (`model` its model): it turns to watch her.
+    Camera,
+}
+
+impl PropKind {
+    /// Whether it's an effect shown from the start (or not): the logic switches it.
+    pub fn starts_on(&self) -> bool {
+        match self {
+            PropKind::Particles { start_on } | PropKind::Spotlight { start_on, .. } | PropKind::Steam { start_on, .. } | PropKind::Sparks { start_on, .. } | PropKind::Beam { start_on, .. } => *start_on,
+            _ => true,
+        }
+    }
 }
 
 /// One of a map's props, sprites or particle systems.
@@ -93,6 +117,38 @@ pub fn glb_model(file: &str) -> (String, i32) {
     }
 }
 
+/// A model's hull in Source's space (inches: `lo xyz hi xyz`) as ours (metres).
+pub fn source_hull(v: &[f32]) -> Option<(Vec3, Vec3)> {
+    if v.len() < 6 {
+        return None;
+    }
+    let (a, b) = (source::to_ours(Vec3::new(v[0], v[1], v[2])), source::to_ours(Vec3::new(v[3], v[4], v[5])));
+    Some((a.min(b), a.max(b)))
+}
+
+/// The map's physics props that are to be knocked about, as bodies (each one's prop in `art`):
+/// those with a hull of a size to pick up.
+pub fn bodies(art: &MapArt) -> Vec<crate::level::Body> {
+    let mut out = Vec::new();
+    for (i, p) in art.props.iter().enumerate() {
+        let PropKind::Physics { hull: Some((lo, hi)), .. } = p.kind else { continue };
+        // Its box as it's turned.
+        let (mut a, mut z) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for k in 0..8 {
+            let c = p.turn * Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
+            a = a.min(c);
+            z = z.max(c);
+        }
+        let half = ((z - a) * 0.5).max(Vec3::splat(0.04));
+        if half.max_element() > 1.0 {
+            continue;
+        }
+        let centre = p.at + (a + z) * 0.5;
+        out.push(crate::level::Body { at: centre, half, turn: p.turn, origin: p.at - centre, art: i });
+    }
+    out
+}
+
 fn floats(v: &str) -> Vec<f32> {
     v.split_whitespace().filter_map(|x| x.parse().ok()).collect()
 }
@@ -115,7 +171,7 @@ pub fn parse_props(text: &str) -> Vec<ArtProp> {
         let (kind, turn) = match f[0] {
             "particles" => {
                 let a = vec3(f[3]);
-                (PropKind::Particles, source::source_turn(a.x, a.y, a.z))
+                (PropKind::Particles { start_on: true }, source::source_turn(a.x, a.y, a.z))
             }
             "sprite" => {
                 let v = floats(f[3]);
@@ -126,7 +182,7 @@ pub fn parse_props(text: &str) -> Vec<ArtProp> {
                 let a = vec3(f[3]);
                 let kind = match k {
                     "static" => PropKind::Static,
-                    "physics" => PropKind::Physics { bottom: f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254) },
+                    "physics" => PropKind::Physics { bottom: f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254), hull: f.get(7).and_then(|h| source_hull(&floats(h))) },
                     _ => PropKind::Dynamic,
                 };
                 (kind, source::source_turn(a.x, a.y, a.z))
@@ -159,8 +215,80 @@ pub fn parse_overlays(text: &str) -> Vec<ArtOverlay> {
 impl MapArt {
     /// Map `name`'s, from `portal_extract`'s files (its faces stay in its mesh file).
     pub fn from_files(name: &str, props: &str, overlays: &str, ents: &str) -> MapArt {
-        MapArt { mesh: Some(name.to_string()), faces: Vec::new(), props: parse_props(props), overlays: parse_overlays(overlays), ropes: crate::rope::hang(&source::parse_entities(ents)) }
+        let ents = source::parse_entities(ents);
+        let mut props = parse_props(props);
+        let placed: Vec<(Entity, Vec3, Quat)> = ents.iter().map(|e| (e.clone(), origin(e), angles(e))).collect();
+        props.extend(entity_extras(&placed));
+        MapArt { mesh: Some(name.to_string()), faces: Vec::new(), props, overlays: parse_overlays(overlays), ropes: crate::rope::hang(&ents) }
     }
+}
+
+/// An entity's origin, ours.
+fn origin(e: &Entity) -> Vec3 {
+    key(e, "origin").map(|v| source::to_ours(vec3(v))).unwrap_or(Vec3::ZERO)
+}
+
+/// An entity's angles as a turn, ours.
+fn angles(e: &Entity) -> Quat {
+    let a = key(e, "angles").map(vec3).unwrap_or(Vec3::ZERO);
+    source::source_turn(a.x, a.y, a.z)
+}
+
+/// What's drawn of a map's entities besides its props and sprites (which `portal_extract`
+/// writes out with what it works out of the game's files): spotlights, steam, sparks, beams,
+/// particle systems other than the grills', security cameras.
+pub fn entity_extras(ents: &[(Entity, Vec3, Quat)]) -> Vec<ArtProp> {
+    let mut out = Vec::new();
+    let lower = |e: &Entity, k: &str| key(e, k).unwrap_or("").to_ascii_lowercase();
+    let num = |e: &Entity, k: &str, d: f32| key(e, k).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(d);
+    let flags = |e: &Entity| key(e, "spawnflags").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+    let color = |e: &Entity| {
+        let c = floats(key(e, "rendercolor").unwrap_or("255 255 255"));
+        Vec3::new(c.first().copied().unwrap_or(255.0), c.get(1).copied().unwrap_or(255.0), c.get(2).copied().unwrap_or(255.0)) / 255.0
+    };
+    let named = |n: &str| ents.iter().find(|(e, ..)| key(e, "targetname").is_some_and(|t| t.eq_ignore_ascii_case(n))).map(|(_, at, _)| *at);
+    for (e, at, turn) in ents {
+        let class = key(e, "classname").unwrap_or("");
+        let (parent, name) = (lower(e, "parentname"), lower(e, "targetname"));
+        let kind = match class {
+            "info_particle_system" => {
+                let effect = lower(e, "effect_name");
+                if effect == "portal_cleanser" || effect == "cleanser_edge_1" {
+                    continue;
+                }
+                out.push(ArtProp { kind: PropKind::Particles { start_on: key(e, "start_active") == Some("1") }, model: effect, at: *at, turn: *turn, parent, name });
+                continue;
+            }
+            "point_spotlight" => PropKind::Spotlight { length: num(e, "spotlightlength", 500.0) * 0.0254, width: num(e, "spotlightwidth", 50.0) * 0.0254, color: color(e) * num(e, "HDRColorScale", 1.0), start_on: flags(e) & 1 != 0, light: flags(e) & 2 == 0 },
+            "env_steam" => {
+                let speed = num(e, "Speed", 120.0) * 0.0254;
+                PropKind::Steam {
+                    speed,
+                    length: num(e, "JetLength", 80.0) * 0.0254,
+                    start: num(e, "StartSize", 10.0) * 0.0254,
+                    end: num(e, "EndSize", 25.0) * 0.0254,
+                    rate: num(e, "Rate", 26.0),
+                    color: color(e),
+                    alpha: num(e, "renderamt", 255.0) / 255.0,
+                    start_on: key(e, "InitialState") == Some("1") || flags(e) & 1 != 0,
+                }
+            }
+            "env_spark" => PropKind::Sparks { magnitude: num(e, "Magnitude", 1.0), delay: num(e, "MaxDelay", 0.0), start_on: flags(e) & 64 != 0 },
+            "env_beam" => {
+                let start = key(e, "LightningStart").filter(|s| !s.is_empty()).and_then(named).unwrap_or(*at);
+                let Some(end) = key(e, "LightningEnd").filter(|s| !s.is_empty()).and_then(named) else { continue };
+                out.push(ArtProp { kind: PropKind::Beam { to: end, width: num(e, "BoltWidth", 2.0) * 0.0254, color: color(e), start_on: flags(e) & 1 != 0 }, model: lower(e, "texture"), at: start, turn: *turn, parent, name });
+                continue;
+            }
+            "npc_security_camera" => {
+                out.push(ArtProp { kind: PropKind::Camera, model: prop_glb("models/props/security_camera.mdl", 0), at: *at, turn: *turn, parent, name });
+                continue;
+            }
+            _ => continue,
+        };
+        out.push(ArtProp { kind, model: String::new(), at: *at, turn: *turn, parent, name });
+    }
+    out
 }
 
 /// The props, sprites and grill particles among a map's entities (`at` and `turn` each one's,
@@ -193,7 +321,7 @@ pub fn entity_props(ents: &[(Entity, Vec3, Quat)]) -> Vec<ArtProp> {
             "info_particle_system" => {
                 let effect = lower(e, "effect_name");
                 if effect == "portal_cleanser" || effect == "cleanser_edge_1" {
-                    particles.push(ArtProp { kind: PropKind::Particles, model: effect, at: *at, turn: *turn, parent, name });
+                    particles.push(ArtProp { kind: PropKind::Particles { start_on: true }, model: effect, at: *at, turn: *turn, parent, name });
                 }
             }
             "prop_static" | "prop_dynamic" | "prop_dynamic_override" | "prop_physics" | "prop_physics_override" | "prop_physics_multiplayer" | "prop_portal_stats_display" => {
@@ -206,7 +334,7 @@ pub fn entity_props(ents: &[(Entity, Vec3, Quat)]) -> Vec<ArtProp> {
                 let skin = key(e, "skin").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
                 let kind = match class {
                     "prop_static" => PropKind::Static,
-                    c if c.starts_with("prop_physics") => PropKind::Physics { bottom: num(e, "_bottom").map(|b| b * 0.0254) },
+                    c if c.starts_with("prop_physics") => PropKind::Physics { bottom: num(e, "_bottom").map(|b| b * 0.0254), hull: key(e, "_hull").and_then(|h| source_hull(&floats(h))) },
                     _ => PropKind::Dynamic,
                 };
                 props.push(ArtProp { kind, model: prop_glb(&model, skin), at: *at, turn: *turn, parent, name });
@@ -214,9 +342,11 @@ pub fn entity_props(ents: &[(Entity, Vec3, Quat)]) -> Vec<ArtProp> {
             _ => {}
         }
     }
-    // (In the order the extractor writes them: props, then sprites and particles.)
+    // (In the order the extractor writes them: props, then sprites and particles; then what
+    // it doesn't write.)
     props.extend(sprites);
     props.extend(particles);
+    props.extend(entity_extras(ents));
     props
 }
 

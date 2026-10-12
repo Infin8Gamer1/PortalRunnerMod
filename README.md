@@ -35,6 +35,10 @@ doors, grill emitters, laser emitters, catchers and relays, light bridge emitter
 2's models when they're extracted, and stand-ins when they aren't. The faith plate brings its
 launch animation along.
 
+It also writes Portal's sounds as a library (`sounds/lib/`, with the soundscripts and
+soundscapes: what the maps play, and the level editor's sound browser); `--no-sounds` skips
+it and `--sounds` writes it again.
+
 If Portal with RTX is installed too (or passed with `--portal-rtx <dir>`), its remaster is used
 where it has one, for the ray-traced lighting: the chamber's walls and floors take its
 physically based materials (normal, roughness and metallic maps), the deadly goo its toxic
@@ -149,7 +153,11 @@ elevator ends the chamber, pellets fly from their launchers into their catchers,
 speaks her lines on cue (her scenes, read from Portal's scenes.image). Turrets watch for you, fire when they see you, and
 tip over when a cube hits them, you run into them, or you kick them (Mirror's Edge's melee).
 The escape's rocket turrets lock on and fire slow rockets: put a portal in front of one and
-send it into the glass, the tubes or GLaDOS.
+send it into the glass, the tubes or GLaDOS. Their sounds play where they are (each map's
+own, and its soundscapes' ambience), fans spin, vents push you, steam, sparks, mist and
+spotlights' beams show as the logic switches them, security cameras follow you, the physics
+props (chairs, mugs, clipboards) can be knocked about and picked up, portal detectors and
+bumpers work, and each map's colour correction and tonemapping are applied.
 
 Each map is also a **native chamber**: a level file of the game's own, kept in the repository
 (`levels/portal/`, made from the map's brushes, entities, props and overlays by `aperture::port`),
@@ -236,7 +244,9 @@ crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> 
                         their animations) out of your Portal and Portal 2 VPKs, and Portal
                         with RTX's remastered materials and models (remix.rs, usd.rs), and
                         Portal's maps (bsp.rs: faces, brushes as boxes, entities; maps.rs),
-                        GLaDOS's scenes (scenes.rs), and the maps as native chambers
+                        GLaDOS's scenes (scenes.rs), its sounds as a library with their
+                        soundscripts and soundscapes (sounds.rs), its colour correction
+                        tables, and the maps as native chambers
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces
@@ -251,6 +261,9 @@ src/raytrace.rs         ray-traced lighting (Solari): the traced scene, emissive
 src/fonts.rs            the UI font (Inter from the system, if it's there)
 src/progress.rs         best times and the last chamber, saved
 src/portal_audio.rs     Portal's sounds
+src/map_audio.rs        Portal's maps' own sounds and soundscapes; the sound library
+src/map_fx.rs           Portal's maps' particles, steam, sparks, beams, cameras, shakes, fades
+src/map_grade.rs        Portal's maps' colour correction
 src/audio.rs            Mirror's Edge's sounds (Faith Runner)
 src/me_viewmodel.rs     Faith's Mirror's Edge body (Faith Runner)
 src/body3p.rs           her third-person body, seen through portals (and her shadow)

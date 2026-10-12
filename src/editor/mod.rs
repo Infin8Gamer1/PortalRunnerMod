@@ -11,7 +11,7 @@
 pub mod catalog;
 pub mod library;
 mod thumbs;
-mod ui;
+pub mod ui;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -192,6 +192,8 @@ pub struct Editor {
     pub version: u64,
     /// What the material picker's open for.
     pub picking: Option<MatTarget>,
+    /// The sound (object) the sound browser's open for.
+    pub sound_picking: Option<usize>,
 }
 
 /// What the material picker gives a material to: an object, and one of its faces (none: all
@@ -247,6 +249,7 @@ impl Default for Editor {
             ui_sink: None,
             version: 0,
             picking: None,
+            sound_picking: None,
         }
     }
 }
@@ -1783,5 +1786,17 @@ mod tests {
         assert_eq!(LevelDoc::from_ron(&text).unwrap(), d);
         let l = d.build();
         assert!(!l.items.is_empty());
+        // Portal's volumes, sounds and effects among them, as the logic has them, and it runs.
+        assert_eq!(l.volumes.len(), 5, "push, hurt, detector, bumper, no-portal");
+        assert!(l.art.as_ref().is_some_and(|a| a.props.iter().any(|p| p.kind == aperture::art::PropKind::Camera)));
+        let mut sim = aperture::Sim::new(l);
+        let mut c = faith_move::Controller::new(aperture::tuning(5.3, 15.0), Vec3::ZERO, 0.0);
+        for _ in 0..30 {
+            sim.step(1.0 / 60.0, &mut c);
+        }
+        let io = sim.io.as_ref().expect("its logic");
+        assert!(io.ents.iter().any(|e| matches!(e.kind, aperture::io::Kind::Sound { .. })));
+        assert!(io.ents.iter().any(|e| matches!(e.kind, aperture::io::Kind::Correction { .. })));
+        assert!(sim.movers.iter().any(|m| m.def.spin.is_some()), "the fan");
     }
 }

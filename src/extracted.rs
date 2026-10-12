@@ -111,9 +111,15 @@ impl Extracted {
 
     /// A model's path for the asset server (`extracted/models/<name>.glb`, relative to the
     /// assets folder), if it was extracted.
+    /// A model's file: a map's (`map/props/...`), else the props library's copy of it (one
+    /// the editor's placed that no map uses).
     pub fn model(&self, name: &str) -> Option<String> {
-        let p = self.root.as_ref()?.join("models").join(format!("{name}.glb"));
-        p.is_file().then(|| format!("extracted/models/{name}.glb"))
+        let root = self.root.as_ref()?;
+        if root.join("models").join(format!("{name}.glb")).is_file() {
+            return Some(format!("extracted/models/{name}.glb"));
+        }
+        let rel = name.strip_prefix("map/")?;
+        root.join("props/portal").join(format!("{rel}.glb")).is_file().then(|| format!("extracted/props/portal/{rel}.glb"))
     }
 
     pub fn sound(&self, name: &str) -> Option<Handle<AudioSource>> {

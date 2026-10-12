@@ -84,6 +84,43 @@ pub enum MoverKind {
     Train,
     /// There or not (enable, disable).
     Brush,
+    /// A fan: spinning or not (start, stop).
+    Rotor,
+}
+
+/// A sound playing (an ambient_generic's): whether it is, how many times it's been started
+/// (the host starts it again when this goes up), its volume (0-1) and pitch (1: as recorded).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoundState {
+    pub playing: bool,
+    pub starts: u32,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// A shake of the view (env_shake): `n` goes up with each; `amplitude` 0 stops one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shake {
+    pub n: u32,
+    pub at: Vec3,
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub duration: f32,
+    /// How far it's felt (metres; infinite: everywhere).
+    pub radius: f32,
+}
+
+/// A fade of the screen (env_fade): to `color` at `alpha` over `duration`, held `hold`, then
+/// back (unless it `stays`); `from`: from the colour to clear instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fade {
+    pub n: u32,
+    pub color: Vec3,
+    pub alpha: f32,
+    pub duration: f32,
+    pub hold: f32,
+    pub from: bool,
+    pub stays: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +175,28 @@ pub enum Kind {
     /// Runs its parent brush's texture frame (material_modify_control on `$frame`: Chamber
     /// 00's clock's hundredths). `lerp`: from, to, over (seconds), looping, since when.
     FrameLerp { parent: String, lerp: Option<(f32, f32, f32, bool, f32)> },
+    /// A sound (ambient_generic): what it plays (a soundscript or a file), where (riding
+    /// `mover`), how loud and at what pitch to start with, how far it carries (metres; 0:
+    /// as its soundscript says), heard everywhere, and whether it loops: see [`Io::sounds`].
+    Sound { at: Vec3, sound: String, volume: f32, pitch: f32, reach: f32, everywhere: bool, looped: bool, mover: Option<usize> },
+    /// Where an area's ambience is (env_soundscape): heard within `radius` (metres; infinite:
+    /// anywhere), while it's on.
+    Soundscape { at: Vec3, radius: f32, scape: String, enabled: bool },
+    /// Shakes the view (env_shake): see [`Io::shakes`].
+    Shake { at: Vec3, amplitude: f32, frequency: f32, duration: f32, radius: f32 },
+    /// Fades the screen (env_fade): see [`Io::fades`].
+    Fade { color: Vec3, alpha: f32, duration: f32, hold: f32, from: bool, stays: bool },
+    /// Colour correction (color_correction): a table (`file`, its name without the folder:
+    /// `cc_testchamber.raw`) weighed in fully within `near` metres, fading out by `far`
+    /// (infinite: anywhere), at most `weight`, while it's on; it fades in and out over
+    /// `fade_in` and `fade_out` seconds.
+    Correction { at: Vec3, near: f32, far: f32, weight: f32, file: String, enabled: bool, fade_in: f32, fade_out: f32 },
+    /// One of the sim's switched regions (a push, a hurt, a no-portal volume, a portal bumper
+    /// or detector).
+    Volume { index: usize },
+    /// Something shown or not, as a sprite is (a spotlight's beam, steam, sparks): see
+    /// [`Io::hidden`].
+    Effect,
     Other,
 }
 
@@ -208,6 +267,19 @@ pub struct Io {
     /// Which preset portal (entity) is open in each colour.
     open: [Option<usize>; 2],
     rng: u32,
+    /// Each sound's (entity's) state.
+    pub sounds: HashMap<usize, SoundState>,
+    /// The view's shakes, the last few (the host starts each new one).
+    pub shakes: Vec<Shake>,
+    /// The screen's fades, the last few.
+    pub fades: Vec<Fade>,
+    /// The sounds (entities) and whether each starts playing.
+    pub initial_sounds: Vec<(usize, bool)>,
+    /// What's been knocked down (a security camera a portal's opened under: Ragdoll).
+    pub knocked: std::collections::HashSet<usize>,
+    /// Each tonemap setting the logic's changed (env_tonemap_controller): its input (lower
+    /// case: `setautoexposuremin`, `setbloomscale`...) and value.
+    pub tonemap: HashMap<String, f32>,
 }
 
 impl Io {
@@ -219,6 +291,11 @@ impl Io {
             }
         }
         Io { ents, by_name, initial, signals, rng: 0x1234_5678, ..Default::default() }
+    }
+
+    /// Sends an entity an input at once, as an output would (for tools: the scripted runs).
+    pub fn send(&mut self, sim: &mut Sim, e: usize, input: &str, param: &str) {
+        self.input(sim, e, input, param, e);
     }
 
     pub fn signal_count(&self) -> usize {
@@ -314,6 +391,12 @@ impl Io {
                     self.input(sim, e, "SetActivatedState", "1", e);
                 }
             }
+            // Sounds that don't start silent start (`initial_sounds`).
+            for (e, on) in std::mem::take(&mut self.initial_sounds) {
+                if let Kind::Sound { volume, pitch, .. } = self.ents[e].kind {
+                    self.sounds.insert(e, SoundState { playing: on, starts: u32::from(on), volume, pitch });
+                }
+            }
         }
         self.time += dt;
 
@@ -328,6 +411,28 @@ impl Io {
             }
             if let SimEvent::RocketExploded { at, .. } = ev {
                 self.rocket_blast(sim, at);
+            }
+            // A portal opened in a detector (or closed out of it): it fires for its colour,
+            // for any, and once both portals are open, for a linked one.
+            if let SimEvent::PortalDetected { volume, color, inside } = ev {
+                let both = sim.portals.iter().all(|p| p.is_some());
+                let other = sim.volumes.get(volume).is_some_and(|v| v.portals[color.other().index()]);
+                for e in 0..self.ents.len() {
+                    if self.ents[e].kind != (Kind::Volume { index: volume }) {
+                        continue;
+                    }
+                    let n = if color == PortalColor::Blue { 1 } else { 2 };
+                    let (on, off) = if inside { ("OnStartTouch", "") } else { ("OnEndTouch", "") };
+                    let _ = off;
+                    self.fire(e, &format!("{on}Portal{n}"), None);
+                    self.fire(e, &format!("{on}Portal"), None);
+                    if both {
+                        self.fire(e, &format!("{on}LinkedPortal"), None);
+                        if inside && other {
+                            self.fire(e, "OnStartTouchBothLinkedPortals", None);
+                        }
+                    }
+                }
             }
             // A switch she's pressed.
             if let SimEvent::MoverUsed { mover } = ev {
@@ -670,6 +775,11 @@ impl Io {
                     }
                 }
                 Kind::Animated if self.hatches.contains_key(&e) => sim.movers[self.hatches[&e]].present = false,
+                Kind::Sound { .. } => {
+                    if let Some(st) = self.sounds.get_mut(&e) {
+                        st.playing = false;
+                    }
+                }
                 // A launcher that's gone fires no more.
                 Kind::Launcher { sig, .. } => {
                     if let Some(v) = sim.io_signals.get_mut(sig) {
@@ -827,6 +937,21 @@ impl Io {
                         m.speed = num(param).abs() * 0.0254;
                         m.goal = if m.speed == 0.0 { None } else { Some(last) };
                     }
+                    // A fan: on and off, faster and slower, the other way round.
+                    (MoverKind::Rotor, "start" | "turnon" | "enable") => m.spin_on = true,
+                    (MoverKind::Rotor, "stop" | "turnoff" | "disable") => m.spin_on = false,
+                    (MoverKind::Rotor, "toggle") => m.spin_on = !m.spin_on,
+                    (MoverKind::Rotor, "startforward") => {
+                        m.spin_scale = m.spin_scale.abs();
+                        m.spin_on = true;
+                    }
+                    (MoverKind::Rotor, "startbackward") => {
+                        m.spin_scale = -m.spin_scale.abs();
+                        m.spin_on = true;
+                    }
+                    (MoverKind::Rotor, "reverse") => m.spin_scale = -m.spin_scale,
+                    // A fraction of its top speed.
+                    (MoverKind::Rotor, "setspeed") => m.spin_scale = m.spin_scale.signum() * num(param).clamp(0.0, 1.0),
                     (_, "enable" | "turnon" | "enablecollision") => m.present = true,
                     (_, "disable" | "turnoff" | "disablecollision") => m.present = false,
                     (MoverKind::Brush, "toggle") => m.present = !m.present,
@@ -942,6 +1067,113 @@ impl Io {
                 "clearparent" => sim.reparent_gun(index, None),
                 _ => {}
             },
+            Kind::Sound { volume, pitch, .. } => {
+                let st = self.sounds.entry(e).or_insert(SoundState { playing: false, starts: 0, volume, pitch });
+                match i.as_str() {
+                    "playsound" | "fadein" => {
+                        st.playing = true;
+                        st.starts += 1;
+                    }
+                    "stopsound" | "fadeout" => st.playing = false,
+                    "togglesound" => {
+                        st.playing = !st.playing;
+                        if st.playing {
+                            st.starts += 1;
+                        }
+                    }
+                    // (0-10; nothing: silent.)
+                    "volume" => {
+                        st.volume = (num(param) / 10.0).clamp(0.0, 1.0);
+                        if st.volume <= 0.0 {
+                            st.playing = false;
+                        }
+                    }
+                    "pitch" => st.pitch = (num(param) / 100.0).clamp(0.01, 2.55),
+                    _ => {}
+                }
+            }
+            Kind::Soundscape { enabled, .. } => {
+                let on = match i.as_str() {
+                    "enable" => true,
+                    "disable" => false,
+                    "toggleenabled" => !enabled,
+                    _ => enabled,
+                };
+                if let Kind::Soundscape { enabled, .. } = &mut self.ents[e].kind {
+                    *enabled = on;
+                }
+            }
+            Kind::Correction { .. } => {
+                if let Kind::Correction { enabled, fade_in, fade_out, .. } = &mut self.ents[e].kind {
+                    match i.as_str() {
+                        "enable" => *enabled = true,
+                        "disable" => *enabled = false,
+                        "setfadeinduration" => *fade_in = num(param).max(0.0),
+                        "setfadeoutduration" => *fade_out = num(param).max(0.0),
+                        _ => {}
+                    }
+                }
+            }
+            Kind::Shake { at, amplitude, frequency, duration, radius } => {
+                let amplitude = match i.as_str() {
+                    "startshake" => amplitude,
+                    "stopshake" => 0.0,
+                    "amplitude" => num(param),
+                    _ => return,
+                };
+                let n = self.shakes.last().map_or(1, |s| s.n + 1);
+                self.shakes.push(Shake { n, at, amplitude, frequency, duration, radius });
+                if self.shakes.len() > 8 {
+                    self.shakes.remove(0);
+                }
+            }
+            Kind::Fade { color, alpha, duration, hold, from, stays } if i == "fade" || i == "fadereverse" => {
+                let n = self.fades.last().map_or(1, |f| f.n + 1);
+                self.fades.push(Fade { n, color, alpha, duration, hold, from: from != (i == "fadereverse"), stays });
+                if self.fades.len() > 8 {
+                    self.fades.remove(0);
+                }
+            }
+            Kind::Volume { index } => {
+                if let Some(v) = sim.volumes.get_mut(index) {
+                    match i.as_str() {
+                        "enable" | "setactive" => v.on = true,
+                        "disable" | "setinactive" => v.on = false,
+                        "toggle" | "toggleactive" => v.on = !v.on,
+                        "setspeed" => {
+                            if let crate::level::VolumeKind::Push { speed, .. } = &mut v.def.kind {
+                                *speed = num(param) * 0.0254;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Kind::Effect if i == "ragdoll" || i == "break" => {
+                self.knocked.insert(e);
+            }
+            Kind::Effect => match i.as_str() {
+                "lighton" | "turnon" | "startspark" | "start" | "showsprite" => {
+                    self.hidden.remove(&e);
+                }
+                "lightoff" | "turnoff" | "stopspark" | "stop" | "stopplayendcap" | "hidesprite" => {
+                    self.hidden.insert(e);
+                }
+                "toggle" | "togglespark" if !self.hidden.remove(&e) => {
+                    self.hidden.insert(e);
+                }
+                _ => {}
+            },
+            // Whoever receives it, a tonemap controller's inputs are kept for the host.
+            Kind::Other if i.starts_with("setautoexposure") || i.starts_with("setbloom") || i == "settonemaprate" => {
+                self.tonemap.insert(i.clone(), num(param));
+            }
+            Kind::Other if i == "usedefaultautoexposure" => {
+                self.tonemap.retain(|k, _| !k.starts_with("setautoexposure"));
+            }
+            Kind::Other if i == "usedefaultbloomscale" => {
+                self.tonemap.remove("setbloomscale");
+            }
             Kind::Sprite => match i.as_str() {
                 "showsprite" => {
                     self.hidden.remove(&e);

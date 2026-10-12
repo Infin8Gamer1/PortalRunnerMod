@@ -203,9 +203,10 @@ fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) ->
 pub type UsedModel = (String, i32, Vec<String>);
 
 /// Write a map's props out (`maps/<name>.props`, a line each: `kind|model file|x y z|pitch
-/// yaw roll|parent|name`, Source space; a physics prop's line goes on `|bottom`, how far its
-/// lowest point is below its origin as it's turned, so the game can stand it on what's under
-/// it), and say which models they use.
+/// yaw roll|parent|name`, Source space; a physics prop's line goes on `|bottom|hull`: how far
+/// its lowest point is below its origin as it's turned, so the game can stand it on what's
+/// under it, and its model's hull, unturned, `lo xyz hi xyz`, its size to collide with), and
+/// say which models they use.
 fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<UsedModel>, String> {
     // Props the logic puts on an attachment of the prop they're parented to (a catcher's ball
     // on `ball_attachment`): they're written where that is (#52).
@@ -265,7 +266,18 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
         if OWN_MODELS.contains(&model.as_str()) || model.contains("portal_cleanser") || !model.ends_with(".mdl") {
             return;
         }
-        let bottom = if kind == "physics" { read(&model).and_then(|m| hull_bottom(&m, a)).map(|b| format!("|{b}")).unwrap_or_default() } else { String::new() };
+        // A physics prop's: how far its lowest point is below its origin, then its hull as
+        // the model has it (unturned).
+        let bottom = if kind == "physics" {
+            let mdl = read(&model);
+            match (mdl.as_deref().and_then(|m| hull_bottom(m, a)), mdl.as_deref().and_then(hull)) {
+                (Some(b), Some((lo, hi))) => format!("|{b}|{} {} {} {} {} {}", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z),
+                (Some(b), None) => format!("|{b}"),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
         text.push_str(&format!("{kind}|{}|{} {} {}|{} {} {}|{parent}|{name}{bottom}\n", prop_glb(&model, skin), o.x, o.y, o.z, a.x, a.y, a.z));
         let mut its: Vec<String> = anims.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default();
         its.extend(default_anim.map(|d| d.to_ascii_lowercase()));
@@ -353,7 +365,18 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
     }
     text.push_str(&sprites);
     std::fs::write(path, text).map_err(|e| e.to_string())?;
+    // (Security cameras aren't props: the game draws them itself, from this model.)
+    if ents.iter().any(|e| bsp::key(e, "classname") == Some("npc_security_camera")) && !used.iter().any(|(m, _, _)| m == "models/props/security_camera.mdl") {
+        used.push(("models/props/security_camera.mdl".into(), 0, Vec::new()));
+    }
     Ok(used)
+}
+
+/// A model's hull (the MDL header's `hull_min`/`hull_max`), if it has one.
+fn hull(mdl: &[u8]) -> Option<(Vec3, Vec3)> {
+    let f = |o: usize| -> Option<f32> { Some(f32::from_le_bytes(mdl.get(o..o + 4)?.try_into().ok()?)) };
+    let (lo, hi) = (Vec3::new(f(104)?, f(108)?, f(112)?), Vec3::new(f(116)?, f(120)?, f(124)?));
+    (lo != hi).then_some((lo, hi))
 }
 
 /// How far a model's lowest point is below its origin, turned by Source's angles (pitch yaw

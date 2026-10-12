@@ -527,7 +527,8 @@ impl Play {
 
     /// Pick up the cube nearest `near` (walking up to it first).
     pub fn pick_up(&mut self, near: Vec3) -> usize {
-        let nearest = |p: &Play| p.sim.props.iter().enumerate().filter(|(_, c)| c.alive && c.fizzle.is_none()).min_by(|a, b| a.1.pos.distance(near).total_cmp(&b.1.pos.distance(near))).map(|(i, _)| i);
+        // (A cube: not one of the map's physics props, a chair or a mug.)
+        let nearest = |p: &Play| p.sim.props.iter().enumerate().filter(|(_, c)| c.alive && c.fizzle.is_none() && c.kind != crate::level::CubeKind::Physics).min_by(|a, b| a.1.pos.distance(near).total_cmp(&b.1.pos.distance(near))).map(|(i, _)| i);
         // (One waiting in a dropper's tube: the map drops it when it's ready.)
         if nearest(self).is_some_and(|i| self.sim.in_dropper(i)) {
             self.wait_for(30.0, "the cube to drop", |p| nearest(p).is_some_and(|i| !p.sim.in_dropper(i) && p.sim.props[i].vel.length() < 0.1));
@@ -1469,7 +1470,7 @@ fn solve_testchmb_a_08() {
     let low = p.sim.portals[1].unwrap().center;
     p.shoot(PortalColor::Blue, Vec3::new(7.2, 9.75, -6.0));
     let over = p.sim.portals[0].unwrap().center;
-    let cube = p.sim.props.iter().position(|c| c.alive && c.pos.x > 5.0).expect("the cart's cube");
+    let cube = p.sim.props.iter().position(|c| c.alive && c.kind != crate::level::CubeKind::Physics && c.pos.x > 5.0).expect("the cart's cube");
     p.wait_for(40.0, "the cube coming up under the ceiling portal", |p| p.sim.movers[cart].goal == Some(1) && (p.sim.props[cube].pos.z - over.z - 3.0).abs() < 0.3);
     p.enter_now(PortalColor::Orange, low, Some(over));
     p.wait_for(5.0, "her to land", |p| p.c.state == State::Ground);
@@ -1808,7 +1809,7 @@ fn solve_testchmb_a_13() {
     // Out of the elevator: GLaDOS's welcome, and the cube drops as she finishes.
     p.wait(3.0);
     p.go(Vec3::new(-3.25, 0.0, -64.5), 0.5);
-    p.pick_up(Vec3::new(-4.92, 0.45, -52.06));
+    let cube = p.pick_up(Vec3::new(-4.92, 0.45, -52.06));
     let set_up = |p: &mut Play, stand: Vec3| {
         p.go(stand, 0.25);
         p.c.yaw = std::f32::consts::FRAC_PI_2;
@@ -1820,11 +1821,11 @@ fn solve_testchmb_a_13() {
     };
     set_up(&mut p, Vec3::new(-11.8, 0.0, -44.4));
     p.go(Vec3::new(-13.4, 1.63, -44.4), 0.3);
-    p.pick_up(p.sim.props[0].pos);
+    p.pick_up(p.sim.props[cube].pos);
     set_up(&mut p, Vec3::new(-13.2, 1.63, -44.4));
-    assert!(p.sim.props[0].pos.y > 3.25, "the cube isn't up top: {}", p.sim.props[0].pos);
+    assert!(p.sim.props[cube].pos.y > 3.25, "the cube isn't up top: {}", p.sim.props[cube].pos);
     p.go(Vec3::new(-15.5, 3.25, -44.0), 0.5);
-    p.pick_up(p.sim.props[0].pos);
+    p.pick_up(p.sim.props[cube].pos);
     p.assert_alive("up the ledges with the cube");
     // The pellet hallways, the cube held low in front (a pellet bounces off it): along the
     // first to its far end, up and back along the second, down the ramp and through the door
@@ -1834,7 +1835,7 @@ fn solve_testchmb_a_13() {
     // (Along each pellet's line: it meets the cube, not her.)
     for w in [Vec3::new(-12.0, 3.25, -40.61), Vec3::new(15.0, 3.25, -40.61), Vec3::new(17.9, 2.2, -40.4), Vec3::new(18.4, 1.9, -38.6), Vec3::new(11.4, 4.9, -38.6), Vec3::new(10.1, 4.88, -37.62), Vec3::new(-9.0, 4.88, -37.62), Vec3::new(-14.9, 2.9, -37.1)] {
         p.go(w, 0.4);
-        assert_eq!(p.sim.held, Some(0), "lost the cube on the way to {w} (at {})", p.c.feet);
+        assert_eq!(p.sim.held, Some(cube), "lost the cube on the way to {w} (at {})", p.c.feet);
     }
     // Down the ramp at the second hallway's west end, under its pellet's way: the cube down,
     // orange on the end wall the pellet turns at (for the second catcher, later), and the cube
@@ -1842,11 +1843,11 @@ fn solve_testchmb_a_13() {
     p.sim.use_key(Aim::of(&p.c));
     p.wait(0.3);
     p.shoot(PortalColor::Orange, Vec3::new(-19.5, 6.54, -37.62));
-    p.pick_up(p.sim.props[0].pos);
+    p.pick_up(p.sim.props[cube].pos);
     p.c.pitch = -0.2;
     for w in [Vec3::new(-12.6, 0.0, -27.9), Vec3::new(-11.9, -6.5, -25.4)] {
         p.go(w, 0.4);
-        assert_eq!(p.sim.held, Some(0), "lost the cube on the way to {w} (at {})", p.c.feet);
+        assert_eq!(p.sim.held, Some(cube), "lost the cube on the way to {w} (at {})", p.c.feet);
     }
     p.assert_alive("through the pellet hallways");
     // The first catcher: in launcher 3's room (in straight through its doorway, south of the
@@ -1859,8 +1860,8 @@ fn solve_testchmb_a_13() {
     p.wait(0.6);
     let want = Vec3::new(4.15, 0.0, -17.85);
     for _ in 0..5 {
-        let cube = p.sim.props[0].pos;
-        let off = Vec2::new(cube.x - want.x, cube.z - want.z);
+        let at = p.sim.props[cube].pos;
+        let off = Vec2::new(at.x - want.x, at.z - want.z);
         if off.length() < 0.1 {
             break;
         }
@@ -1871,7 +1872,7 @@ fn solve_testchmb_a_13() {
     let lift1 = p.mover("lift1_rm5");
     p.wait_for(10.0, "the first catcher to take the pellet (the first lift to rise)", |p| p.sim.movers[lift1].goal.is_some());
     p.assert_alive("catching the first pellet");
-    assert_eq!(p.sim.held, Some(0));
+    assert_eq!(p.sim.held, Some(cube));
     // The second catcher sits in an angled panel, facing up and out: blue on the angled panel
     // across from it. The second hallway's pellet comes out of it, up off the ceiling and down
     // into the catcher.

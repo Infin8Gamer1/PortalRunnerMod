@@ -72,11 +72,13 @@ pub struct Prop {
     pub dropper: Option<usize>,
     pub grounded: bool,
     pub alive: bool,
+    /// Its half size (a cube's is [`CUBE_HALF`] every way).
+    pub half: Vec3,
 }
 
 impl Prop {
     pub fn aabb(&self) -> Aabb {
-        Aabb::from_center_size(self.pos, Vec3::splat(CUBE_HALF * 2.0))
+        Aabb::from_center_size(self.pos, self.half * 2.0)
     }
 
     /// Which way a reflector cube sends a laser.
@@ -305,6 +307,13 @@ pub struct Mover {
     pub carried: Vec3,
     /// Points on its path it can't go on to (a train's disabled path_track): it stops short.
     pub closed: Vec<bool>,
+    /// A fan's: whether it's on, how fast it's spinning now (radians a second) and how far
+    /// round it's turned.
+    pub spin_on: bool,
+    pub spin_rate: f32,
+    pub spin_angle: f32,
+    /// How much of its top speed it's spinning up to, and which way (-1: backwards).
+    pub spin_scale: f32,
 }
 
 /// How long a shuttling platform waits at each end.
@@ -348,6 +357,15 @@ impl Mover {
         };
         self.def.boxes.iter().filter(move |_| self.present && solid).map(move |b| (b.b.translated(d), b.mat))
     }
+}
+
+/// One of the level's switched regions as the map runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolumeState {
+    pub def: crate::level::Volume,
+    pub on: bool,
+    /// (A portal detector's) which portals are in it.
+    pub portals: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -494,6 +512,8 @@ pub enum SimEvent {
     CatcherOff { at: Vec3 },
     LaserBurn,
     PlayerDied,
+    /// A portal opened in (or closed out of, `inside` false) portal detector `volume`.
+    PortalDetected { volume: usize, color: PortalColor, inside: bool },
     Checkpoint { index: usize },
     LevelComplete,
     /// A turret saw her (and is about to fire).
@@ -621,6 +641,11 @@ pub struct Sim {
     pub gun_pickups: Vec<GunPickup>,
     /// How hurt Faith is (turrets' fire): at 1 she's dead.
     pub hurt: f32,
+    /// The level's switched regions, and whether each is on now; for a portal detector, which
+    /// portals are in it.
+    pub volumes: Vec<VolumeState>,
+    /// The props (by id) the level's bodies (its physics props) are, in order.
+    pub bodies: Vec<u32>,
     pub launchers: Vec<PelletLauncher>,
     pub pellets: Vec<Pellet>,
     pub pellet_catchers: Vec<PelletCatcher>,
@@ -665,6 +690,8 @@ pub struct Sim {
     /// in its own space, whichever way either of them crossed.
     pub held_through: Option<PortalColor>,
     held_far: f32,
+    /// A held physics prop's turn from the way she faced as she picked it up.
+    held_turn: Quat,
     /// The paint's version when the portals were last checked against it.
     portals_checked_at: u64,
     pub player_env: Option<PortalColor>,
@@ -706,6 +733,8 @@ impl Sim {
             turrets: Vec::new(),
             gun_pickups: Vec::new(),
             hurt: 0.0,
+            volumes: level.volumes.iter().map(|v| VolumeState { on: v.on, def: v.clone(), portals: [false; 2] }).collect(),
+            bodies: Vec::new(),
             launchers: Vec::new(),
             pellets: Vec::new(),
             pellet_catchers: Vec::new(),
@@ -738,6 +767,7 @@ impl Sim {
             held_turret: None,
             held_through: None,
             held_far: 0.0,
+            held_turn: Quat::IDENTITY,
             portals_checked_at: 0,
             player_env: None,
             checkpoint: 0,
@@ -849,12 +879,24 @@ impl Sim {
                 }
                 Item::Mover(def) => {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], def });
+                    let spin_on = def.spin.as_ref().is_some_and(|s| s.on);
+                    let spin_rate = def.spin.as_ref().filter(|s| s.on).map_or(0.0, |s| s.speed);
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, def });
                 }
             }
         }
         if level.map_items >= level.items.len() {
             sim.count_map_items();
+        }
+        // A map's physics props, after its cubes (the map's logic knows its cubes by order).
+        // One the map stands on a cube stands on ours (smaller than Portal's: as far in from
+        // its edge, for its size).
+        for b in level.bodies.clone() {
+            let origin = b.at + b.origin;
+            let bottom = b.origin.y + b.half.y;
+            let at = crate::source::Perched::find(&sim, origin, Some(bottom)).map_or(b.at, |p| p.at - b.origin + Vec3::Y * 0.01);
+            let id = sim.spawn_body(at, b.half);
+            sim.bodies.push(id);
         }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
         sim.statics = statics;
@@ -1094,7 +1136,7 @@ impl Sim {
                 }
                 // (Hit as it's turned: a cube set down at 45° sends a pellet off sideways.)
                 let inv = p.rot.inverse();
-                let local = Aabb::from_center_size(Vec3::ZERO, Vec3::splat(CUBE_HALF * 2.0));
+                let local = Aabb::from_center_size(Vec3::ZERO, p.half * 2.0);
                 if let Some((t, n)) = ray_aabb(inv * (o - p.pos), inv * d, &local) {
                     consider(t, p.rot * n, HitWhat::Prop(i));
                 }
@@ -1220,9 +1262,9 @@ impl Sim {
         // The way she was facing along the last leg (for a floor portal's up).
         let last_dir = legs.last().map(|(a, b)| (*b - *a).normalize_or_zero()).unwrap_or(aim.dir);
         let placed = match h.what {
-            _ if let Some((n, at)) = self.mover_face_hit(from, last_dir, h.t) => self.place_on_slope(color, at, n, last_dir),
+            _ if let Some((n, at)) = self.mover_face_hit(from, last_dir, h.t) => self.place_on_slope(color, at, n, last_dir, false),
             HitWhat::Static(i) => match self.slope_hit(from, last_dir, h.t) {
-                Some((k, at)) => self.place_on_slope(color, at, self.level.slopes[k].normal, last_dir),
+                Some((k, at)) => self.place_on_slope(color, at, self.level.slopes[k].normal, last_dir, true),
                 None => self.place(color, h.point, h.normal, i, last_dir),
             },
             HitWhat::Mover(m) if self.movers[m].at_rest() => self.place(color, h.point, h.normal, usize::MAX, last_dir),
@@ -1296,9 +1338,12 @@ impl Sim {
         best.map(|(tf, n)| (n, o + d * tf))
     }
 
-    /// Where a portal shot at `point` on a tilted face (facing `n`) would open: on its plane,
-    /// its top up the slope, nudged to fit.
-    fn place_on_slope(&self, color: PortalColor, point: Vec3, n: Vec3, view: Vec3) -> Option<Portal> {
+    /// Where a portal shot at `point` on a tilted face (facing `n`: the world's, or a mover's)
+    /// would open: on its plane, its top up the slope, nudged to fit.
+    fn place_on_slope(&self, color: PortalColor, point: Vec3, n: Vec3, view: Vec3, world: bool) -> Option<Portal> {
+        if world && self.no_portal_at(point, n) {
+            return None;
+        }
         let flat = Vec3::Y - n * n.y;
         let up = if flat.length_squared() > 1e-4 {
             flat.normalize()
@@ -1318,7 +1363,8 @@ impl Sim {
             }
         }
         offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
-        offs.into_iter().map(|o| Portal::sized(point + right * o.x + up * o.y, n, up, half)).find(|cand| self.portal_fits(cand, other.as_ref()))
+        let bumpers = self.bumpers_for(point, n);
+        offs.into_iter().map(|o| Portal::sized(point + right * o.x + up * o.y, n, up, half)).find(|cand| self.portal_fits(cand, other.as_ref(), &bumpers, world))
     }
 
     /// Whether a portal could sit on the surface at `p` facing `n`.
@@ -1349,7 +1395,10 @@ impl Sim {
     /// surface, nudged to fit if it hangs off an edge or overlaps the other portal.
     pub fn place(&self, color: PortalColor, point: Vec3, n: Vec3, solid: usize, view: Vec3) -> Option<Portal> {
         let n = geom::snap_axis(n);
-        if !self.portalable_at(point, n) {
+        // (A no-portal volume is the world's: we know only the box round it, which can reach
+        // over what moves near it.)
+        let world = solid != usize::MAX;
+        if !self.portalable_at(point, n) || (world && self.no_portal_at(point, n)) {
             return None;
         }
         let up = if n.y.abs() > 0.5 {
@@ -1386,10 +1435,11 @@ impl Sim {
             offs.push(Vec2::new(mx, my));
         }
         offs.sort_by(|a, b| a.length_squared().total_cmp(&b.length_squared()));
+        let bumpers = self.bumpers_for(point, n);
         for o in offs {
             let c = point + right * o.x + up * o.y;
             let cand = Portal::sized(c, n, up, half);
-            if self.portal_fits(&cand, other.as_ref()) {
+            if self.portal_fits(&cand, other.as_ref(), &bumpers, world) {
                 return Some(cand);
             }
         }
@@ -1414,9 +1464,29 @@ impl Sim {
         Self::outline_samples(p).all(|q| self.portalable_at(q, p.normal))
     }
 
-    fn portal_fits(&self, p: &Portal, other: Option<&Portal>) -> bool {
+    /// Whether a point on a surface (facing `n`) is in a no-portal volume that's on.
+    fn no_portal_at(&self, p: Vec3, n: Vec3) -> bool {
+        use crate::level::VolumeKind;
+        self.in_volume(p - n * 0.02, |k| *k == VolumeKind::NoPortal) || self.in_volume(p + n * 0.02, |k| *k == VolumeKind::NoPortal)
+    }
+
+    /// The portal bumpers (that are on) a portal shot at `point` on a surface facing `n` keeps
+    /// out of: not one the shot landed in (a bumper nudges a portal off its edge; one shot into
+    /// it stays).
+    fn bumpers_for(&self, point: Vec3, n: Vec3) -> Vec<Aabb> {
+        let q = point + n * 0.02;
+        self.volumes.iter().filter(|v| v.on && v.def.kind == crate::level::VolumeKind::Bumper).map(|v| self.volume_box(v)).filter(|b| !geom::contains(b, q)).collect()
+    }
+
+    fn portal_fits(&self, p: &Portal, other: Option<&Portal>, bumpers: &[Aabb], world: bool) -> bool {
+        use crate::level::VolumeKind;
         let n = p.normal;
         let (r, u) = (p.right(), p.up);
+        // Nothing of it in a no-portal volume (on the world), or over a bumper's edge.
+        let no_portal = world && self.volumes.iter().any(|v| v.on && v.def.kind == VolumeKind::NoPortal);
+        if (no_portal || !bumpers.is_empty()) && Self::outline_samples(p).any(|q| (no_portal && self.no_portal_at(q, n)) || bumpers.iter().any(|b| geom::contains(b, q + n * 0.02))) {
+            return false;
+        }
         // Every sample over the outline: on a portal surface, open in front.
         if !p.axial() {
             // A tilted face: its steps stand a little proud of it, so the room in front is
@@ -1728,7 +1798,7 @@ impl Sim {
         // looking now.
         if let Some(h) = self.held {
             let l = link.from.to_local(self.props[h].pos);
-            let in_line = l.x.abs() < link.from.half.x && l.y.abs() < link.from.half.y && l.z > -CUBE_HALF && l.z < 3.0;
+            let in_line = l.x.abs() < link.from.half.x && l.y.abs() < link.from.half.y && l.z > -self.props[h].half.max_element() && l.z < 3.0;
             if self.held_through == Some(entered) {
                 // Through the portal it's already through: she's joined it.
                 self.held_through = None;
@@ -1819,6 +1889,7 @@ impl Sim {
         match hit.map(|h| h.what) {
             Some(HitWhat::Prop(i)) if self.props[i].fizzle.is_none() => {
                 self.held = Some(i);
+                self.held_turn = Quat::from_rotation_y(-aim.yaw) * self.props[i].rot;
                 // Picked up through a portal: it's on that portal's far side.
                 self.held_through = if legs.len() > 1 { self.portal_at(legs[0].1) } else { None };
                 self.held_far = 0.0;
@@ -1854,6 +1925,8 @@ impl Sim {
                     .min_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some((_, i)) = near_cube {
                     self.held = Some(i);
+                    self.held_turn = Quat::from_rotation_y(-aim.yaw) * self.props[i].rot;
+                self.held_turn = Quat::from_rotation_y(-aim.yaw) * self.props[i].rot;
                     self.held_through = None;
                     self.held_far = 0.0;
                     self.events.push(SimEvent::PickUp { id: self.props[i].id });
@@ -1914,6 +1987,7 @@ impl Sim {
                 f.dissolved.clear();
             }
         }
+        self.update_volumes(dt, ctrl);
         let ctrl = &*ctrl;
         self.update_signals(dt);
         self.update_doors(dt);
@@ -1930,6 +2004,96 @@ impl Sim {
         self.update_gel(dt);
         self.update_lasers();
         self.update_buttons(ctrl);
+    }
+
+    /// A switched region's box now (riding what it's parented to).
+    pub fn volume_box(&self, v: &VolumeState) -> Aabb {
+        let b = v.def.b;
+        match v.def.mover.and_then(|m| self.movers.get(m)) {
+            // (Turned with a swinging door: the box round it turned.)
+            Some(m) => match m.def.swing {
+                Some(sw) => {
+                    let r = sw.rotation(m.at.x);
+                    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                    for k in 0..8 {
+                        let c = Vec3::new(if k & 1 == 0 { b.min.x } else { b.max.x }, if k & 2 == 0 { b.min.y } else { b.max.y }, if k & 4 == 0 { b.min.z } else { b.max.z });
+                        let q = m.carried + sw.pivot + r * (c - sw.pivot);
+                        lo = lo.min(q);
+                        hi = hi.max(q);
+                    }
+                    Aabb::new(lo, hi)
+                }
+                None => b.translated(m.offset()),
+            },
+            None => b,
+        }
+    }
+
+    /// Whether `p` is in a switched region of this kind that's on.
+    fn in_volume(&self, p: Vec3, want: fn(&crate::level::VolumeKind) -> bool) -> bool {
+        self.volumes.iter().any(|v| v.on && want(&v.def.kind) && geom::contains(&self.volume_box(v), p))
+    }
+
+    /// The level's switched regions: pushes push, hurts hurt, detectors see portals come
+    /// and go. (No-portal volumes and bumpers are portals' business.)
+    fn update_volumes(&mut self, dt: f32, ctrl: &mut Controller) {
+        use crate::level::VolumeKind;
+        let me = ctrl.body().aabb(ctrl.feet);
+        for k in 0..self.volumes.len() {
+            let b = self.volume_box(&self.volumes[k]);
+            let v = self.volumes[k].clone();
+            match v.def.kind {
+                VolumeKind::Push { dir, speed, players, cubes } if v.on => {
+                    // At least `speed` along it (Source's base velocity: what she does herself
+                    // comes on top).
+                    if players && me.overlaps(&b) {
+                        let along = ctrl.vel.dot(dir);
+                        if along < speed {
+                            ctrl.vel += dir * (speed - along).min(speed * dt * 8.0);
+                            if dir.y > 0.3 {
+                                ctrl.state = faith_move::State::Air;
+                            }
+                        }
+                    }
+                    if cubes {
+                        for (i, p) in self.props.iter_mut().enumerate() {
+                            if p.alive && Some(i) != self.held && p.aabb().overlaps(&b) {
+                                let along = p.vel.dot(dir);
+                                if along < speed {
+                                    p.vel += dir * (speed - along).min(speed * dt * 8.0);
+                                    p.grounded = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                VolumeKind::Hurt { damage } if v.on && me.overlaps(&b) => {
+                    self.hurt += damage / 100.0 * dt;
+                    if self.hurt >= 1.0 {
+                        self.hurt = 0.0;
+                        self.player_died(ctrl, true);
+                    }
+                }
+                VolumeKind::Detector => {
+                    for c in [PortalColor::Blue, PortalColor::Orange] {
+                        let inside = v.on && self.portals[c.index()].is_some_and(|p| geom::contains(&Aabb::new(b.min - 0.05, b.max + 0.05), p.center));
+                        if inside != v.portals[c.index()] {
+                            self.volumes[k].portals[c.index()] = inside;
+                            self.events.push(SimEvent::PortalDetected { volume: k, color: c, inside });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Fans spin up and down.
+        for m in &mut self.movers {
+            let Some(spin) = &m.def.spin else { continue };
+            let want = if m.spin_on && m.present { spin.speed * m.spin_scale } else { 0.0 };
+            let step = spin.speed.abs().max(0.1) / spin.ramp.max(0.05) * dt;
+            m.spin_rate += (want - m.spin_rate).clamp(-step, step);
+            m.spin_angle = (m.spin_angle + m.spin_rate * dt) % std::f32::consts::TAU;
+        }
     }
 
     fn update_signals(&mut self, dt: f32) {
@@ -1988,7 +2152,7 @@ impl Sim {
                 let (a2, b2, c2) = (Vec2::new(a.x, a.z), Vec2::new(b.x, b.z), Vec2::new(c.x, c.z));
                 let ab = b2 - a2;
                 let k = ((c2 - a2).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-                k > 0.05 && k < 0.98 && (a2 + ab * k).distance(c2) < CUBE_HALF + 0.15 && c.y > chest.y - 1.4 && c.y < chest.y + 1.0
+                k > 0.05 && k < 0.98 && (a2 + ab * k).distance(c2) < self.props[h].half.max_element() + 0.15 && c.y > chest.y - 1.4 && c.y < chest.y + 1.0
             })
         };
         if in_view(chest) && clear(eye, chest) && !shielded(eye, chest) {
@@ -2647,6 +2811,7 @@ impl Sim {
             dropper,
             grounded: false,
             alive: true,
+            half: Vec3::splat(CUBE_HALF),
         };
         if let Some(slot) = self.props.iter().position(|q| !q.alive) {
             if self.held.is_none_or(|h| h != slot) {
@@ -2658,6 +2823,19 @@ impl Sim {
         id
     }
 
+    /// A physics prop (a map's), its box's centre at `at`, `half` its half size, turned `turn`.
+    /// A physics prop: `half` its box as it stands (its model's hull as the map turns it). Its
+    /// turn starts unturned: it's how far it's been turned from as it stood (and its box with
+    /// it).
+    pub(crate) fn spawn_body(&mut self, at: Vec3, half: Vec3) -> u32 {
+        let id = self.spawn_prop(CubeKind::Physics, at, None);
+        if let Some(p) = self.props.iter_mut().find(|p| p.id == id) {
+            p.half = half;
+            p.rot = Quat::IDENTITY;
+        }
+        id
+    }
+
     /// Where a held cube should be: in front of her eye, and not inside a wall, in the
     /// cube's own space. Through a portal (`held_through`), her line of sight is followed
     /// through it if she's looking into it; if she isn't, the point is carried through anyway,
@@ -2666,8 +2844,9 @@ impl Sim {
         let dist = 2.0;
         let mask = Mask { skip_prop: Some(skip), fizzlers: false, ..Mask::SOLID };
         let rot = Quat::from_rotation_y(aim.yaw);
-        let clamp = |o: Vec3, d: Vec3, len: f32| match self.raycast(o, d, len + CUBE_HALF, mask) {
-            Some(h) => o + d * (h.t - CUBE_HALF * 1.2).max(0.0),
+        let size = self.props.get(skip).map_or(CUBE_HALF, |p| p.half.max_element());
+        let clamp = |o: Vec3, d: Vec3, len: f32| match self.raycast(o, d, len + size, mask) {
+            Some(h) => o + d * (h.t - size * 1.2).max(0.0),
             None => o + d * len,
         };
         let through = self.held_through.and_then(|c| self.link(c).map(|l| (c, l)));
@@ -2695,6 +2874,9 @@ impl Sim {
                 self.held = None;
             } else {
                 let (target, rot) = self.hold_target(aim, h);
+                // (A physics prop is held as it was picked up, turning as she does; a cube
+                // squares up to her.)
+                let rot = if self.props[h].kind == CubeKind::Physics { Quat::from_rotation_y(aim.yaw) * self.held_turn } else { rot };
                 let p = &mut self.props[h];
                 let to = target - p.pos;
                 p.vel = (to * 14.0).clamp_length_max(25.0);
@@ -2729,7 +2911,7 @@ impl Sim {
                 continue;
             }
             let held = self.held == Some(i);
-            let half = Vec3::splat(CUBE_HALF);
+            let half = self.props[i].half;
             // Which portal it's going through.
             let mut env = self.props[i].env;
             collide::update_env(&mut env, &self.portals, linked, self.props[i].pos, half, self.props[i].vel, dt);
@@ -2754,12 +2936,12 @@ impl Sim {
             let bouncy = p.coat == Some(Paint::Bounce);
             let before = p.pos;
             let delta = p.vel * dt;
-            let n = (delta.length() / (CUBE_HALF * 0.8)).ceil().max(1.0) as usize;
+            let n = (delta.length() / (p.half.min_element() * 1.6).max(0.05)).ceil().max(1.0) as usize;
             let mut landed: Option<f32> = None;
             for _ in 0..n {
                 let d = delta / n as f32;
                 if let Some(nrm) = move_box(&world, half, &mut p.pos, 1, d.y) {
-                    let floor_gel = world.gel(p.pos - Vec3::Y * CUBE_HALF, Vec3::Y);
+                    let floor_gel = world.gel(p.pos - Vec3::Y * p.half.y, Vec3::Y);
                     if nrm.y > 0.5 && p.vel.y < -2.0 && (bouncy || floor_gel == faith_move::Gel::Bounce) {
                         p.vel.y = (-p.vel.y * 0.9).max(7.0);
                     } else {
@@ -2771,7 +2953,7 @@ impl Sim {
                 }
                 for axis in [0usize, 2] {
                     if let Some(nrm) = move_box(&world, half, &mut p.pos, axis, d[axis]) {
-                        let wall_gel = world.gel(p.pos - nrm * CUBE_HALF, nrm);
+                        let wall_gel = world.gel(p.pos - nrm * p.half.dot(nrm.abs()), nrm);
                         if bouncy || wall_gel == faith_move::Gel::Bounce {
                             p.vel[axis] = -p.vel[axis] * 0.9;
                         } else {
@@ -2786,9 +2968,9 @@ impl Sim {
             // Nothing under its middle (resting on a slope's steps, or more than half over an
             // edge): it slides off the way it overhangs, faster than friction holds it.
             if p.grounded && !held {
-                let foot = |x: f32, z: f32| world.overlaps(&Aabb::from_center_size(Vec3::new(p.pos.x + x, p.pos.y - CUBE_HALF - 0.04, p.pos.z + z), Vec3::new(0.06, 0.06, 0.06)));
+                let foot = |x: f32, z: f32| world.overlaps(&Aabb::from_center_size(Vec3::new(p.pos.x + x, p.pos.y - p.half.y - 0.04, p.pos.z + z), Vec3::new(0.06, 0.06, 0.06)));
                 if !foot(0.0, 0.0) {
-                    let k = CUBE_HALF * 0.8;
+                    let k = p.half.x.min(p.half.z) * 0.8;
                     let held_by: Vec<Vec3> = [(k, k), (k, -k), (-k, k), (-k, -k), (k, 0.0), (-k, 0.0), (0.0, k), (0.0, -k)].into_iter().filter(|&(x, z)| foot(x, z)).map(|(x, z)| Vec3::new(x, 0.0, z)).collect();
                     if !held_by.is_empty() {
                         let away = -(held_by.iter().sum::<Vec3>() / held_by.len() as f32).normalize_or_zero();
@@ -2797,7 +2979,7 @@ impl Sim {
                 }
             }
             if p.grounded && !held {
-                let slick = world.gel(p.pos - Vec3::Y * CUBE_HALF, Vec3::Y) == faith_move::Gel::Speed;
+                let slick = world.gel(p.pos - Vec3::Y * p.half.y, Vec3::Y) == faith_move::Gel::Speed;
                 // `cube_plate_velocity` aims short by the slide this decel produces.
                 let decel = if slick { 1.0 } else { CUBE_GROUND_DECEL };
                 let h = Vec3::new(p.vel.x, 0.0, p.vel.z);
@@ -2831,7 +3013,7 @@ impl Sim {
                         p.env = Some(c.other());
                         // Out of a floor portal: enough to clear it.
                         if link.to.normal.y > 0.7 {
-                            let need = (2.0 * GRAVITY * (CUBE_HALF * 2.0 + 0.2)).sqrt();
+                            let need = (2.0 * GRAVITY * (p.half.y * 2.0 + 0.2)).sqrt();
                             p.vel.y = p.vel.y.max(need);
                         }
                         self.events.push(SimEvent::PropTeleported { id: p.id, at: p.pos });
@@ -2879,7 +3061,7 @@ impl Sim {
                 if !p.alive || p.fizzle.is_some() {
                     continue;
                 }
-                let bottom = p.pos.y - CUBE_HALF;
+                let bottom = p.pos.y - p.half.y;
                 let dx = p.pos.x - pl.at.x;
                 let dz = p.pos.z - pl.at.z;
                 if dx.abs() < PLATE_HALF && dz.abs() < PLATE_HALF && (bottom - pl.at.y - PLATE_TOP).abs() < 0.25 && p.vel.y <= 0.5 {
@@ -2905,7 +3087,7 @@ impl Sim {
                 d.length() < BUTTON_RADIUS && (bottom - top).abs() < 0.15
             };
             let by_cube = self.props.iter().enumerate().any(|(j, p)| {
-                p.alive && p.fizzle.is_none() && Some(j) != self.held && on_it(p.pos, p.pos.y - CUBE_HALF)
+                p.alive && p.fizzle.is_none() && Some(j) != self.held && p.kind != CubeKind::Physics && on_it(p.pos, p.pos.y - p.half.y)
             });
             let by_player = !b.cube_only && on_it(ctrl.feet, ctrl.feet.y);
             let pressed = by_cube || by_player;

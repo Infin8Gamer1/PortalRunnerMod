@@ -24,6 +24,8 @@ pub struct Capture {
     /// Real time per frame (smoothed, ms): the clock the game runs on here is fixed.
     real_ms: f32,
     last: Option<std::time::Instant>,
+    /// Keep her here (a view set up to look at something), till another map loads.
+    hold: Option<Vec3>,
 }
 
 pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
@@ -33,7 +35,7 @@ pub fn setup(mut commands: Commands, mut game: ResMut<Game>) {
         game.locked = true;
         // Every frame is 1/60 s of game time, however fast it renders: scripts count frames.
         commands.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / 60.0)));
-        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)), real_ms: 0.0, last: None });
+        commands.insert_resource(Capture { dir, script, frame: 0, step: 0, wait: 0, hold_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(3)), real_ms: 0.0, last: None, hold: None });
     }
 }
 
@@ -83,6 +85,12 @@ enum Act {
     RayTracing(bool),
     /// Load one of Portal's maps: as imported, or the game's own copy of it.
     Chamber(crate::LevelGroup, &'static str),
+    /// Stand off the `n`th of the map's effects of a kind (`camera`, `spotlight`, `steam`,
+    /// `sparks`, `beam`, or a particle effect's name), `d` metres from it, looking at it
+    /// (from beside it, or a little below one that's high up).
+    ViewArt(&'static str, usize, f32),
+    /// Send each of the map's entities of a class an input (and parameter).
+    Send(&'static str, &'static str, &'static str),
 }
 
 /// What the mouse does.
@@ -1166,6 +1174,45 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("nativeedit_04_playing"),
             ]
         }
+        // Portal's maps' effects: a security camera watching her, a spotlight, steam, an
+        // elevator shaft's beam, sparks, a beam, mist.
+        "effects" => {
+            use crate::LevelGroup::PortalNative as N;
+            vec![
+                Chamber(N, "testchmb_a_00"),
+                Wait(60),
+                Shot("fx_lit"),
+                // (The vault's lights dimmed, as GLaDOS has them.)
+                Send("color_correction", "Enable", ""),
+                Wait(30),
+                Shot("fx_dimmed"),
+                Send("color_correction", "Disable", ""),
+                ViewArt("camera", 0, 3.0),
+                Wait(40),
+                Shot("fx_camera"),
+                ViewArt("beam", 0, 5.0),
+                Wait(20),
+                Shot("fx_beam"),
+                ViewArt("sparks", 0, 2.5),
+                Send("env_spark", "StartSpark", ""),
+                Wait(90),
+                Shot("fx_sparks"),
+                ViewArt("spotlight", 0, 5.0),
+                Wait(20),
+                Shot("fx_spotlight"),
+                Chamber(N, "escape_01"),
+                Wait(60),
+                Send("trigger_hurt", "Disable", ""),
+                Send("env_steam", "TurnOn", ""),
+                Send("info_particle_system", "Start", ""),
+                ViewArt("steam", 0, 3.0),
+                Wait(40),
+                Shot("fx_steam"),
+                ViewArt("water_mist_512", 0, 6.0),
+                Wait(60),
+                Shot("fx_mist"),
+            ]
+        }
         // The chambers menu's folders.
         "chambersmenu" => {
             use crate::menu::Screen;
@@ -1244,6 +1291,61 @@ fn script(name: &str) -> Vec<Act> {
             Edit(|ed, menu| ed.play(menu)),
             Wait(90),
             Shot("editor_04_playing"),
+        ],
+        // The level editor's Portal sounds and effects (PORTAL_EDIT=1): a room with a camera,
+        // steam, sparks, a spotlight's beam, mist, a fan, a push up, a decal, a sound (and the
+        // sound browser for it) and a physics prop, then playing it.
+        "editoreffects" => vec![
+            Wait(90),
+            Edit(|ed, _| {
+                use crate::editor::catalog::find;
+                use aperture::doc::Kind;
+                ed.open(aperture::doc::LevelDoc::starter("Effects"), None);
+                ed.tab = Some(crate::editor::catalog::Category::PortalEffects);
+                let look = Vec3::NEG_Z;
+                ed.add_entry(find("Decal"), Vec3::new(0.0, 2.0, -16.0), Vec3::Z, look);
+                ed.add_entry(find("Security camera"), Vec3::new(-6.0, 4.0, -12.0), Vec3::X, look);
+                // (Against black, to be seen.)
+                ed.add_entry(find("Black metal"), Vec3::new(6.0, 0.0, -9.0), Vec3::NEG_X, look);
+                ed.add_entry(find("Steam"), Vec3::new(4.0, 1.0, -9.0), Vec3::NEG_X, look);
+                ed.add_entry(find("Black metal"), Vec3::new(-6.0, 2.0, -8.0), Vec3::X, look);
+                ed.add_entry(find("Sparks"), Vec3::new(-4.0, 3.0, -8.0), Vec3::X, look);
+                ed.add_entry(find("Spotlight beam"), Vec3::new(3.0, 4.5, -16.0), Vec3::Z, look);
+                ed.add_entry(find("Particles"), Vec3::new(3.0, 0.0, -12.0), Vec3::Y, look);
+                ed.add_entry(find("Fan (brush)"), Vec3::new(-3.0, 0.0, -12.0), Vec3::Y, look);
+                ed.add_entry(find("Push volume"), Vec3::new(-3.0, 0.2, -12.0), Vec3::Y, look);
+                // (The level's own piece beside the map's: drawn as the game's.)
+                ed.add_entry(find("Moving platform"), Vec3::new(-3.5, 0.0, -4.0), Vec3::Y, look);
+                let mut chair = aperture::doc::Object::new(Kind::Model { path: "props/portal/props/lab_chair/lab_chair.glb".into(), scale: Vec3::ONE, bounds: Some((Vec3::new(-0.284, -0.6, -0.285), Vec3::new(0.286, 0.472, 0.306))), solid: true }, Vec3::new(1.5, 0.6, -6.0));
+                if let Some(k) = crate::editor::ui::physics_prop(&chair.kind) {
+                    chair.kind = k;
+                }
+                ed.doc.objects.push(chair);
+                ed.add_entry(find("Sound"), Vec3::new(0.0, 0.0, -6.0), Vec3::Y, look);
+                ed.selected = Some(ed.doc.objects.len() - 1);
+                ed.sound_picking = ed.selected;
+                ed.cam = crate::editor::FlyCam { pos: Vec3::new(0.0, 3.5, -1.0), yaw: 0.0, pitch: -0.2, speed: 8.0 };
+            }),
+            Wait(120),
+            Shot("edfx_01_placed"),
+            Edit(|ed, menu| {
+                ed.sound_picking = None;
+                ed.play(menu);
+            }),
+            Wait(150),
+            Shot("edfx_02_playing"),
+            Teleport(Vec3::new(0.0, 0.0, -9.0)),
+            Look(-90.0, -10.0),
+            Wait(30),
+            Shot("edfx_03_steam"),
+            Teleport(Vec3::new(0.0, 0.0, -8.0)),
+            Look(90.0, 10.0),
+            Wait(150),
+            Shot("edfx_04_sparks"),
+            Teleport(Vec3::new(3.0, 0.0, -6.0)),
+            Look(0.0, -20.0),
+            Wait(30),
+            Shot("edfx_05_mist"),
         ],
         // The level editor by mouse (PORTAL_EDIT=1): a cube dragged in from the content
         // browser, a button clicked and then placed, the wheel over a panel and over the view,
@@ -1738,6 +1840,10 @@ pub fn run(
     }
     let acts = script(&cap.script);
     game.scripted = Some(MoveInput::default());
+    if let Some(at) = cap.hold {
+        game.ctrl.feet = at;
+        game.ctrl.vel = Vec3::ZERO;
+    }
     if cap.hold_until.is_some_and(|t| std::time::Instant::now() < t) {
         return;
     }
@@ -1820,6 +1926,7 @@ pub fn run(
         }
         Act::Chamber(group, map) => match (0..game.levels.len()).find(|&i| game.groups[i] == *group && game.source_names[i].as_deref() == Some(*map)) {
             Some(i) => {
+                cap.hold = None;
                 game.pending = Some(i);
                 let pause = if cap.real_ms > 0.0 && cap.real_ms < 40.0 { 600 } else { 1500 };
                 cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
@@ -1840,6 +1947,47 @@ pub fn run(
                 println!("capture: light {k} at {at}");
             }
         }
+        Act::ViewArt(what, n, d) => {
+            let found = game.sim.level.art.as_ref().and_then(|art| {
+                art.props
+                    .iter()
+                    .filter(|p| match (&p.kind, *what) {
+                        (aperture::art::PropKind::Camera, "camera") | (aperture::art::PropKind::Spotlight { .. }, "spotlight") | (aperture::art::PropKind::Steam { .. }, "steam") | (aperture::art::PropKind::Sparks { .. }, "sparks") | (aperture::art::PropKind::Beam { .. }, "beam") => true,
+                        (aperture::art::PropKind::Particles { .. }, w) => p.model.eq_ignore_ascii_case(w),
+                        _ => false,
+                    })
+                    .nth(*n)
+                    .map(|p| (p.at, p.turn))
+            });
+            if let Some((at, turn)) = found {
+                // Where there's a clear view of it: round it (the way it faces first), a
+                // little below it (or above), nothing in between.
+                let fwd = turn * Vec3::NEG_Z;
+                let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::Z);
+                let clear = |eye: Vec3| {
+                    let to = at - eye;
+                    let (_, hit) = game.sim.trace(eye, to.normalize_or(Vec3::Z), to.length(), aperture::Mask::SHOT, 0);
+                    // (Her body well clear of goo: she sinks a little between frames.)
+                    let body = faith_move::Aabb { min: eye - Vec3::new(0.4, 2.2, 0.4), max: eye + Vec3::splat(0.4) };
+                    hit.is_none_or(|h| h.t > to.length() - 0.3) && !game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, eye)) && !game.sim.goo.iter().any(|g| g.overlaps(&body)) && body.min.y > game.sim.level.kill_y
+                };
+                let eye = (0..8)
+                    .map(|k| Quat::from_rotation_y(k as f32 * std::f32::consts::FRAC_PI_4) * flat)
+                    .flat_map(|dir| [0.3f32, 0.0, 0.6, -0.3].map(move |down| at + dir * *d - Vec3::Y * (*d * down)))
+                    .find(|e| clear(*e))
+                    .unwrap_or(at + flat * *d);
+                game.ctrl.feet = eye - Vec3::Y * 1.7;
+                game.ctrl.vel = Vec3::ZERO;
+                game.ctrl.state = MoveState::Air;
+                cap.hold = Some(game.ctrl.feet);
+                let to = at - eye;
+                game.ctrl.yaw = (-to.x).atan2(-to.z);
+                game.ctrl.pitch = (to.y / Vec2::new(to.x, to.z).length().max(1e-3)).atan();
+                println!("capture: {what} {n} at {at}");
+            } else {
+                println!("capture: no {what} {n}");
+            }
+        }
         Act::ViewCube(n) => {
             if let Some(c) = game.sim.props.iter().filter(|p| p.alive).nth(*n).map(|p| p.pos) {
                 let side = if game.sim.statics.iter().any(|s| aperture::geom::contains(&s.b, c + Vec3::new(1.6, 0.5, 0.0))) { -1.0 } else { 1.0 };
@@ -1857,6 +2005,16 @@ pub fn run(
                 p.pos = *at;
                 p.vel = *v;
                 p.age = 0.0;
+            }
+        }
+        Act::Send(class, input, param) => {
+            if let Some(mut io) = game.sim.io.take() {
+                for e in 0..io.ents.len() {
+                    if io.ents[e].class.eq_ignore_ascii_case(class) {
+                        io.send(&mut game.sim, e, input, param);
+                    }
+                }
+                game.sim.io = Some(io);
             }
         }
         Act::TurretsOff => {
