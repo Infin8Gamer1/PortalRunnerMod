@@ -334,10 +334,13 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
     }
     for e in ents {
         let class = bsp::key(e, "classname").unwrap_or("");
-        if !matches!(class, "prop_dynamic" | "prop_dynamic_override" | "prop_physics" | "prop_physics_override" | "prop_physics_multiplayer") {
+        if !matches!(class, "prop_dynamic" | "prop_dynamic_override" | "prop_physics" | "prop_physics_override" | "prop_physics_multiplayer" | "prop_portal_stats_display") {
             continue;
         }
-        let (Some(model), Some(o)) = (bsp::key(e, "model"), bsp::vec3_key(e, "origin")) else { continue };
+        // (The elevator car with the stats screen in it, from Chamber 13 on, has no model key:
+        // Portal's server always gives it the round elevator's body.)
+        let model = if class == "prop_portal_stats_display" { Some("models/props/round_elevator_body.mdl") } else { bsp::key(e, "model") };
+        let (Some(model), Some(o)) = (model, bsp::vec3_key(e, "origin")) else { continue };
         let o = attachment_at(e).unwrap_or(o);
         let a = bsp::vec3_key(e, "angles").unwrap_or(Vec3::ZERO);
         let skin = bsp::key(e, "skin").and_then(|s| s.parse().ok()).unwrap_or(0);

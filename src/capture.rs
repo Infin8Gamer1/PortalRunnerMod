@@ -534,6 +534,17 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Chamber 13's exit elevator (testchmb_a_08, #59): its car is the stats-screen one
+        // (prop_portal_stats_display), the round elevator's body.
+        "car13" => {
+            let map = aperture::levels::all().len() + 8;
+            let mut v = vec![Map(map), Wait(150), Teleport(Vec3::new(0.0, 3.8, -26.4)), Launch(Vec3::ZERO)];
+            for (k, yaw) in [0.0, 90.0, 180.0, 270.0].into_iter().enumerate() {
+                v.extend([Look(yaw, 5.0), Wait(20), Shot(Box::leak(format!("car13_{k}").into_boxed_str()))]);
+            }
+            v.extend([Teleport(Vec3::new(0.0, 3.8, -21.0)), Look(180.0, 0.0), Wait(20), Shot("car13_outside")]);
+            v
+        }
         // Pellet pieces in Portal's maps up close, the camera held where it's put:
         // PORTAL_FIRST_MAP and PORTAL_TP ("x,y,z,yaw,pitch;...") as for `p1`, PORTAL_WAIT frames
         // into the map first (default 200).
