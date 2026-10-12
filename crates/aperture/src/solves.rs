@@ -176,8 +176,8 @@ impl Play {
         let hw = self.c.body().half_width - 0.05;
         let col = Aabb::new(Vec3::new(x - hw, lo - 0.01, z - hw), Vec3::new(x + hw, hi + 0.01, z + hw));
         let mut tops: Vec<f32> = self.near(&col).map(|b| b.max.y).filter(|y| *y >= lo && *y <= hi).collect();
-        // Not goo, nor an open floor portal (she'd fall in).
-        tops.retain(|y| !self.sim.goo.iter().any(|g| g.max.y >= *y - 0.05 && geom_in(g, x, z)));
+        // Not goo (not a pool on a floor above, though), nor an open floor portal (she'd fall in).
+        tops.retain(|y| !self.sim.goo.iter().any(|g| g.max.y >= *y - 0.05 && g.min.y <= *y + 0.5 && geom_in(g, x, z)));
         tops.retain(|y| {
             !holes
                 || !self.sim.portals.iter().flatten().any(|q| q.normal.y > 0.5 && (q.center.y - y).abs() < 0.3 && {
@@ -2196,7 +2196,7 @@ impl Play {
         self.c.pitch = -1.5;
         let eye = self.c.view().eye;
         let opened = self.sim.fire(color, Aim { eye, dir: crate::portal::view_dir(self.c.yaw, self.c.pitch), yaw: self.c.yaw });
-        assert!(opened && self.sim.portals[color.index()].is_some_and(|q| q.center.distance(self.c.feet) < 1.0), "{}: no {color:?} portal under her at {}", self.name, self.c.feet);
+        assert!(opened && self.sim.portals[color.index()].is_some_and(|q| q.center.distance(self.c.feet) < 1.0), "{}: no {color:?} portal under her at {} ({opened}, {:?})", self.name, self.c.feet, self.sim.portals[color.index()].map(|q| q.center));
     }
 
     fn portal_ride(&mut self, run: Option<(f32, &dyn Fn(Vec3) -> bool)>, face: f32, push_below: f32) {
@@ -2431,6 +2431,298 @@ fn solve_testchmb_a_14() {
     assert!(p.c.feet.y > 84.0, "testchmb_a_14: didn't land on the exit's floor (at {})", p.c.feet);
     p.assert_alive("up the shaft");
     p.ride_exit("testchmb_a_15");
+}
+
+impl Play {
+    /// Fire `color` from where she stands, aimed about `yaw` and `pitch` (searching a degree
+    /// round them, a tenth of one at a time): the first shot that opens one `fits` (one through
+    /// a narrow gap: a vent's slats, a grate).
+    pub fn shoot_near(&mut self, color: PortalColor, yaw: f32, pitch: f32, fits: impl Fn(&crate::portal::Portal) -> bool) {
+        let eye = self.c.view().eye;
+        // (Outward from the middle.)
+        let mut tries: Vec<(i32, i32)> = (-10..=10).flat_map(|i| (-10..=10).map(move |j| (i, j))).collect();
+        tries.sort_by_key(|(i, j)| i * i + j * j);
+        for (i, j) in tries {
+            let (y, pi) = (yaw + (i as f32 * 0.1).to_radians(), pitch + (j as f32 * 0.1).to_radians());
+            let dir = crate::portal::view_dir(y, pi);
+            let (saved, on) = (self.sim.portals, self.sim.portal_mover);
+            if self.sim.fire(color, Aim { eye, dir, yaw: y }) && self.sim.portals[color.index()].is_some_and(|q| fits(&q)) {
+                return;
+            }
+            (self.sim.portals, self.sim.portal_mover) = (saved, on);
+        }
+        panic!("{}: no {color:?} portal to be had from {} about yaw {yaw}, pitch {pitch}", self.name, self.c.feet);
+    }
+
+    /// Walk into the portal at `at` (one she can't stop in front of: a floor one beside her,
+    /// one round a corner) and on until she's come out of the other one and is standing again.
+    pub fn walk_into_portal(&mut self, at: Vec3, speed: f32) {
+        let (mut through, end) = (false, self.time + 6.0);
+        while !(through && self.c.state == State::Ground) {
+            assert!(self.time < end, "{}: didn't get through the portal at {at} (at {})", self.name, self.c.feet);
+            let n = self.events.len();
+            if !through {
+                let d = at - self.c.feet;
+                self.c.yaw = (-d.x).atan2(-d.z);
+            }
+            self.step(&Input { move_axis: Vec2::new(0.0, if through { 0.0 } else { speed }), ..Default::default() });
+            through |= self.events[n..].iter().any(|e| matches!(e, SimEvent::Teleported { .. }));
+        }
+        self.wait(1.0);
+    }
+}
+
+/// Chamber 19 (testchmb_a_15), and its escape, to the level change into escape_00. Portal's
+/// route where Faith can take it:
+/// - The pellet: portals on the two tilted panels send it up into the catcher.
+/// - The scaffold: Faith's crouch is taller than Chell's, so rather than ride under the pipe
+///   she drops onto it from a ceiling portal past it, by way of the corner's platform; off at
+///   the switch's platform, the switch; through the door while it's open, a portal on the
+///   track's far end, and through onto the next scaffold. The bouncing pellet ahead sent up
+///   out of her way (it lives for ever: kept bouncing over her head); the panel across the
+///   track got past with portals; out of the incinerator by a jump into a portal on its wall.
+/// - The escape: up through the window over the incinerator, the broken stairs, over the
+///   contaminated pool by portal; into the white room through its ceiling (shot through a
+///   vent's slats); the exit's button (behind a grill, so no lid chunk from the broken
+///   dropper gets to it by portal: she stands on it, and portals past the doors that shut
+///   behind her); down the empty elevator shaft by portal (too far to fall), the crushers'
+///   rooms with a climb, and through the grate's last room by portal.
+#[test]
+fn solve_testchmb_a_15() {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let Some(mut p) = Play::load("testchmb_a_15") else { return };
+    p.wait(3.0);
+    // The pellet into the catcher: blue on the tilted panel under the launcher, orange on the
+    // one under the catcher (from each side of them); bounced back onto blue off the south
+    // wall, it comes up out of orange into the catcher.
+    p.go(Vec3::new(1.6, 0.0, 2.0), 0.4);
+    p.shoot(PortalColor::Blue, Vec3::new(1.61, 1.23, 6.47));
+    p.go(Vec3::new(1.6, 0.0, 13.5), 0.4);
+    p.shoot(PortalColor::Orange, Vec3::new(1.61, 1.23, 9.77));
+    p.wait_for(20.0, "the pellet caught", |p| p.events.iter().any(|e| matches!(e, SimEvent::PelletGone { caught: true, .. })));
+    p.assert_alive("at the catcher");
+    // Onto the scaffold past the pipe over the west side (Faith doesn't crouch as low as
+    // Chell): blue on the ceiling over the track's south-west corner, and orange under her as
+    // the scaffold comes to it; down onto the corner's platform, and off its far side onto the
+    // scaffold.
+    let brush = p.mover("rail_cart_brush_lab2");
+    // (The scaffold's floor: none for a moment as each one's made.)
+    let platform = |p: &Play, m: usize| p.sim.movers[m].boxes().next().unwrap_or(Aabb { min: Vec3::splat(1e6), max: Vec3::splat(1e6) });
+    p.go(Vec3::new(-12.125, 0.0, 12.125), 0.3);
+    p.shoot(PortalColor::Blue, Vec3::new(-12.3, 6.5, -1.68));
+    p.wait_for(60.0, "the scaffold near the corner", |p| {
+        let c = platform(p, brush).center();
+        (c.x + 13.0).abs() < 0.2 && c.z < 1.5 && c.z > -1.0
+    });
+    p.drop_through(PortalColor::Orange, FRAC_PI_2, 0.0);
+    p.wait_for(10.0, "the scaffold past the corner's platform", |p| {
+        let b = platform(p, brush);
+        b.min.x > p.c.feet.x - 0.2 && b.min.x < p.c.feet.x + 1.0
+    });
+    p.c.yaw = -FRAC_PI_2;
+    let end = p.time + 2.0;
+    while p.time < end && !(p.c.state == State::Ground && p.c.feet.y < 0.2) {
+        p.step(&Input { move_axis: Vec2::new(0.0, 0.8), ..Default::default() });
+    }
+    p.assert_alive("onto the scaffold");
+    // Off it onto the switch's platform to the south, and the switch: the door across the
+    // track ahead opens for a moment.
+    p.wait_for(10.0, "the scaffold by the switch's platform", |p| p.c.feet.x > -6.6);
+    let mut jumped = false;
+    p.c.yaw = 0.0;
+    while !(jumped && p.c.state == State::Ground) {
+        let jump = !jumped && p.c.state == State::Ground;
+        jumped |= jump;
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: jump, jump_held: true, ..Default::default() });
+    }
+    p.wait(0.5);
+    p.assert_alive("onto the switch's platform");
+    p.press("func_rot_button_lab2_tracktraindoor");
+    // Through the door while it's open, blue on the wall at the track's far end; orange on the
+    // wall by her, and through it as the next scaffold comes by blue.
+    let door = p.mover("railway_door_lab2");
+    p.go(Vec3::new(-7.25, 0.0, -3.75), 0.2);
+    p.nudge(Vec3::new(-7.25, 0.0, -3.75));
+    p.wait_for(3.0, "the track's door open", |p| p.sim.movers[door].node == 1 || p.sim.movers[door].goal == Some(0));
+    p.shoot(PortalColor::Blue, Vec3::new(8.13, 1.45, -0.3));
+    p.shoot(PortalColor::Orange, Vec3::new(-8.13, 1.45, -5.66));
+    let next = p.mover("spawned_rail_cart_brush_lab2");
+    p.go(Vec3::new(-6.9, 0.0, -5.66), 0.2);
+    p.wait_for(90.0, "the next scaffold coming to the far end", |p| {
+        let c = platform(p, next).center();
+        (c.z + 1.63).abs() < 0.2 && c.x > 6.2
+    });
+    // (On board: the pellet bouncing across the track ahead, into blue on the wall it
+    // bounces off and out of orange high on the hall's end wall; once it's up there, blue
+    // high on the side wall too: it bounces about over her head from then on, for good.)
+    let (mut crossed, mut redirected, mut high) = (false, false, false);
+    p.c.yaw = FRAC_PI_2;
+    let end = p.time + 20.0;
+    while !(high && p.c.feet.z > 18.0 && p.c.feet.x < 0.5) {
+        assert!(p.time < end, "testchmb_a_15: didn't ride the scaffold round to the north side (at {})", p.c.feet);
+        let n = p.events.len();
+        // (Out onto the scaffold: in from its edge.)
+        let walk = !crossed || (p.c.state == State::Ground && p.c.feet.x > 6.9);
+        p.step(&Input { move_axis: Vec2::new(0.0, if walk { 0.4 } else { 0.0 }), ..Default::default() });
+        crossed |= p.events[n..].iter().any(|e| matches!(e, SimEvent::Teleported { .. }));
+        if crossed && !redirected && p.c.state == State::Ground && p.c.feet.x < 6.9 {
+            p.shoot(PortalColor::Blue, Vec3::new(8.13, 1.0, 8.12));
+            p.shoot(PortalColor::Orange, Vec3::new(6.5, 4.9, 21.13));
+            redirected = true;
+        }
+        if redirected && !high && p.sim.pellets.iter().any(|q| q.alive && q.pos.y > 3.0 && q.vel.z < -3.0) {
+            p.shoot(PortalColor::Blue, Vec3::new(8.13, 4.9, 3.0));
+            high = true;
+        }
+    }
+    p.assert_alive("past the bouncing pellet");
+    // The panel hanging across the track: blue on it, orange on the island's wall beyond it
+    // (hidden by the panel: shot through blue, out of orange on the far wall for a moment); and,
+    // pushed back by the panel, through, back onto the scaffold coming out from under it.
+    // (From the back of the scaffold: the far portal's beside its front half once she's
+    // through.)
+    for _ in 0..90 {
+        let to = platform(&p, next).center() + Vec3::new(0.85, 0.0, 0.0);
+        let d = Vec2::new(to.x - p.c.feet.x, to.z - p.c.feet.z);
+        if d.length() < 0.08 {
+            break;
+        }
+        let (s, c) = p.c.yaw.sin_cos();
+        let (fwd, right) = (Vec2::new(-s, -c), Vec2::new(c, -s));
+        let k = (d.length() * 2.0).min(0.5) / d.length();
+        p.step(&Input { move_axis: Vec2::new(d.dot(right), d.dot(fwd)) * k, ..Default::default() });
+    }
+    let panel = Vec3::new(-3.25, 1.62, 18.44);
+    p.shoot(PortalColor::Blue, panel);
+    p.shoot(PortalColor::Orange, Vec3::new(-4.75, 1.45, 21.13));
+    let eye = p.c.view().eye;
+    let dir = (Vec3::new(panel.x, eye.y, panel.z) - eye).normalize();
+    assert!(p.sim.fire(PortalColor::Orange, Aim { eye, dir, yaw: (-dir.x).atan2(-dir.z) }), "testchmb_a_15: no orange beyond the panel");
+    let mut through = false;
+    p.c.yaw = FRAC_PI_2;
+    p.c.pitch = 0.0;
+    let end = p.time + 30.0;
+    while !(through && p.c.feet.z > 30.0 && p.c.state == State::Ground) {
+        assert!(p.time < end, "testchmb_a_15: didn't get past the panel (at {})", p.c.feet);
+        let n = p.events.len();
+        let walk = (!through && p.c.feet.x < -2.6) || (through && p.c.state == State::Ground && p.c.feet.z < 18.2);
+        if through {
+            p.c.yaw = PI;
+        }
+        p.step(&Input { move_axis: Vec2::new(0.0, if walk { 0.4 } else { 0.0 }), ..Default::default() });
+        through |= p.events[n..].iter().any(|e| matches!(e, SimEvent::Teleported { .. }));
+    }
+    p.assert_alive("past the panel");
+    // Out of the incinerator: blue on its east wall beside the scaffold, orange on the north
+    // wall just above the deck at its far end; a running jump off the scaffold into blue, and
+    // out onto the deck.
+    p.wait_for(10.0, "the scaffold into the incinerator", |p| platform(p, next).center().z > 34.0);
+    p.shoot(PortalColor::Orange, Vec3::new(-11.0, 1.45, 53.64));
+    p.shoot(PortalColor::Blue, Vec3::new(-7.32, -3.2, 41.5));
+    p.wait_for(10.0, "the scaffold by blue", |p| platform(p, next).center().z > 39.0);
+    p.leap(-FRAC_PI_2, |f| f.x > -10.5, PI, -100.0);
+    p.assert_alive("out of the incinerator");
+    p.wait(2.0);
+    // Up through the window high over the incinerator's mouth: blue on the ceiling of the room
+    // behind it, orange under her on the deck.
+    p.go(Vec3::new(-11.0, 0.0, 52.5), 0.3);
+    p.shoot(PortalColor::Blue, Vec3::new(-9.87, 21.13, 23.38));
+    p.drop_through(PortalColor::Orange, 0.0, 0.0);
+    p.assert_alive("up through the window");
+    p.wait(2.0);
+    // West through the backstage, up what's left of the broken stairs (a hop from the last
+    // piece onto the landing), and on to the escape's catwalks. (Through the middle of the
+    // doorways: clear of their posts.)
+    for w in [Vec3::new(-14.3, 8.94, 32.5), Vec3::new(-17.0, 8.94, 32.5), Vec3::new(-34.38, 12.18, 25.3)] {
+        p.go(w, 0.25);
+    }
+    p.run_jump(0.0, |_| true);
+    for w in [Vec3::new(-34.95, 13.0, 23.4), Vec3::new(-34.95, 13.0, 21.0), Vec3::new(-22.76, 16.26, 3.05)] {
+        p.go(w, 0.25);
+    }
+    p.assert_alive("up the broken stairs");
+    // Over the contaminated pool (its catwalk fallen in): blue on the far wall of the room beyond
+    // it, just above its floor, orange on the walkway's side wall, and in.
+    p.go(Vec3::new(-30.9, 16.26, 3.0), 0.25);
+    p.go(Vec3::new(-30.9, 16.26, -1.0), 0.2);
+    let far = Vec3::new(-27.24, 21.79, -29.26);
+    p.shoot(PortalColor::Blue, far);
+    let side = Vec3::new(-29.26, 17.75, -1.3);
+    p.shoot(PortalColor::Orange, side);
+    p.enter_now(PortalColor::Orange, side, Some(far));
+    p.wait_for(5.0, "her feet", |p| p.c.state == State::Ground);
+    p.assert_alive("over the pool");
+    // Down into the white room beyond: blue on its ceiling, shot through the slats of the vent
+    // between the rooms, and orange under her. (Between the post and the crates on the way.)
+    for w in [Vec3::new(-14.5, 19.51, -27.9), Vec3::new(-9.0, 19.51, -27.9), Vec3::new(-3.07, 19.51, -30.0)] {
+        p.go(w, 0.15);
+    }
+    p.shoot_near(PortalColor::Blue, 0.0454, 0.3875, |q| q.center.z < -34.6 && q.normal.y < -0.9);
+    p.drop_through(PortalColor::Orange, 0.0, 0.0);
+    p.assert_alive("into the white room");
+    // The exit's doors: open while she stands on their button (behind a grill, so no lid chunk
+    // from the broken dropper gets to it by portal), and shut the moment she's off it. So,
+    // standing on it, blue on the end wall of the corridor beyond them, orange in the floor
+    // beside her, and in: out past the doors.
+    p.go(Vec3::new(-6.5, 16.26, -43.0), 0.3);
+    p.go(Vec3::new(-6.5, 16.26, -48.04), 0.2);
+    p.nudge(Vec3::new(-6.5, 16.26, -48.04));
+    let doors = p.mover("exit_door_left_a05");
+    p.wait_for(5.0, "the exit's doors open", |p| p.sim.movers[doors].node == 1);
+    p.shoot(PortalColor::Blue, Vec3::new(-6.69, 17.66, -63.4));
+    let beside = Vec3::new(-8.8, 16.26, -49.0);
+    p.shoot(PortalColor::Orange, beside);
+    p.go(Vec3::new(-8.8, 16.26, -51.0), 0.3);
+    p.walk_into_portal(beside, 0.4);
+    p.assert_alive("past the exit's doors");
+    // Down the empty elevator shaft (too far to fall): blue on its floor, shot from the far
+    // side of the hole (she comes up out of it heading on east, the way she's going), orange
+    // on the wall beside it, and in.
+    p.go(Vec3::new(-22.15, 16.26, -61.18), 0.15);
+    p.shoot(PortalColor::Blue, Vec3::new(-19.6, -2.44, -62.3));
+    let side = Vec3::new(-15.39, 17.75, -64.15);
+    p.shoot(PortalColor::Orange, side);
+    let q = p.sim.portals[1].unwrap();
+    p.go(q.center + q.normal * 1.5 - Vec3::Y * (q.center.y - 16.26), 0.3);
+    p.walk_into_portal(q.center, 0.5);
+    p.assert_alive("down the shaft");
+    // (Past the little crushers, and through the doorway beyond, clear of its post.)
+    for w in [Vec3::new(-12.0, -1.63, -59.8), Vec3::new(-8.5, -1.63, -55.1), Vec3::new(-5.8, -1.63, -55.1)] {
+        p.go(w, 0.25);
+    }
+    // Up into the passage at the far end of the crushers' room: a jump and a climb.
+    p.go(Vec3::new(1.4, 0.0, -65.0), 0.3);
+    p.run_jump(0.0, |f| f.z < -67.75);
+    // At its low end, crouched, a grate looks across the fan's shaft into the last room, which
+    // only a portal gets her into: blue through it onto that room's ceiling. Back down into the
+    // room below, orange in its floor, and down into the last room: out.
+    p.go(Vec3::new(1.2, 3.26, -79.0), 0.3);
+    p.c.yaw = 0.0;
+    let end = p.time + 4.0;
+    while p.c.feet.z > -80.9 {
+        assert!(p.time < end, "testchmb_a_15: stuck in the low passage (at {})", p.c.feet);
+        p.step(&Input { move_axis: Vec2::new(0.0, 0.5), crouch_held: true, crouch_pressed: true, ..Default::default() });
+    }
+    p.wait(0.5);
+    p.shoot_near(PortalColor::Blue, -0.2374, 0.4817, |q| q.center.z < -85.3);
+    p.c.yaw = PI;
+    let end = p.time + 4.0;
+    while p.c.feet.z < -79.0 {
+        assert!(p.time < end, "testchmb_a_15: stuck in the low passage (at {})", p.c.feet);
+        p.step(&Input { move_axis: Vec2::new(0.0, 0.5), crouch_held: true, ..Default::default() });
+    }
+    p.wait(0.5);
+    p.go(Vec3::new(-3.0, 0.0, -66.0), 0.3);
+    p.drop_through(PortalColor::Orange, 0.0, 0.0);
+    p.assert_alive("into the last room");
+    let end = p.time + 6.0;
+    while p.sim.transition.is_none() {
+        assert!(p.time < end, "testchmb_a_15: never left for escape_00 (at {})", p.c.feet);
+        let d = Vec3::new(-0.4, 4.88, -89.8) - p.c.feet;
+        p.c.yaw = (-d.x).atan2(-d.z);
+        p.step(&Input { move_axis: Vec2::new(0.0, 0.5), ..Default::default() });
+    }
+    p.assert_leads_to("escape_00");
 }
 
 #[test]

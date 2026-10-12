@@ -931,6 +931,18 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                 m.start = p.start;
                 m.home = p.home;
                 m.shift = p.shift;
+                // (A train the extractor put on its first path node: a brush riding it through
+                // a model of its own, left where the map has the train, goes there too.
+                // Chamber 19's scaffold's floor.)
+                let centre = |bs: &[Solid]| bs.iter().map(|b| b.b.center()).sum::<Vec3>() / bs.len().max(1) as f32;
+                if p.shift.length() > 1.0 && !m.boxes.is_empty() && !p.boxes.is_empty() {
+                    let (c, pc) = (centre(&m.boxes), centre(&p.boxes));
+                    if c.distance(pc - p.shift) < c.distance(pc) {
+                        for b in &mut m.boxes {
+                            b.b = b.b.translated(p.shift);
+                        }
+                    }
+                }
             } else if let Some(&(_, direct)) = children.iter().find(|(c, _)| *c == k) {
                 m.parent = Some(direct);
             }

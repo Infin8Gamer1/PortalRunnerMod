@@ -702,6 +702,9 @@ pub struct Sim {
     /// The paint's version when the portals were last checked against it.
     portals_checked_at: u64,
     pub player_env: Option<PortalColor>,
+    /// The floor portal she's just come up out of, till she lands: the funnel leaves her to
+    /// come down beside it.
+    came_up_out_of: Option<PortalColor>,
     pub checkpoint: usize,
     pub gun: Gun,
     pub events: Vec<SimEvent>,
@@ -777,6 +780,7 @@ impl Sim {
             held_turn: Quat::IDENTITY,
             portals_checked_at: 0,
             player_env: None,
+            came_up_out_of: None,
             checkpoint: 0,
             gun: level.gun,
             events: Vec::new(),
@@ -1567,6 +1571,9 @@ impl Sim {
         // Dropping into a floor (or ceiling) portal: its rim isn't a ledge to vault onto.
         ctrl.air_moves_off = env.and_then(|c| self.portals[c.index()]).is_some_and(|p| p.normal.y.abs() > 0.5);
 
+        if ctrl.state != faith_move::State::Air {
+            self.came_up_out_of = None;
+        }
         if self.funnel && linked && ctrl.state == faith_move::State::Air {
             self.funnel_into_portals(ctrl, dt);
         }
@@ -1729,7 +1736,10 @@ impl Sim {
         let center = ctrl.feet + Vec3::Y * body.height * 0.5;
         let v = ctrl.vel;
         let mut best: Option<(f32, Vec3)> = None;
-        for p in self.portals.iter().flatten() {
+        for (c, p) in self.portals.iter().enumerate().filter_map(|(c, p)| p.map(|p| (c, p))) {
+            if self.came_up_out_of.is_some_and(|o| o.index() == c) {
+                continue;
+            }
             let into = -v.dot(p.normal);
             // Only heading into it fast, and mostly along its normal (it's below her, or she
             // is flying at a wall one).
@@ -1770,6 +1780,11 @@ impl Sim {
         // Out of a floor portal: at least fast enough to get her feet out of it, and a little
         // nudge forward so she lands beside it rather than back in.
         if out.normal.y > 0.7 {
+            // (Slowly: up to its mouth, so she's out of it, and clear of its rim, as she rises.)
+            if vel.dot(out.normal) < 8.0 {
+                feet.y = feet.y.max(out.center.y + 0.01);
+            }
+            self.came_up_out_of = Some(entered.other());
             let depth = (out.center.y - feet.y).max(0.0) + 0.3;
             let need = (2.0 * ctrl.tuning.gravity * depth).sqrt();
             if vel.y < need {
@@ -1779,6 +1794,18 @@ impl Sim {
             if h.length() < 2.5 {
                 let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
                 vel += fwd * (2.5 - h.length());
+            }
+            // (And enough to be past its rim by the time she's come down again: up only a
+            // little way, she'd drop straight back in.)
+            let h = Vec3::new(vel.x, 0.0, vel.z);
+            let dir = h.normalize_or_zero();
+            let (lx, ly) = (out.to_local(feet).x, out.to_local(feet).y);
+            let (dx, dy) = (dir.dot(out.right()), dir.dot(out.up));
+            let clear = |l: f32, d: f32, half: f32| if d.abs() < 1e-4 { f32::INFINITY } else { ((half + 0.4) * d.signum() - l) / d };
+            let reach = clear(lx, dx, out.half.x).min(clear(ly, dy, out.half.y)).max(0.0);
+            let air = 2.0 * vel.y.max(0.0) / ctrl.tuning.gravity;
+            if air > 0.0 && h.length() * air < reach {
+                vel += dir * (reach / air - h.length());
             }
         }
         let keep_ground = link.from.normal.y.abs() < 0.3 && out.normal.y.abs() < 0.3;
@@ -2670,6 +2697,11 @@ impl Sim {
         for i in 0..self.movers.len() {
             let Some(goal) = self.movers[i].goal else { continue };
             let m = &self.movers[i];
+            // (One that follows its parent goes where that goes, below: not along a way of its
+            // own as well. Chamber 19's spawned scaffolds' platforms are started with them.)
+            if m.def.follows && m.def.parent.is_some_and(|p| p < self.movers.len()) && !m.detached {
+                continue;
+            }
             let before = m.at;
             let mut at = m.at;
             let mut node = m.node;
