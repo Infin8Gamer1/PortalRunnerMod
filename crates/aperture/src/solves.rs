@@ -1619,10 +1619,15 @@ fn tilted_faces_take_portals() {
     }
 }
 
-/// Chamber 15 (testchmb_a_10), as Portal's walkthrough has it. Section 1: flung over the glass
-/// from the panel jutting from the back wall (twice through, to pick up speed). Section 2: the
-/// pellet sent back through the grill by her portals, then (past the grill) into the receptacle
-/// out of a ceiling portal; the lift it lowers takes her up to section 3.
+/// Chamber 15 (testchmb_a_10), much as Portal's walkthrough has it. Section 1: flung over the
+/// glass from the panel jutting from the back wall (twice through, to pick up speed). Section 2:
+/// the pellet sent back through the grill by her portals, then (past the grill) into the
+/// receptacle out of a ceiling portal; the lift it lowers takes her up to section 3. Section 3:
+/// flung over the glass again, by portals reshot as she falls. Section 4: over the partition
+/// (she climbs it), the pellet into its catcher off the far end's angled panel; across the goo
+/// on the scaffold (by portals onto it at the corridor's corner, then at its bend) to the west
+/// end; up a lift, the two switches (by portals between their rooms), the last pellet through
+/// the doors they open into its catcher, and up the victory lift to the exit.
 #[test]
 fn solve_testchmb_a_10() {
     let Some(mut p) = Play::load("testchmb_a_10") else { return };
@@ -1724,6 +1729,99 @@ fn solve_testchmb_a_10() {
     p.safe_shot(PortalColor::Blue, Vec3::new(22.75, -1.7, -14.52), Vec3::new(14.0, -6.5, -9.0), 5.0);
     let trap = |p: &Play, name: &str| p.sim.io.as_ref().unwrap().ents.iter().any(|e| e.name == name && e.alive && matches!(e.kind, crate::io::Kind::Trigger { enabled: true, .. }));
     p.wait_for(30.0, "the first catcher to take the pellet", |p| !trap(p, "ball_trap_11"));
+    // (Back over the partition.)
+    p.go(Vec3::new(12.0, -6.5, -3.0), 0.3);
+    p.c.yaw = std::f32::consts::PI;
+    let end = p.time + 5.0;
+    while p.time < end && !(p.c.feet.z > 0.8 && p.c.state == State::Ground) {
+        let near = p.c.feet.z > -1.4 && p.c.state == State::Ground;
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: near, jump_held: true, ..Default::default() });
+    }
+    // Across the goo on the scaffold, to the chamber's west end. (One scaffold at a time here,
+    // round and round.) Orange on the room's wall, blue at the corridor's end: through, onto the
+    // scaffold as it comes round the corner there; from it, blue on the wall at the corridor's
+    // far bend; back to the room on it. Round again: through orange, out of blue onto the
+    // scaffold at the bend; orange on the far wall of the chamber's west end, down the corridor;
+    // back through blue, and out there.
+    let carts: Vec<usize> = p.sim.io.as_ref().unwrap().ents.iter().filter_map(|e| match e.kind { crate::io::Kind::Mover { index, .. } if e.name == "tractrain_brush_2" || e.name == "spawned_rail_cart_intro_lvl7b" => Some(index), _ => None }).collect();
+    let cart = move |p: &Play| carts.iter().filter(|&&m| p.sim.movers[m].present).find_map(|&m| p.sim.movers[m].boxes().fold(None::<faith_move::Aabb>, |a, b| Some(a.map_or(b, |a| a.union(&b)))).map(|b| b.center()));
+    p.go(Vec3::new(10.6, -6.5, 8.1), 0.3);
+    p.shoot(PortalColor::Blue, Vec3::new(-3.25, -5.0, 8.4));
+    let corner = p.sim.portals[0].unwrap().center;
+    p.shoot(PortalColor::Orange, Vec3::new(9.75, -5.0, 4.32));
+    let room = p.sim.portals[1].unwrap().center;
+    // (A run-up in front of orange: out of blue fast enough to land well out on the scaffold.)
+    let in_front = Vec3::new(room.x + 2.5, -6.5, room.z);
+    p.entry_speed = 1.0;
+    p.go(in_front, 0.15);
+    p.wait_for(60.0, "the scaffold coming round the corridor's corner", |p| cart(p).is_some_and(|c| (c.x + 1.63).abs() < 0.3 && c.z > 5.6 && c.z < 6.6));
+    p.enter_now(PortalColor::Orange, room, Some(corner));
+    p.wait(0.3);
+    assert!(p.c.feet.y > -6.6, "didn't land on the scaffold (at {})", p.c.feet);
+    p.look_at(Vec3::new(-1.63, -5.0, -3.25));
+    assert!(p.sim.fire(PortalColor::Blue, Aim::of(&p.c)), "blue didn't open on the wall at the corridor's far bend");
+    let bend = p.sim.portals[0].unwrap().center;
+    // (Off into the room as the scaffold comes in.)
+    p.wait_for(15.0, "the scaffold into the room's end", |p| cart(p).is_some_and(|c| c.x > 7.8));
+    let end = p.time + 3.0;
+    while p.time < end && p.c.feet.x < 10.5 {
+        // (Through the middle of the doorway.)
+        let to = Vec3::new(11.0, 0.0, 8.1) - p.c.feet;
+        p.c.yaw = (-to.x).atan2(-to.z);
+        p.step(&Input { move_axis: Vec2::new(0.0, 0.6), ..Default::default() });
+    }
+    p.assert_alive("off the scaffold");
+    // Round again: in front of orange, and in as the scaffold comes to the bend.
+    p.go(in_front, 0.15);
+    p.wait_for(60.0, "the scaffold coming to the corridor's bend", |p| cart(p).is_some_and(|c| (c.z + 1.63).abs() < 0.3 && c.x > -2.6 && c.x < -1.7));
+    p.enter_now(PortalColor::Orange, room, Some(bend));
+    assert!(p.c.feet.y > -6.8 && p.c.feet.z > -3.0, "didn't land on the scaffold at the bend (at {})", p.c.feet);
+    p.look_at(Vec3::new(-31.5, -5.0, -1.63));
+    assert!(p.sim.fire(PortalColor::Orange, Aim::of(&p.c)), "orange didn't open on the west end's far wall");
+    // (Back off the scaffold's end and into blue, a jump across the goo opening behind it.)
+    let seen = p.events.len();
+    let end = p.time + 3.0;
+    while p.time < end && !p.events[seen..].iter().any(|e| matches!(e, SimEvent::Teleported { .. })) {
+        let to = bend - p.c.feet;
+        p.c.yaw = (-to.x).atan2(-to.z);
+        let edge = p.c.state == State::Ground && cart(&p).is_some_and(|c| p.c.feet.z < c.z - 1.2);
+        p.step(&Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: edge, jump_held: true, ..Default::default() });
+    }
+    p.wait(1.0);
+    assert!(p.c.feet.x < -12.0 && p.c.feet.y > -7.0, "not in the west end (at {})", p.c.feet);
+    p.assert_alive("over to the west end");
+    let lift_a = p.mover("lift_pillar_door_top_a");
+    p.wait_for(40.0, "lift a down", |p| p.sim.movers[lift_a].goal.is_none() && p.sim.movers[lift_a].node == 1);
+    let top = p.sim.movers[lift_a].boxes().fold(f32::MIN, |m, b| m.max(b.max.y));
+    p.go(Vec3::new(-17.88, top, 3.25), 0.4);
+    p.wait(20.0);
+    // The two switches, each in a room up on a lift, each opening one of the two doors in front
+    // of the last catcher for a while: blue on this room's wall, orange on the other's; the
+    // switch here, through, the switch there. Then, the doors open, orange on the wall facing
+    // the catcher and blue on the floor under the launcher: its pellet falls into blue, out of
+    // orange, through the doors and into the catcher.
+    p.shoot(PortalColor::Blue, Vec3::new(-20.37, 1.43, 9.75));
+    let here = p.sim.portals[0].unwrap().center;
+    p.shoot(PortalColor::Orange, Vec3::new(-31.56, 1.66, -13.0));
+    let there = p.sim.portals[1].unwrap().center;
+    p.press("button_catcher_door01_rm8");
+    p.enter_now(PortalColor::Blue, here, Some(there));
+    p.press("button_catcher_door02_rm8");
+    let feet = p.c.feet;
+    p.safe_shot(PortalColor::Orange, Vec3::new(-13.82, 1.62, -1.67), feet, 4.0);
+    let feet = p.c.feet;
+    p.safe_shot(PortalColor::Blue, Vec3::new(-21.94, -6.5, -1.55), feet, 7.0);
+    let trap = |p: &Play, name: &str| p.sim.io.as_ref().unwrap().ents.iter().any(|e| e.name == name && e.alive && matches!(e.kind, crate::io::Kind::Trigger { enabled: true, .. }));
+    p.wait_for(15.0, "the last catcher to take the pellet", |p| !trap(p, "ball_trap_10"));
+    p.assert_alive("catching the last pellet");
+    // The victory lift comes down: on it, up to the chamberlock and the exit elevator.
+    let victory = p.mover("lift_pillar_door_top_a1");
+    p.wait_for(40.0, "the victory lift down", |p| p.sim.movers[victory].goal.is_none() && p.sim.movers[victory].node == 1);
+    let deck = p.sim.movers[victory].boxes().fold(f32::MIN, |m, b| m.max(b.max.y));
+    p.go(Vec3::new(-30.89, deck, 4.88), 0.4);
+    p.wait_for(40.0, "the victory lift up", |p| p.sim.movers[victory].goal.is_none() && p.sim.movers[victory].node == 0);
+    p.assert_alive("in Chamber 15");
+    p.ride_exit("testchmb_a_11");
     p.assert_alive("catching section 4's first pellet");
 }
 

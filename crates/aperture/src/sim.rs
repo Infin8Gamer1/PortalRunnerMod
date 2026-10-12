@@ -2668,11 +2668,14 @@ impl Sim {
             // What's standing on it moves with it, and what's in its way is pushed along, if
             // there's room. Where there isn't, it waits (it doesn't crush her, or a cube).
             if d != Vec3::ZERO && self.movers[i].def.swing.is_none() {
-                let tops: Vec<Aabb> = self.movers[i].boxes().collect();
+                // (Its own boxes and those of what rides it: a scaffold's platform is a brush
+                // of its own, parented to the train.)
+                let family: Vec<usize> = (0..self.movers.len()).filter(|&k| self.rides(k, i)).collect();
+                let tops: Vec<Aabb> = family.iter().flat_map(|&k| self.movers[k].boxes().collect::<Vec<_>>()).collect();
                 let moved: Vec<Aabb> = tops.iter().map(|b| b.translated(d)).collect();
                 let on_top = |b: &Aabb| tops.iter().any(|t| (b.min.y - t.max.y).abs() < STANDING && b.max.x > t.min.x && b.min.x < t.max.x && b.max.z > t.min.z && b.min.z < t.max.z);
                 let in_way = |b: &Aabb| moved.iter().any(|m| m.overlaps(b));
-                let others: Vec<Aabb> = self.movers.iter().enumerate().filter(|(k, _)| *k != i).flat_map(|(_, m)| m.boxes().collect::<Vec<_>>()).collect();
+                let others: Vec<Aabb> = self.movers.iter().enumerate().filter(|(k, _)| !family.contains(k)).flat_map(|(_, m)| m.boxes().collect::<Vec<_>>()).collect();
                 let room = |b: &Aabb| self.static_world.is_free(b) && !others.iter().any(|o| o.overlaps(b));
                 let me = ctrl.body().aabb(ctrl.feet);
                 let carry_me = on_top(&me) || in_way(&me);
@@ -2731,6 +2734,19 @@ impl Sim {
                 }
             }
         }
+    }
+
+    /// Whether mover `k` is `i` or rides it (parented to it, or to what rides it).
+    fn rides(&self, k: usize, i: usize) -> bool {
+        let mut at = Some(k);
+        for _ in 0..8 {
+            match at {
+                Some(m) if m == i => return true,
+                Some(m) => at = self.movers[m].def.parent.filter(|&p| p < self.movers.len()),
+                None => return false,
+            }
+        }
+        false
     }
 
     fn update_doors(&mut self, dt: f32) {
