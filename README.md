@@ -84,8 +84,9 @@ is baked. Other GPUs (or Settings > Graphics > Ray-traced lighting off, which sw
 away, or `PORTAL_NORT=1` for one run) light them the ordinary way.
 
 It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were
-in, **Chambers** lists them all with your best times, and **Settings** and **Controls** are
-there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.
+in, **Chambers** lists them all with your best times, in three folders (Portal's maps as
+imported, the game's own native copies of them, and the testing chambers: the game's own and
+the levels made in the editor), and **Settings** and **Controls** are there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.
 
 ## Controls
 
@@ -147,6 +148,12 @@ tip over when a cube hits them, you run into them, or you kick them (Mirror's Ed
 The escape's rocket turrets lock on and fire slow rockets: put a portal in front of one and
 send it into the glass, the tubes or GLaDOS.
 
+The extractor also makes each map into a **native chamber**: a level file of the game's own
+(`assets/extracted/levels/portal/`, made from the map's brushes, entities, props and overlays by
+`aperture::port`) that plays and looks as the map does, and opens in the level editor, every
+brush, entity and wire of it there to change. Running the extractor again remakes them, but
+keeps one you've edited and saved (delete it to have it made again).
+
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
 
@@ -191,7 +198,10 @@ VSync off.)
 **New level** in the menu starts a new one: fly round it, drag walls, floors, puzzle pieces,
 parkour pieces and Mirror's Edge props in from the content browser, move, turn and size them
 with the gizmo, wire buttons to doors in the details panel, and press **F5** to play it. Levels
-made there are saved as `.ron` files in `levels/` and listed after the game's chambers.
+made there are saved as `.ron` files in `levels/` and listed after the game's chambers. Portal's
+maps open in it as their native chambers: Portal's brushes and materials (a texture browser),
+its entities with their keys and outputs (wire relays, timers and triggers to doors), and its
+logic pieces to drop in.
 
 The game's own chambers are Rust code: see [docs/levels.md](docs/levels.md) for the editor,
 the builder, every piece you can place, and how to give a level its own solution test.
@@ -212,12 +222,17 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   levels/                 the chambers (kit.rs: shared pieces)
   source.rs               Portal's maps (as extracted) as levels
   io.rs                   their logic: Source's entity I/O
+  doc.rs                  a level as a file (the editor's), Portal's maps' brushes and
+                          entities in it too
+  brush.rs                brushes: faces to draw and boxes to collide with
+  port.rs                 Portal's maps made into level files (the native chambers)
+  art.rs                  what's drawn of a Portal map: faces, props, overlays, cables
   tests.rs                the mechanics, and each chamber beaten by script
 crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
                         their animations) out of your Portal and Portal 2 VPKs, and Portal
                         with RTX's remastered materials and models (remix.rs, usd.rs), and
-                        Portal's maps (bsp.rs: faces, brushes as boxes, entities; maps.rs)
-                        and GLaDOS's scenes (scenes.rs)
+                        Portal's maps (bsp.rs: faces, brushes as boxes, entities; maps.rs),
+                        GLaDOS's scenes (scenes.rs), and the maps as native chambers
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces

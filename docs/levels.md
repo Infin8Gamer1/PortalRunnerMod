@@ -7,8 +7,8 @@ are made, each with a test that plays it through).
 
 **F4** in the game, or **Level editor** in the main or pause menu, opens the editor
 (`PORTAL_EDIT=1` starts in it). The first time, it opens on a copy of the chamber you're in
-(Portal's own maps can't be edited: a new room instead). **New level** in the menus starts a
-new one: a white room with lamps and a start.
+(one of Portal's maps: its native chamber, below). **New level** in the menus starts a new
+one: a white room with lamps and a start.
 
 - **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
   (start, checkpoints, exit, hints, goo, platforms, portals, indicator wires), lights (point
@@ -50,8 +50,45 @@ new one: a white room with lamps and a start.
   selected, the level's name, intro line, indoors or out, and which portals the gun shoots.
 - **Play** (**F5**, or **F4**) plays the level from its start with the real simulation; **F4**
   comes back to the editor.
-- **File**: a new room or an empty level, open a level file, import any of the game's chambers
-  (as its boxes and pieces, after the cuts), save (**Ctrl+S**).
+- **File**: a new room or an empty level, open a level file or one of Portal's native
+  chambers, import any of the game's chambers (as its boxes and pieces, after the cuts), save
+  (**Ctrl+S**).
+- **Outliner**: filter by name or label, or show only brushes, entities or the rest (a Portal
+  map has thousands of objects).
+
+### Portal's maps, natively
+
+`portal_extract` makes each of Portal's maps into a level file (`levels/portal/` in the
+extracted folder): its **native chamber**, in the Chambers menu's second folder and under
+**File > Open a Portal chamber**. It's made the way the map was built, and plays as it does
+(the same boxes, pieces and logic: the solution tests play every chamber on it too):
+
+- **Brushes**: each of the map's brushes, a convex solid whose every face has one of Portal's
+  materials (where its texture lies goes with it: move a brush and its texture moves too).
+  The details panel shows its contents (solid, window, grate, goo, water, clip, empty), what
+  it collides as (white where at least half its drawn faces take portals), and each face's
+  material: **Pick…** opens Portal's materials, with pictures. Scale it with the gizmo
+  (**R**); its textures keep their size. Faces with Source's tool textures (nodraw, clip,
+  trigger) aren't drawn; nor is a face inside another solid brush.
+- **Entities**: each of the map's entities, Source's: its class, its name, its keys, and its
+  **outputs** (when it fires an event, an input sent after a delay to the entities of a name:
+  `OnTrigger` → `door.Open`). The details panel lists them all to change, and what fires at
+  it (click one to go to it); in the view, lines show what the selection's outputs reach
+  (green) and what fires at it (cyan). A brush entity (a door, a trigger, a wall that comes
+  and goes) has its brushes: they move with it. Triggers show as orange outlines, logic as
+  small yellow marks. Static props are `prop_static` entities.
+- **Displacements** (the escape's dirt mounds) and **overlays** (decals: signs, indicator
+  strips; named, the logic switches their frames) are objects too.
+
+**Portal brushes** and **Portal logic** in the content browser make new ones: brushes of
+Portal's white panels, concrete, black metal, glass, light panels and tool textures, and
+relays, timers, map-start, counters, cases, triggers, sliding doors and toggled walls (brush
+entities), GLaDOS scenes, Portal's lights, landmarks, level changes and the portal gun.
+
+Saving one writes its file in the extracted folder. Running the extractor again remakes the
+native chambers but keeps one that's been changed (`levels/portal/written.txt` knows each as
+it was written); delete it to have it made again. A native chamber's level change leads to
+the next map's native chamber.
 
 What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits
 on what it's dropped on, a default size, and the object it makes. Adding a kind of thing the
@@ -62,9 +99,10 @@ New sources (buttons, catchers, relays) get a signal of their own, and a door, b
 platform placed after one listens to it: drop a button, then a door, and the button opens it.
 
 Levels are saved as RON in `levels/` (`PORTAL_LEVELS` to put them elsewhere): a list of objects,
-each a kind, where it is (a box's centre, a piece's point, as the builder methods below take),
-a box's size, and which way it faces (degrees). They're read when they're loaded, so a saved
-change shows the next time the level loads. `aperture::doc` has the format.
+an object a line, each a kind, where it is (a box's centre, a piece's point, as the builder
+methods below take), a box's size, and which way it faces (degrees); a Portal entity's name and
+outputs. They're read when they're loaded, so a saved change shows the next time the level
+loads. `aperture::doc` has the format; `aperture::brush` brushes.
 
 ```ron
 (
