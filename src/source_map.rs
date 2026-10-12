@@ -688,9 +688,9 @@ pub fn move_bodies(game: Res<Game>, mut q: Query<(&BodyProp, &mut Transform, &mu
             *vis = want;
         }
         if let Some(p) = p {
-            let turned = p.rot * b.turn0.inverse();
-            tf.translation = p.pos + turned * b.origin;
-            tf.rotation = p.rot;
+            // (Its turn in the sim is from as it stood.)
+            tf.translation = p.pos + p.rot * b.origin;
+            tf.rotation = p.rot * b.turn0;
         }
     }
 }

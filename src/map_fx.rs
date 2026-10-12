@@ -224,7 +224,7 @@ pub fn sync(
         }
         match &p.kind {
             // A spotlight: a light along its way, and its beam, a cone fading out to its end.
-            PropKind::Spotlight { length, width, color, start_on } => {
+            PropKind::Spotlight { length, width, color, start_on, light } => {
                 let c = color.min(Vec3::splat(4.0));
                 let beam = beam_cone(*length, *width);
                 let mat = materials.add(StandardMaterial { base_color: Color::linear_rgb(c.x * 0.35, c.y * 0.35, c.z * 0.35), alpha_mode: AlphaMode::Add, unlit: true, double_sided: true, cull_mode: None, ..default() });
@@ -233,6 +233,9 @@ pub fn sync(
                     .spawn((ChamberGeom, Shown { ent, start_on: *start_on }, Transform::from_translation(p.at).looking_to(fwd, up), Visibility::Hidden))
                     .with_children(|ch| {
                         ch.spawn((Mesh3d(meshes.add(beam)), MeshMaterial3d(mat), Transform::default(), NotShadowCaster));
+                        if !*light {
+                            return;
+                        }
                         ch.spawn(SpotLight { intensity: 60_000.0 * c.length().max(0.2), color: Color::linear_rgb(c.x, c.y, c.z), range: length * 1.5, radius: 0.0, outer_angle: (width / length.max(0.1)).atan().clamp(0.05, 1.2), inner_angle: (width / length.max(0.1)).atan().clamp(0.05, 1.2) * 0.6, shadow_maps_enabled: false, ..default() });
                     });
             }
@@ -390,16 +393,14 @@ pub fn update(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera
     let (right, up) = (cam.right().as_vec3(), cam.up().as_vec3());
     let t = game.sim.time;
     for (f, mesh, mut vis) in &mut fx {
-        let on = shown(&game, f.ent, f.start_on) && f.mover.and_then(|m| game.sim.movers.get(m)).is_none_or(|m| m.present);
+        // (Far off: not worth the quads, and not shown, or the last ones would hang there.)
+        let near = f.at.distance(cam.translation()) <= 60.0;
+        let on = near && shown(&game, f.ent, f.start_on) && f.mover.and_then(|m| game.sim.movers.get(m)).is_none_or(|m| m.present);
         let want = if on { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }
         if !on {
-            continue;
-        }
-        // (Far off: not worth the quads.)
-        if f.at.distance(cam.translation()) > 60.0 {
             continue;
         }
         let shift = f.mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.offset());

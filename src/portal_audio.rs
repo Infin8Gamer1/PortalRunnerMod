@@ -106,6 +106,7 @@ pub fn play(
     camera: Query<&GlobalTransform, With<PlayerCamera>>,
     mut prop_sounds: ResMut<PropSounds>,
     stopping: Query<(Entity, &StopAt)>,
+    lib: Option<Res<crate::map_audio::SoundLib>>,
 ) {
     if ex.sounds.is_empty() {
         return;
@@ -265,9 +266,10 @@ pub fn play(
         commands.spawn((AudioPlayer::new(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(v)).with_speed(speed)));
     }
 
-    // ---- loops: their volume follows what's near. (A Portal map with sounds of its own has
-    // its own hum and music: `map_audio`.)
-    let own = sim.io.as_ref().is_some_and(|io| io.ents.iter().any(|e| matches!(e.kind, aperture::io::Kind::Soundscape { .. } | aperture::io::Kind::Sound { .. })));
+    // ---- loops: their volume follows what's near. (A Portal map with an ambience of its own
+    // has its own hum and music, `map_audio`: when its sound library's there to play them.)
+    let library = lib.as_ref().is_some_and(|l| !l.files.is_empty());
+    let own = library && sim.io.as_ref().is_some_and(|io| io.ents.iter().any(|e| matches!(e.kind, aperture::io::Kind::Soundscape { .. })));
     let indoor = sim.level.indoor && !own;
     let near_portal = sim.portals.iter().flatten().map(|p| p.center.distance(ear)).fold(f32::INFINITY, f32::min);
     let laser_near = sim.lasers.iter().filter(|l| l.on).flat_map(|l| l.path.iter()).map(|(a, b)| aperture::geom::segment_point(*a, *b, ear).0).fold(f32::INFINITY, f32::min);

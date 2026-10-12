@@ -36,8 +36,9 @@ pub enum PropKind {
     /// not (a grill's always is).
     Particles { start_on: bool },
     /// A spotlight's beam (point_spotlight): `length` and `width` metres across where it's
-    /// widest, in `color`; on from the start or not.
-    Spotlight { length: f32, width: f32, color: Vec3, start_on: bool },
+    /// widest, in `color`; on from the start or not; lighting what it shines on, or (as almost
+    /// all of Portal's: No Dynamic Light) only a beam.
+    Spotlight { length: f32, width: f32, color: Vec3, start_on: bool, light: bool },
     /// Steam (env_steam): puffs at `speed` (m/s) along it for `length` metres, from `start` to
     /// `end` metres across, `rate` a second, in `color` at `alpha`.
     Steam { speed: f32, length: f32, start: f32, end: f32, rate: f32, color: Vec3, alpha: f32, start_on: bool },
@@ -258,7 +259,7 @@ pub fn entity_extras(ents: &[(Entity, Vec3, Quat)]) -> Vec<ArtProp> {
                 out.push(ArtProp { kind: PropKind::Particles { start_on: key(e, "start_active") == Some("1") }, model: effect, at: *at, turn: *turn, parent, name });
                 continue;
             }
-            "point_spotlight" => PropKind::Spotlight { length: num(e, "spotlightlength", 500.0) * 0.0254, width: num(e, "spotlightwidth", 50.0) * 0.0254, color: color(e) * num(e, "HDRColorScale", 1.0), start_on: flags(e) & 1 != 0 },
+            "point_spotlight" => PropKind::Spotlight { length: num(e, "spotlightlength", 500.0) * 0.0254, width: num(e, "spotlightwidth", 50.0) * 0.0254, color: color(e) * num(e, "HDRColorScale", 1.0), start_on: flags(e) & 1 != 0, light: flags(e) & 2 == 0 },
             "env_steam" => {
                 let speed = num(e, "Speed", 120.0) * 0.0254;
                 PropKind::Steam {

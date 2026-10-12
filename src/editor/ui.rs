@@ -72,6 +72,7 @@ pub struct UiState {
     /// What keys' menus offer: Portal's soundscapes and colour correction tables.
     scapes: Vec<String>,
     tables: Vec<String>,
+    keys_listed: bool,
 }
 
 /// A material's look for its tile: its texture, else its colour.
@@ -99,7 +100,8 @@ pub fn draw(
     (extracted, mut images): (Res<crate::extracted::Extracted>, ResMut<Assets<Image>>),
     (mut commands, mut sounds, mut sources, previews): (Commands, Option<ResMut<crate::map_audio::SoundLib>>, ResMut<Assets<AudioSource>>, Query<Entity, With<Preview>>),
 ) -> Result {
-    if state.scapes.is_empty() {
+    if !state.keys_listed {
+        state.keys_listed = true;
         if let Some(lib) = &sounds {
             let mut scapes: Vec<String> = lib.scapes.keys().cloned().collect();
             scapes.sort();
@@ -1113,12 +1115,15 @@ fn sound_browser(ui: &mut egui::Ui, ed: &mut Editor, state: &mut UiState, lib: &
         }
     });
     if let Some(n) = chosen {
-        if let Some(Kind::Entity { keys, .. }) = ed.doc.objects.get_mut(obj).map(|o| &mut o.kind) {
-            match keys.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("message")) {
-                Some((_, v)) => *v = n.clone(),
-                None => keys.push(("message".into(), n.clone())),
+        // (An edit as any other: undone, saved, rebuilt.)
+        ed.change(|d| {
+            if let Some(Kind::Entity { keys, .. }) = d.objects.get_mut(obj).map(|o| &mut o.kind) {
+                match keys.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("message")) {
+                    Some((_, v)) => *v = n.clone(),
+                    None => keys.push(("message".into(), n.clone())),
+                }
             }
-        }
+        });
         ed.status = format!("Sound: {n}");
     }
 }

@@ -1314,6 +1314,8 @@ fn script(name: &str) -> Vec<Act> {
                 ed.add_entry(find("Particles"), Vec3::new(3.0, 0.0, -12.0), Vec3::Y, look);
                 ed.add_entry(find("Fan (brush)"), Vec3::new(-3.0, 0.0, -12.0), Vec3::Y, look);
                 ed.add_entry(find("Push volume"), Vec3::new(-3.0, 0.2, -12.0), Vec3::Y, look);
+                // (The level's own piece beside the map's: drawn as the game's.)
+                ed.add_entry(find("Moving platform"), Vec3::new(-3.5, 0.0, -4.0), Vec3::Y, look);
                 let mut chair = aperture::doc::Object::new(Kind::Model { path: "props/portal/props/lab_chair/lab_chair.glb".into(), scale: Vec3::ONE, bounds: Some((Vec3::new(-0.284, -0.6, -0.285), Vec3::new(0.286, 0.472, 0.306))), solid: true }, Vec3::new(1.5, 0.6, -6.0));
                 if let Some(k) = crate::editor::ui::physics_prop(&chair.kind) {
                     chair.kind = k;

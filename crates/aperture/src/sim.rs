@@ -690,6 +690,8 @@ pub struct Sim {
     /// in its own space, whichever way either of them crossed.
     pub held_through: Option<PortalColor>,
     held_far: f32,
+    /// A held physics prop's turn from the way she faced as she picked it up.
+    held_turn: Quat,
     /// The paint's version when the portals were last checked against it.
     portals_checked_at: u64,
     pub player_env: Option<PortalColor>,
@@ -765,6 +767,7 @@ impl Sim {
             held_turret: None,
             held_through: None,
             held_far: 0.0,
+            held_turn: Quat::IDENTITY,
             portals_checked_at: 0,
             player_env: None,
             checkpoint: 0,
@@ -892,7 +895,7 @@ impl Sim {
             let origin = b.at + b.origin;
             let bottom = b.origin.y + b.half.y;
             let at = crate::source::Perched::find(&sim, origin, Some(bottom)).map_or(b.at, |p| p.at - b.origin + Vec3::Y * 0.01);
-            let id = sim.spawn_body(at, b.half, b.turn);
+            let id = sim.spawn_body(at, b.half);
             sim.bodies.push(id);
         }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
@@ -1886,6 +1889,7 @@ impl Sim {
         match hit.map(|h| h.what) {
             Some(HitWhat::Prop(i)) if self.props[i].fizzle.is_none() => {
                 self.held = Some(i);
+                self.held_turn = Quat::from_rotation_y(-aim.yaw) * self.props[i].rot;
                 // Picked up through a portal: it's on that portal's far side.
                 self.held_through = if legs.len() > 1 { self.portal_at(legs[0].1) } else { None };
                 self.held_far = 0.0;
@@ -1921,6 +1925,8 @@ impl Sim {
                     .min_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some((_, i)) = near_cube {
                     self.held = Some(i);
+                    self.held_turn = Quat::from_rotation_y(-aim.yaw) * self.props[i].rot;
+                self.held_turn = Quat::from_rotation_y(-aim.yaw) * self.props[i].rot;
                     self.held_through = None;
                     self.held_far = 0.0;
                     self.events.push(SimEvent::PickUp { id: self.props[i].id });
@@ -2818,11 +2824,14 @@ impl Sim {
     }
 
     /// A physics prop (a map's), its box's centre at `at`, `half` its half size, turned `turn`.
-    pub(crate) fn spawn_body(&mut self, at: Vec3, half: Vec3, turn: Quat) -> u32 {
+    /// A physics prop: `half` its box as it stands (its model's hull as the map turns it). Its
+    /// turn starts unturned: it's how far it's been turned from as it stood (and its box with
+    /// it).
+    pub(crate) fn spawn_body(&mut self, at: Vec3, half: Vec3) -> u32 {
         let id = self.spawn_prop(CubeKind::Physics, at, None);
         if let Some(p) = self.props.iter_mut().find(|p| p.id == id) {
             p.half = half;
-            p.rot = turn;
+            p.rot = Quat::IDENTITY;
         }
         id
     }
@@ -2865,6 +2874,9 @@ impl Sim {
                 self.held = None;
             } else {
                 let (target, rot) = self.hold_target(aim, h);
+                // (A physics prop is held as it was picked up, turning as she does; a cube
+                // squares up to her.)
+                let rot = if self.props[h].kind == CubeKind::Physics { Quat::from_rotation_y(aim.yaw) * self.held_turn } else { rot };
                 let p = &mut self.props[h];
                 let to = target - p.pos;
                 p.vel = (to * 14.0).clamp_length_max(25.0);
