@@ -72,11 +72,13 @@ pub struct Prop {
     pub dropper: Option<usize>,
     pub grounded: bool,
     pub alive: bool,
+    /// Its half size (a cube's is [`CUBE_HALF`] every way).
+    pub half: Vec3,
 }
 
 impl Prop {
     pub fn aabb(&self) -> Aabb {
-        Aabb::from_center_size(self.pos, Vec3::splat(CUBE_HALF * 2.0))
+        Aabb::from_center_size(self.pos, self.half * 2.0)
     }
 
     /// Which way a reflector cube sends a laser.
@@ -642,6 +644,8 @@ pub struct Sim {
     /// The level's switched regions, and whether each is on now; for a portal detector, which
     /// portals are in it.
     pub volumes: Vec<VolumeState>,
+    /// The props (by id) the level's bodies (its physics props) are, in order.
+    pub bodies: Vec<u32>,
     pub launchers: Vec<PelletLauncher>,
     pub pellets: Vec<Pellet>,
     pub pellet_catchers: Vec<PelletCatcher>,
@@ -723,6 +727,7 @@ impl Sim {
             gun_pickups: Vec::new(),
             hurt: 0.0,
             volumes: level.volumes.iter().map(|v| VolumeState { on: v.on, def: v.clone(), portals: [false; 2] }).collect(),
+            bodies: Vec::new(),
             launchers: Vec::new(),
             pellets: Vec::new(),
             pellet_catchers: Vec::new(),
@@ -865,6 +870,16 @@ impl Sim {
                     sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, def });
                 }
             }
+        }
+        // A map's physics props, after its cubes (the map's logic knows its cubes by order).
+        // One the map stands on a cube stands on ours (smaller than Portal's: as far in from
+        // its edge, for its size).
+        for b in level.bodies.clone() {
+            let origin = b.at + b.origin;
+            let bottom = b.origin.y + b.half.y;
+            let at = crate::source::Perched::find(&sim, origin, Some(bottom)).map_or(b.at, |p| p.at - b.origin + Vec3::Y * 0.01);
+            let id = sim.spawn_body(at, b.half, b.turn);
+            sim.bodies.push(id);
         }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
         sim.statics = statics;
@@ -1097,7 +1112,7 @@ impl Sim {
                 }
                 // (Hit as it's turned: a cube set down at 45° sends a pellet off sideways.)
                 let inv = p.rot.inverse();
-                let local = Aabb::from_center_size(Vec3::ZERO, Vec3::splat(CUBE_HALF * 2.0));
+                let local = Aabb::from_center_size(Vec3::ZERO, p.half * 2.0);
                 if let Some((t, n)) = ray_aabb(inv * (o - p.pos), inv * d, &local) {
                     consider(t, p.rot * n, HitWhat::Prop(i));
                 }
@@ -1759,7 +1774,7 @@ impl Sim {
         // looking now.
         if let Some(h) = self.held {
             let l = link.from.to_local(self.props[h].pos);
-            let in_line = l.x.abs() < link.from.half.x && l.y.abs() < link.from.half.y && l.z > -CUBE_HALF && l.z < 3.0;
+            let in_line = l.x.abs() < link.from.half.x && l.y.abs() < link.from.half.y && l.z > -self.props[h].half.max_element() && l.z < 3.0;
             if self.held_through == Some(entered) {
                 // Through the portal it's already through: she's joined it.
                 self.held_through = None;
@@ -2110,7 +2125,7 @@ impl Sim {
                 let (a2, b2, c2) = (Vec2::new(a.x, a.z), Vec2::new(b.x, b.z), Vec2::new(c.x, c.z));
                 let ab = b2 - a2;
                 let k = ((c2 - a2).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-                k > 0.05 && k < 0.98 && (a2 + ab * k).distance(c2) < CUBE_HALF + 0.15 && c.y > chest.y - 1.4 && c.y < chest.y + 1.0
+                k > 0.05 && k < 0.98 && (a2 + ab * k).distance(c2) < self.props[h].half.max_element() + 0.15 && c.y > chest.y - 1.4 && c.y < chest.y + 1.0
             })
         };
         if in_view(chest) && clear(eye, chest) && !shielded(eye, chest) {
@@ -2769,6 +2784,7 @@ impl Sim {
             dropper,
             grounded: false,
             alive: true,
+            half: Vec3::splat(CUBE_HALF),
         };
         if let Some(slot) = self.props.iter().position(|q| !q.alive) {
             if self.held.is_none_or(|h| h != slot) {
@@ -2780,6 +2796,16 @@ impl Sim {
         id
     }
 
+    /// A physics prop (a map's), its box's centre at `at`, `half` its half size, turned `turn`.
+    pub(crate) fn spawn_body(&mut self, at: Vec3, half: Vec3, turn: Quat) -> u32 {
+        let id = self.spawn_prop(CubeKind::Physics, at, None);
+        if let Some(p) = self.props.iter_mut().find(|p| p.id == id) {
+            p.half = half;
+            p.rot = turn;
+        }
+        id
+    }
+
     /// Where a held cube should be: in front of her eye, and not inside a wall, in the
     /// cube's own space. Through a portal (`held_through`), her line of sight is followed
     /// through it if she's looking into it; if she isn't, the point is carried through anyway,
@@ -2788,8 +2814,9 @@ impl Sim {
         let dist = 2.0;
         let mask = Mask { skip_prop: Some(skip), fizzlers: false, ..Mask::SOLID };
         let rot = Quat::from_rotation_y(aim.yaw);
-        let clamp = |o: Vec3, d: Vec3, len: f32| match self.raycast(o, d, len + CUBE_HALF, mask) {
-            Some(h) => o + d * (h.t - CUBE_HALF * 1.2).max(0.0),
+        let size = self.props.get(skip).map_or(CUBE_HALF, |p| p.half.max_element());
+        let clamp = |o: Vec3, d: Vec3, len: f32| match self.raycast(o, d, len + size, mask) {
+            Some(h) => o + d * (h.t - size * 1.2).max(0.0),
             None => o + d * len,
         };
         let through = self.held_through.and_then(|c| self.link(c).map(|l| (c, l)));
@@ -2851,7 +2878,7 @@ impl Sim {
                 continue;
             }
             let held = self.held == Some(i);
-            let half = Vec3::splat(CUBE_HALF);
+            let half = self.props[i].half;
             // Which portal it's going through.
             let mut env = self.props[i].env;
             collide::update_env(&mut env, &self.portals, linked, self.props[i].pos, half, self.props[i].vel, dt);
@@ -2876,12 +2903,12 @@ impl Sim {
             let bouncy = p.coat == Some(Paint::Bounce);
             let before = p.pos;
             let delta = p.vel * dt;
-            let n = (delta.length() / (CUBE_HALF * 0.8)).ceil().max(1.0) as usize;
+            let n = (delta.length() / (p.half.min_element() * 1.6).max(0.05)).ceil().max(1.0) as usize;
             let mut landed: Option<f32> = None;
             for _ in 0..n {
                 let d = delta / n as f32;
                 if let Some(nrm) = move_box(&world, half, &mut p.pos, 1, d.y) {
-                    let floor_gel = world.gel(p.pos - Vec3::Y * CUBE_HALF, Vec3::Y);
+                    let floor_gel = world.gel(p.pos - Vec3::Y * p.half.y, Vec3::Y);
                     if nrm.y > 0.5 && p.vel.y < -2.0 && (bouncy || floor_gel == faith_move::Gel::Bounce) {
                         p.vel.y = (-p.vel.y * 0.9).max(7.0);
                     } else {
@@ -2893,7 +2920,7 @@ impl Sim {
                 }
                 for axis in [0usize, 2] {
                     if let Some(nrm) = move_box(&world, half, &mut p.pos, axis, d[axis]) {
-                        let wall_gel = world.gel(p.pos - nrm * CUBE_HALF, nrm);
+                        let wall_gel = world.gel(p.pos - nrm * p.half.dot(nrm.abs()), nrm);
                         if bouncy || wall_gel == faith_move::Gel::Bounce {
                             p.vel[axis] = -p.vel[axis] * 0.9;
                         } else {
@@ -2908,9 +2935,9 @@ impl Sim {
             // Nothing under its middle (resting on a slope's steps, or more than half over an
             // edge): it slides off the way it overhangs, faster than friction holds it.
             if p.grounded && !held {
-                let foot = |x: f32, z: f32| world.overlaps(&Aabb::from_center_size(Vec3::new(p.pos.x + x, p.pos.y - CUBE_HALF - 0.04, p.pos.z + z), Vec3::new(0.06, 0.06, 0.06)));
+                let foot = |x: f32, z: f32| world.overlaps(&Aabb::from_center_size(Vec3::new(p.pos.x + x, p.pos.y - p.half.y - 0.04, p.pos.z + z), Vec3::new(0.06, 0.06, 0.06)));
                 if !foot(0.0, 0.0) {
-                    let k = CUBE_HALF * 0.8;
+                    let k = p.half.x.min(p.half.z) * 0.8;
                     let held_by: Vec<Vec3> = [(k, k), (k, -k), (-k, k), (-k, -k), (k, 0.0), (-k, 0.0), (0.0, k), (0.0, -k)].into_iter().filter(|&(x, z)| foot(x, z)).map(|(x, z)| Vec3::new(x, 0.0, z)).collect();
                     if !held_by.is_empty() {
                         let away = -(held_by.iter().sum::<Vec3>() / held_by.len() as f32).normalize_or_zero();
@@ -2919,7 +2946,7 @@ impl Sim {
                 }
             }
             if p.grounded && !held {
-                let slick = world.gel(p.pos - Vec3::Y * CUBE_HALF, Vec3::Y) == faith_move::Gel::Speed;
+                let slick = world.gel(p.pos - Vec3::Y * p.half.y, Vec3::Y) == faith_move::Gel::Speed;
                 // `cube_plate_velocity` aims short by the slide this decel produces.
                 let decel = if slick { 1.0 } else { CUBE_GROUND_DECEL };
                 let h = Vec3::new(p.vel.x, 0.0, p.vel.z);
@@ -2953,7 +2980,7 @@ impl Sim {
                         p.env = Some(c.other());
                         // Out of a floor portal: enough to clear it.
                         if link.to.normal.y > 0.7 {
-                            let need = (2.0 * GRAVITY * (CUBE_HALF * 2.0 + 0.2)).sqrt();
+                            let need = (2.0 * GRAVITY * (p.half.y * 2.0 + 0.2)).sqrt();
                             p.vel.y = p.vel.y.max(need);
                         }
                         self.events.push(SimEvent::PropTeleported { id: p.id, at: p.pos });
@@ -3001,7 +3028,7 @@ impl Sim {
                 if !p.alive || p.fizzle.is_some() {
                     continue;
                 }
-                let bottom = p.pos.y - CUBE_HALF;
+                let bottom = p.pos.y - p.half.y;
                 let dx = p.pos.x - pl.at.x;
                 let dz = p.pos.z - pl.at.z;
                 if dx.abs() < PLATE_HALF && dz.abs() < PLATE_HALF && (bottom - pl.at.y - PLATE_TOP).abs() < 0.25 && p.vel.y <= 0.5 {
@@ -3027,7 +3054,7 @@ impl Sim {
                 d.length() < BUTTON_RADIUS && (bottom - top).abs() < 0.15
             };
             let by_cube = self.props.iter().enumerate().any(|(j, p)| {
-                p.alive && p.fizzle.is_none() && Some(j) != self.held && on_it(p.pos, p.pos.y - CUBE_HALF)
+                p.alive && p.fizzle.is_none() && Some(j) != self.held && p.kind != CubeKind::Physics && on_it(p.pos, p.pos.y - p.half.y)
             });
             let by_player = !b.cube_only && on_it(ctrl.feet, ctrl.feet.y);
             let pressed = by_cube || by_player;

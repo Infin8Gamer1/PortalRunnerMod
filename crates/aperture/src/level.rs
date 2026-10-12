@@ -118,6 +118,9 @@ pub enum CubeKind {
     Companion,
     /// Discouragement redirection cube: a laser that hits it comes out of its front.
     Reflector,
+    /// Not a cube: one of a Portal map's physics props (a radio, a chair), its own size. It
+    /// doesn't hold buttons down.
+    Physics,
 }
 
 /// Portal 2's paints.
@@ -252,6 +255,18 @@ pub struct Spin {
     pub ramp: f32,
     pub on: bool,
     pub sound: String,
+}
+
+/// A physics prop to knock about (Portal's maps'): its box's centre and half size, how its
+/// model's turned, where the model's origin is from the box's centre, and its prop in the
+/// map's art.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Body {
+    pub at: Vec3,
+    pub half: Vec3,
+    pub turn: glam::Quat,
+    pub origin: Vec3,
+    pub art: usize,
 }
 
 /// A region a Portal map's logic can switch on and off (from the start, `on`). `mover`: what
@@ -412,6 +427,8 @@ pub struct Level {
     /// Regions its logic switches (Portal's maps: pushes, hurts, no-portal volumes, portal
     /// bumpers and detectors).
     pub volumes: Vec<Volume>,
+    /// Physics props to knock about (Portal's maps').
+    pub bodies: Vec<Body>,
 }
 
 /// A flat, tilted face that takes portals: its outward normal and its corners, in order round.
@@ -558,6 +575,7 @@ impl Level {
             landmarks: Vec::new(),
             slopes: Vec::new(),
             volumes: Vec::new(),
+            bodies: Vec::new(),
         }
     }
 

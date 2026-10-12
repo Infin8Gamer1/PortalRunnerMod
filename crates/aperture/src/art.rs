@@ -26,9 +26,9 @@ pub enum PropKind {
     Static,
     /// A prop the logic can animate, hide or reskin (prop_dynamic).
     Dynamic,
-    /// A physics prop (one the game only draws), its lowest point `bottom` below its origin
-    /// as it's turned, if its model says.
-    Physics { bottom: Option<f32> },
+    /// A physics prop: its lowest point `bottom` below its origin as it's turned, and its
+    /// model's hull (unturned, ours), if its model says: what it is to collide with.
+    Physics { bottom: Option<f32>, hull: Option<(Vec3, Vec3)> },
     /// A glow sprite (env_sprite): `size` metres across, glowing in `color` (0-1) at `alpha`;
     /// the game shows it once the logic turns it on, unless it starts on.
     Sprite { size: f32, color: Vec3, alpha: f32 },
@@ -116,6 +116,38 @@ pub fn glb_model(file: &str) -> (String, i32) {
     }
 }
 
+/// A model's hull in Source's space (inches: `lo xyz hi xyz`) as ours (metres).
+pub fn source_hull(v: &[f32]) -> Option<(Vec3, Vec3)> {
+    if v.len() < 6 {
+        return None;
+    }
+    let (a, b) = (source::to_ours(Vec3::new(v[0], v[1], v[2])), source::to_ours(Vec3::new(v[3], v[4], v[5])));
+    Some((a.min(b), a.max(b)))
+}
+
+/// The map's physics props that are to be knocked about, as bodies (each one's prop in `art`):
+/// those with a hull of a size to pick up.
+pub fn bodies(art: &MapArt) -> Vec<crate::level::Body> {
+    let mut out = Vec::new();
+    for (i, p) in art.props.iter().enumerate() {
+        let PropKind::Physics { hull: Some((lo, hi)), .. } = p.kind else { continue };
+        // Its box as it's turned.
+        let (mut a, mut z) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for k in 0..8 {
+            let c = p.turn * Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
+            a = a.min(c);
+            z = z.max(c);
+        }
+        let half = ((z - a) * 0.5).max(Vec3::splat(0.04));
+        if half.max_element() > 1.0 {
+            continue;
+        }
+        let centre = p.at + (a + z) * 0.5;
+        out.push(crate::level::Body { at: centre, half, turn: p.turn, origin: p.at - centre, art: i });
+    }
+    out
+}
+
 fn floats(v: &str) -> Vec<f32> {
     v.split_whitespace().filter_map(|x| x.parse().ok()).collect()
 }
@@ -149,7 +181,7 @@ pub fn parse_props(text: &str) -> Vec<ArtProp> {
                 let a = vec3(f[3]);
                 let kind = match k {
                     "static" => PropKind::Static,
-                    "physics" => PropKind::Physics { bottom: f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254) },
+                    "physics" => PropKind::Physics { bottom: f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254), hull: f.get(7).and_then(|h| source_hull(&floats(h))) },
                     _ => PropKind::Dynamic,
                 };
                 (kind, source::source_turn(a.x, a.y, a.z))
@@ -301,7 +333,7 @@ pub fn entity_props(ents: &[(Entity, Vec3, Quat)]) -> Vec<ArtProp> {
                 let skin = key(e, "skin").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
                 let kind = match class {
                     "prop_static" => PropKind::Static,
-                    c if c.starts_with("prop_physics") => PropKind::Physics { bottom: num(e, "_bottom").map(|b| b * 0.0254) },
+                    c if c.starts_with("prop_physics") => PropKind::Physics { bottom: num(e, "_bottom").map(|b| b * 0.0254), hull: key(e, "_hull").and_then(|h| source_hull(&floats(h))) },
                     _ => PropKind::Dynamic,
                 };
                 props.push(ArtProp { kind, model: prop_glb(&model, skin), at: *at, turn: *turn, parent, name });

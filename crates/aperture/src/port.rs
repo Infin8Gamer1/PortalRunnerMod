@@ -8,7 +8,8 @@
 //! the object's, a brush entity's brushes its own. A static prop (not an entity in the map:
 //! it's compiled in) is a `prop_static` entity, as in Hammer. What the extractor works out
 //! from the game's files besides is kept in keys of its own: a sprite's texture width
-//! (`_width`), how far a physics prop's lowest point is below its origin (`_bottom`). Built,
+//! (`_width`), how far a physics prop's lowest point is below its origin (`_bottom`) and its
+//! model's hull (`_hull`). Built,
 //! the copy makes the same level as the map does ([`crate::source`]), and is drawn the same.
 
 use std::collections::HashMap;
@@ -209,7 +210,8 @@ fn parse_prop_lines(text: &str) -> Vec<PropLine> {
                 let x = floats(s);
                 Vec3::new(x.first().copied().unwrap_or(0.0), x.get(1).copied().unwrap_or(0.0), x.get(2).copied().unwrap_or(0.0))
             };
-            let extra = if f[0] == "sprite" { floats(f[3]) } else { f.get(6).map(|b| floats(b)).unwrap_or_default() };
+            // (A physics prop's bottom, then its hull.)
+            let extra = if f[0] == "sprite" { floats(f[3]) } else { f.get(6).map(|b| floats(b)).unwrap_or_default().into_iter().chain(f.get(7).map(|h| floats(h)).unwrap_or_default()).collect() };
             Some(PropLine { kind: f[0].to_string(), model: f[1].to_string(), origin: v(f[2]), angles: if f[0] == "sprite" { Vec3::ZERO } else { v(f[3]) }, name: f[5].to_ascii_lowercase(), extra, used: false })
         })
         .collect()
@@ -304,6 +306,9 @@ pub fn convert(map: &str, title: &str, files: &MapFiles) -> LevelDoc {
                     "physics" => {
                         if let Some(b) = p.extra.first() {
                             keys.push(("_bottom".into(), format!("{b}")));
+                        }
+                        if let Some(h) = p.extra.get(1..7) {
+                            keys.push(("_hull".into(), h.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(" ")));
                         }
                     }
                     "sprite" => {

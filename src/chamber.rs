@@ -1156,7 +1156,8 @@ pub fn update(
             }
         }
         match sim.props.get(i) {
-            Some(p) if p.alive => {
+            // (A map's physics prop is drawn as its own model: `source_map`.)
+            Some(p) if p.alive && p.kind != CubeKind::Physics => {
                 let mut tf = Transform::from_translation(p.pos).with_rotation(p.rot);
                 let mat = if let Some(f) = p.fizzle {
                     tf.scale = Vec3::splat((1.0 - f * 0.3).max(0.2));
@@ -1168,7 +1169,7 @@ pub fn update(
                         (Some(Paint::Speed), _) => &m.cube_coat[1],
                         (_, CubeKind::Storage) => &base[0],
                         (_, CubeKind::Companion) => &base[1],
-                        (_, CubeKind::Reflector) => &base[2],
+                        (_, CubeKind::Reflector | CubeKind::Physics) => &base[2],
                     }
                 };
                 set(e[0], Some(tf), Some(mat));

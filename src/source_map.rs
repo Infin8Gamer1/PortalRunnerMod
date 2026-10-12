@@ -68,7 +68,9 @@ pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
                 let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
                 let ents = read("ents");
                 let mut l = aperture::source::level_with_scenes(name, title, &read("solids"), &ents, &scenes());
-                l.art = Some(Arc::new(aperture::art::MapArt::from_files(name, &read("props"), &read("overlays"), &ents)));
+                let art = aperture::art::MapArt::from_files(name, &read("props"), &read("overlays"), &ents);
+                l.bodies = aperture::art::bodies(&art);
+                l.art = Some(Arc::new(art));
                 l
             });
             (title.to_string(), f)
@@ -445,10 +447,12 @@ pub fn sync(
         })
         .collect();
     let sprites = of_kind(aperture::io::Kind::Sprite);
+    // Physics props knocked about: the sim's prop each one's art is.
+    let bodies: HashMap<usize, (u32, Vec3, Quat)> = level.bodies.iter().zip(&game.sim.bodies).map(|(b, id)| (b.art, (*id, b.origin, b.turn))).collect();
     let mut cabin_lamp: Option<(Handle<Mesh>, Handle<StandardMaterial>)> = None;
     let mut sprite_quad: Option<Handle<Mesh>> = None;
     let (mut grill_mats, mut grill_seed) = (crate::grill_fx::Mats::default(), 1u32);
-    for p in &art.props {
+    for (pi, p) in art.props.iter().enumerate() {
         let mover = movers.get(&p.parent).copied();
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
         match &p.kind {
@@ -514,9 +518,14 @@ pub fn sync(
                         });
                     continue;
                 }
+                // A physics prop that's a body of the sim's: drawn where that is.
+                if let Some(&(id, origin, turn0)) = bodies.get(&pi) {
+                    commands.spawn((ChamberGeom, BodyProp { id, origin, turn0 }, WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), Visibility::default(), Transform::from_translation(at).with_rotation(turn)));
+                    continue;
+                }
                 // A loose prop on one of the map's cubes stands on ours.
                 let perched = match kind {
-                    aperture::art::PropKind::Physics { bottom } => aperture::source::Perched::find(&game.sim, at, *bottom),
+                    aperture::art::PropKind::Physics { bottom, .. } => aperture::source::Perched::find(&game.sim, at, *bottom),
                     _ => None,
                 };
                 let at = perched.map_or(at, |q| q.at);
@@ -659,6 +668,31 @@ fn cable_mesh(ropes: &[aperture::rope::Rope]) -> Mesh {
         .with_inserted_indices(Indices::U32(idx));
     let _ = mesh.generate_tangents();
     mesh
+}
+
+/// A physics prop the sim knocks about: its prop's id, where the model's origin is from the
+/// prop's middle (as it was turned to start with), and that turn.
+#[derive(Component)]
+pub struct BodyProp {
+    id: u32,
+    origin: Vec3,
+    turn0: Quat,
+}
+
+/// Physics props go where the sim has them (turned as it's turned them), gone when they are.
+pub fn move_bodies(game: Res<Game>, mut q: Query<(&BodyProp, &mut Transform, &mut Visibility)>) {
+    for (b, mut tf, mut vis) in &mut q {
+        let p = game.sim.props.iter().find(|p| p.id == b.id && p.alive);
+        let want = if p.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want {
+            *vis = want;
+        }
+        if let Some(p) = p {
+            let turned = p.rot * b.turn0.inverse();
+            tf.translation = p.pos + turned * b.origin;
+            tf.rotation = p.rot;
+        }
+    }
 }
 
 /// A map light's bulb (see [`bulbs`]).
