@@ -9,8 +9,9 @@
 //! it's compiled in) is a `prop_static` entity, as in Hammer. What the extractor works out
 //! from the game's files besides is kept in keys of its own: a sprite's texture width
 //! (`_width`), how far a physics prop's lowest point is below its origin (`_bottom`) and its
-//! model's hull (`_hull`). Built,
-//! the copy makes the same level as the map does ([`crate::source`]), and is drawn the same.
+//! model's hull (`_hull`). Built, its entities run as Source's do ([`crate::source`]).
+//!
+//! These copies (committed in `levels/portal/`) are how the game plays Portal's maps.
 
 use std::collections::HashMap;
 
@@ -43,12 +44,22 @@ pub const MAPS: &[(&str, &str)] = &[
     ("escape_02", "Portal: Escape 3"),
 ];
 
-/// What the game's own copy of a map is called (the map's own name is the imported map's).
-pub fn native_title(title: &str) -> String {
-    match title.strip_prefix("Portal: ") {
-        Some(rest) => format!("Portal native: {rest}"),
-        None => format!("{title} (native)"),
+/// One of Portal's chambers as the tests play it: the game's own copy of the map
+/// (`levels/portal/<name>.ron`), with GLaDOS's scenes where they've been extracted.
+/// (Each built once: many tests play the same chamber.)
+#[cfg(test)]
+pub(crate) fn native_level(name: &str) -> Option<crate::Level> {
+    static BUILT: std::sync::OnceLock<std::sync::Mutex<HashMap<String, crate::Level>>> = std::sync::OnceLock::new();
+    let built = BUILT.get_or_init(Default::default);
+    if let Some(l) = built.lock().ok()?.get(name) {
+        return Some(l.clone());
     }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let doc = LevelDoc::from_ron(&std::fs::read_to_string(root.join("levels/portal").join(format!("{name}.ron"))).ok()?).ok()?;
+    let scenes = std::fs::read_to_string(root.join("assets/extracted/maps/scenes.txt")).map(|t| source::parse_scenes(&t)).unwrap_or_default();
+    let l = doc.build_with(&scenes);
+    built.lock().ok()?.insert(name.to_string(), l.clone());
+    Some(l)
 }
 
 /// A map's files, as `portal_extract` writes them.
@@ -367,10 +378,9 @@ pub fn convert(map: &str, title: &str, files: &MapFiles) -> LevelDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level::{Item, Level};
 
     /// The extracted maps there are: (name, the files' text).
-    fn maps() -> Vec<(String, [String; 6])> {
+    fn maps() -> Vec<(String, [String; 4])> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted/maps");
         let mut out = Vec::new();
         let Ok(rd) = std::fs::read_dir(&dir) else { return out };
@@ -378,53 +388,9 @@ mod tests {
         names.sort();
         for n in names {
             let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{n}.{ext}"))).unwrap_or_default();
-            out.push((n.clone(), [read("brushes"), read("ents"), read("props"), read("overlays"), read("solids"), String::new()]));
+            out.push((n.clone(), [read("brushes"), read("ents"), read("props"), read("overlays")]));
         }
         out
-    }
-
-    /// The boxes of `b` with none of `a` the same (its material, its corners within 2 mm),
-    /// and those of `a` with none of `b`.
-    fn unmatched(a: &[crate::level::Solid], b: &[crate::level::Solid]) -> Vec<(crate::level::Mat, faith_move::Aabb)> {
-        let cell = |p: Vec3| ((p.x * 10.0).floor() as i32, (p.y * 10.0).floor() as i32, (p.z * 10.0).floor() as i32);
-        let mut out = Vec::new();
-        for (x, y) in [(a, b), (b, a)] {
-            let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
-            for (i, s) in y.iter().enumerate() {
-                grid.entry(cell(s.b.min)).or_default().push(i);
-            }
-            let mut used = vec![false; y.len()];
-            for s in x {
-                let c = cell(s.b.min);
-                // (The closest: an angled brush's slices can be thinner than the tolerance.)
-                let mut best: Option<(f32, usize)> = None;
-                for dx in -1..=1 {
-                    for dy in -1..=1 {
-                        for dz in -1..=1 {
-                            for &i in grid.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).into_iter().flatten() {
-                                let t = &y[i];
-                                let off = (t.b.min - s.b.min).abs().max_element().max((t.b.max - s.b.max).abs().max_element());
-                                if !used[i] && t.mat == s.mat && off < 0.002 && best.is_none_or(|(o, _)| off < o) {
-                                    best = Some((off, i));
-                                }
-                            }
-                        }
-                    }
-                }
-                let found = best.is_some();
-                if let Some((_, i)) = best {
-                    used[i] = true;
-                }
-                if !found {
-                    out.push((s.mat, s.b));
-                }
-            }
-        }
-        out
-    }
-
-    fn item_kind(i: &Item) -> String {
-        format!("{:?}", std::mem::discriminant(i))
     }
 
     /// The copies kept in the repository (`levels/portal/`) read, and build into a level with
@@ -437,7 +403,7 @@ mod tests {
             let Ok(text) = std::fs::read_to_string(dir.join(format!("{map}.ron"))) else { continue };
             let doc = LevelDoc::from_ron(&text).unwrap_or_else(|e| panic!("{map}: {e}"));
             assert_eq!(doc.map.as_deref(), Some(*map));
-            assert_eq!(doc.name, native_title(title), "{map}");
+            assert_eq!(doc.name, *title, "{map}");
             let l = doc.build();
             assert!(l.io.as_ref().is_some_and(|io| !io.ents.is_empty()), "{map}: no logic");
             assert!(!l.solids.is_empty() && !l.checkpoints.is_empty(), "{map}");
@@ -449,58 +415,27 @@ mod tests {
         assert_eq!(n, MAPS.len(), "a map's copy is missing from levels/portal");
     }
 
-    /// Each extracted map's copy, saved and read back, makes the level the map makes: the same
-    /// boxes, pieces, logic, lights and start.
+    /// Each extracted map's copy, saved and read back, is the same and builds; and it's the
+    /// committed one (`levels/portal/`), word for word, unless that's been edited since it was
+    /// written (then `written.txt` doesn't know it). A difference means the converter's
+    /// changed: `portal_extract -- --port-maps` writes them again.
     #[test]
-    fn copies_make_the_maps_levels() {
+    fn copies_are_the_committed_ones() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/portal");
+        let written: HashMap<String, u64> = std::fs::read_to_string(dir.join("written.txt")).unwrap_or_default().lines().filter_map(|l| l.split_once(' ').and_then(|(n, f)| Some((n.to_string(), f.parse().ok()?)))).collect();
+        let fingerprint = |b: &[u8]| b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3));
         for (name, f) in maps() {
-            let doc = convert(&name, "Copy", &MapFiles { brushes: &f[0], ents: &f[1], props: &f[2], overlays: &f[3] });
+            let title = MAPS.iter().find(|(m, _)| *m == name).map_or("Copy", |(_, t)| t);
+            let doc = convert(&name, title, &MapFiles { brushes: &f[0], ents: &f[1], props: &f[2], overlays: &f[3] });
             let text = doc.to_ron();
             let back = LevelDoc::from_ron(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(back.objects.len(), doc.objects.len(), "{name}");
-            let ours = back.build();
-            let theirs: Level = source::level(&name, "Map", &f[4], &f[1]);
-            // Boxes: the same ones (to 2 mm), give or take a few of an angled brush's slices.
-            let unmatched = unmatched(&ours.solids, &theirs.solids);
-            assert!(unmatched.len() * 200 <= theirs.solids.len().max(1), "{name}: {} boxes against {}: {} not matched ({:?}...)", ours.solids.len(), theirs.solids.len(), unmatched.len(), &unmatched[..unmatched.len().min(4)]);
-            assert_eq!(ours.slopes.len(), theirs.slopes.len(), "{name}: slopes");
-            // Pieces, in order, and where they are.
-            let ki: Vec<String> = ours.items.iter().map(item_kind).collect();
-            let kt: Vec<String> = theirs.items.iter().map(item_kind).collect();
-            assert_eq!(ki, kt, "{name}: items");
-            for (x, y) in ours.items.iter().zip(&theirs.items) {
-                if let (Item::Mover(m), Item::Mover(n)) = (x, y) {
-                    // (A template turns some as it puts them where they're made: the map slices an
-                    // angled brush of one before it's turned, the copy after.)
-                    assert_eq!(m.boxes.is_empty(), n.boxes.is_empty(), "{name}: mover {} boxes", m.model);
-                    if m.boxes.len() != n.boxes.len() {
-                        let (a, b) = (m.boxes.iter().fold(m.boxes[0].b, |x, s| x.union(&s.b)), n.boxes.iter().fold(n.boxes[0].b, |x, s| x.union(&s.b)));
-                        assert!((a.min - b.min).length() < 0.05 && (a.max - b.max).length() < 0.05, "{name}: mover {} is {a:?}, not {b:?}", m.model);
-                    }
-                    assert_eq!(m.path.len(), n.path.len(), "{name}: mover {} path", m.model);
-                    assert!((m.shift - n.shift).length() < 0.01, "{name}: mover {} shift", m.model);
-                    assert_eq!(m.faces.len(), n.faces.len(), "{name}: mover {} faces", m.model);
-                }
+            assert_eq!(back, doc, "{name}: read back");
+            let l = back.build();
+            assert!(!l.solids.is_empty() && l.io.is_some() && l.art.as_ref().is_some_and(|a| !a.faces.is_empty()), "{name}: built");
+            let Ok(committed) = std::fs::read(dir.join(format!("{name}.ron"))) else { continue };
+            if written.get(&name) == Some(&fingerprint(&committed)) {
+                assert!(committed == text.as_bytes(), "{name}: levels/portal's copy isn't what the converter makes now (run portal_extract -- --port-maps)");
             }
-            // The logic: the same entities (less the map's own world, and the static props it
-            // has as entities), each its kind.
-            let (li, lt) = (ours.io.as_ref().unwrap(), theirs.io.as_ref().unwrap());
-            let ents = |io: &crate::io::Io| io.ents.iter().filter(|e| e.class != "worldspawn" && e.class != "prop_static").map(|e| (e.name.clone(), e.class.clone(), format!("{:?}", std::mem::discriminant(&e.kind)), e.outputs.len())).collect::<Vec<_>>();
-            assert_eq!(ents(li), ents(lt), "{name}: logic");
-            assert_eq!(li.signal_count(), lt.signal_count(), "{name}: signals");
-            assert_eq!(ours.lights.len(), theirs.lights.len(), "{name}: lights");
-            assert_eq!(ours.landmarks.len(), theirs.landmarks.len(), "{name}: landmarks");
-            assert_eq!(ours.hidden_models.len(), theirs.hidden_models.len(), "{name}: hidden models");
-            assert!((ours.checkpoints[0].spawn - theirs.checkpoints[0].spawn).length() < 0.01, "{name}: start");
-            assert_eq!(ours.gun, theirs.gun, "{name}: gun");
-            assert!((ours.kill_y - theirs.kill_y).abs() < 0.05, "{name}: kill height");
-            // What's drawn: every prop, sprite and overlay the map has.
-            let art = ours.art.as_ref().unwrap();
-            let theirs_art = crate::art::MapArt::from_files(&name, &f[2], &f[3], &f[1]);
-            assert_eq!(art.props.len(), theirs_art.props.len(), "{name}: props");
-            assert_eq!(art.overlays.len(), crate::art::parse_overlays(&f[3]).len(), "{name}: overlays");
-            assert_eq!(art.ropes.len(), crate::rope::hang(&source::parse_entities(&f[1])).len(), "{name}: ropes");
-            assert!(!art.faces.is_empty(), "{name}: faces");
         }
     }
 }

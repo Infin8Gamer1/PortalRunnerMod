@@ -1013,7 +1013,7 @@ impl LevelDoc {
                 Some(ArtOverlay { mat: mat.clone(), flags: None, name: o.name.to_ascii_lowercase(), corners: std::array::from_fn(|k| (o.at + q * corners[k], uv[k])), normal: q * *normal })
             })
             .collect();
-        let art = MapArt { mesh: None, faces: faces.groups, props: crate::art::entity_props(&placed), overlays, ropes: crate::rope::hang(&ents) };
+        let art = MapArt { faces: faces.groups, props: crate::art::entity_props(&placed), overlays, ropes: crate::rope::hang(&ents) };
         l.bodies = crate::art::bodies(&art);
         l.art = Some(Arc::new(art));
         l

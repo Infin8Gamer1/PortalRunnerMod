@@ -7,7 +7,7 @@ are made, each with a test that plays it through).
 
 **F4** in the game, or **Level editor** in the main or pause menu, opens the editor
 (`PORTAL_EDIT=1` starts in it). The first time, it opens on a copy of the chamber you're in
-(one of Portal's maps: its native chamber, below). **New level** in the menus starts a new
+(one of Portal's chambers: below). **New level** in the menus starts a new
 one: a white room with lamps and a start.
 
 - **Content** (left): the materials, puzzle pieces, lasers and bridges, gel, gameplay pieces
@@ -50,18 +50,18 @@ one: a white room with lamps and a start.
   selected, the level's name, intro line, indoors or out, and which portals the gun shoots.
 - **Play** (**F5**, or **F4**) plays the level from its start with the real simulation; **F4**
   comes back to the editor.
-- **File**: a new room or an empty level, open a level file or one of Portal's native
+- **File**: a new room or an empty level, open a level file or one of Portal's
   chambers, import any of the game's chambers (as its boxes and pieces, after the cuts), save
   (**Ctrl+S**).
 - **Outliner**: filter by name or label, or show only brushes, entities or the rest (a Portal
   map has thousands of objects).
 
-### Portal's maps, natively
+### Portal's chambers
 
 Each of Portal's maps is a level file in the repository (`levels/portal/`, made by
-`portal_extract -- --port-maps` from the extracted map): its **native chamber**, in the Chambers menu's second folder and under
-**File > Open a Portal chamber**. It's made the way the map was built, and plays as it does
-(the same boxes, pieces and logic: the solution tests play every chamber on it too):
+`portal_extract -- --port-maps` from the extracted map), in the Chambers menu's **Portal 1
+chambers** folder and under **File > Open a Portal chamber**. It's made the way the map was
+built, and plays as Portal's does (the solution tests play every chamber on it):
 
 - **Brushes**: each of the map's brushes, a convex solid whose every face has one of Portal's
   materials (where its texture lies goes with it: move a brush and its texture moves too).
@@ -106,10 +106,10 @@ picked up as a cube can (one too big to lift stays as it is).
 
 The files hold the maps' layouts, not their assets: materials, models and scenes are named,
 and drawn from the extracted folder. Saving one writes its file in `levels/portal/` (commit it
-to keep the change). `--port-maps` remakes the native chambers from the extracted maps (when the
+to keep the change). `--port-maps` remakes them from the extracted maps (when the
 converter's improved) but keeps one that's been changed (`levels/portal/written.txt` knows each
-as it was written); delete it to have it made again. A native chamber's level change leads to
-the next map's native chamber.
+as it was written); delete it to have it made again. A chamber's level change leads to the next
+map's.
 
 What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits
 on what it's dropped on, a default size, and the object it makes. Adding a kind of thing the

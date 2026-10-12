@@ -1,7 +1,7 @@
 //! What's drawn of one of Portal's maps besides the game's own pieces: its faces (by brush
-//! model and material), props, glow sprites, grill particles, overlays and cables. A map read
-//! from `portal_extract`'s files has these from them ([`MapArt::from_files`]); the game's own
-//! copy of a map (a level file, [`crate::doc`]) makes them from its brushes and entities.
+//! model and material), props, glow sprites, grill particles, overlays and cables, as the
+//! game's copy of the map (a level file, [`crate::doc`]) makes them from its brushes and
+//! entities.
 
 use glam::{Quat, Vec3};
 
@@ -90,9 +90,6 @@ pub struct ArtOverlay {
 /// What's drawn of a map.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapArt {
-    /// The map whose mesh file (`maps/<name>.mesh`) has its faces, when they're read from it.
-    pub mesh: Option<String>,
-    /// Its faces (else).
     pub faces: Vec<FaceGroup>,
     pub props: Vec<ArtProp>,
     pub overlays: Vec<ArtOverlay>,
@@ -158,41 +155,6 @@ fn vec3(v: &str) -> Vec3 {
     Vec3::new(f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(0.0), f.get(2).copied().unwrap_or(0.0))
 }
 
-/// Read `maps/<name>.props` (see `portal_extract`'s `maps.rs`).
-pub fn parse_props(text: &str) -> Vec<ArtProp> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let f: Vec<&str> = line.split('|').collect();
-        if f.len() < 6 {
-            continue;
-        }
-        let at = source::to_ours(vec3(f[2]));
-        let (parent, name) = (f[4].to_ascii_lowercase(), f[5].to_ascii_lowercase());
-        let (kind, turn) = match f[0] {
-            "particles" => {
-                let a = vec3(f[3]);
-                (PropKind::Particles { start_on: true }, source::source_turn(a.x, a.y, a.z))
-            }
-            "sprite" => {
-                let v = floats(f[3]);
-                let g = |k: usize, d: f32| v.get(k).copied().unwrap_or(d);
-                (PropKind::Sprite { size: g(0, 64.0) * 0.0254, color: Vec3::new(g(1, 255.0), g(2, 255.0), g(3, 255.0)) / 255.0, alpha: g(4, 255.0) / 255.0 }, Quat::IDENTITY)
-            }
-            k => {
-                let a = vec3(f[3]);
-                let kind = match k {
-                    "static" => PropKind::Static,
-                    "physics" => PropKind::Physics { bottom: f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254), hull: f.get(7).and_then(|h| source_hull(&floats(h))) },
-                    _ => PropKind::Dynamic,
-                };
-                (kind, source::source_turn(a.x, a.y, a.z))
-            }
-        };
-        out.push(ArtProp { kind, model: f[1].to_string(), at, turn, parent, name });
-    }
-    out
-}
-
 /// Read `maps/<name>.overlays`.
 pub fn parse_overlays(text: &str) -> Vec<ArtOverlay> {
     let mut out = Vec::new();
@@ -210,28 +172,6 @@ pub fn parse_overlays(text: &str) -> Vec<ArtOverlay> {
         out.push(ArtOverlay { mat: f[0].to_string(), flags: f[1].parse().ok(), name: f[2].to_ascii_lowercase(), corners, normal: n });
     }
     out
-}
-
-impl MapArt {
-    /// Map `name`'s, from `portal_extract`'s files (its faces stay in its mesh file).
-    pub fn from_files(name: &str, props: &str, overlays: &str, ents: &str) -> MapArt {
-        let ents = source::parse_entities(ents);
-        let mut props = parse_props(props);
-        let placed: Vec<(Entity, Vec3, Quat)> = ents.iter().map(|e| (e.clone(), origin(e), angles(e))).collect();
-        props.extend(entity_extras(&placed));
-        MapArt { mesh: Some(name.to_string()), faces: Vec::new(), props, overlays: parse_overlays(overlays), ropes: crate::rope::hang(&ents) }
-    }
-}
-
-/// An entity's origin, ours.
-fn origin(e: &Entity) -> Vec3 {
-    key(e, "origin").map(|v| source::to_ours(vec3(v))).unwrap_or(Vec3::ZERO)
-}
-
-/// An entity's angles as a turn, ours.
-fn angles(e: &Entity) -> Quat {
-    let a = key(e, "angles").map(vec3).unwrap_or(Vec3::ZERO);
-    source::source_turn(a.x, a.y, a.z)
 }
 
 /// What's drawn of a map's entities besides its props and sprites (which `portal_extract`

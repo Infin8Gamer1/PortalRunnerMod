@@ -85,7 +85,7 @@ enum Act {
     RayTracing(bool),
     /// Change the settings.
     Set(fn(&mut crate::settings::Settings)),
-    /// Load one of Portal's maps: as imported, or the game's own copy of it.
+    /// Load one of Portal's chambers (the game's copy of the map).
     Chamber(crate::LevelGroup, &'static str),
     /// Stand off the `n`th of the map's effects of a kind (`camera`, `spotlight`, `steam`,
     /// `sparks`, `beam`, or a particle effect's name), `d` metres from it, looking at it
@@ -1108,43 +1108,21 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("menu_controls"),
             ]
         }
-        // Portal's maps as imported and the game's own copies of them, from where she starts:
-        // they should look the same.
+        // A few of Portal's chambers, from where she starts.
         "native" => {
-            use crate::LevelGroup::{PortalImported as I, PortalNative as N};
-            vec![
-                Chamber(I, "testchmb_a_00"),
-                Wait(120),
-                Shot("a00_imported"),
-                Chamber(N, "testchmb_a_00"),
-                Wait(120),
-                Shot("a00_native"),
-                Chamber(I, "testchmb_a_08"),
-                Wait(120),
-                Shot("a08_imported"),
-                Chamber(N, "testchmb_a_08"),
-                Wait(120),
-                Shot("a08_native"),
-                Chamber(I, "testchmb_a_11"),
-                Wait(120),
-                Shot("a11_imported"),
-                Chamber(N, "testchmb_a_11"),
-                Wait(120),
-                Shot("a11_native"),
-                Chamber(I, "escape_02"),
-                Wait(120),
-                Shot("e02_imported"),
-                Chamber(N, "escape_02"),
-                Wait(120),
-                Shot("e02_native"),
-            ]
+            use crate::LevelGroup::Portal as N;
+            let mut v = Vec::new();
+            for (map, shot) in [("testchmb_a_00", "a00"), ("testchmb_a_08", "a08"), ("testchmb_a_11", "a11"), ("escape_02", "e02")] {
+                v.extend([Chamber(N, map), Wait(120), Shot(shot)]);
+            }
+            v
         }
-        // From Portal's Chamber 00 as imported into the editor (its native copy opens), a wall
-        // moved, Portal's brushes and a trigger dropped in, then played.
+        // From Portal's Chamber 00 into the editor, a wall moved, Portal's brushes and a
+        // trigger dropped in, then played.
         "nativeedit" => {
-            use crate::LevelGroup::PortalImported as I;
+            use crate::LevelGroup::Portal as N;
             vec![
-                Chamber(I, "testchmb_a_00"),
+                Chamber(N, "testchmb_a_00"),
                 Wait(60),
                 Edit(|_, menu| menu.edit = Some(false)),
                 Wait(150),
@@ -1179,7 +1157,7 @@ fn script(name: &str) -> Vec<Act> {
         // Portal's maps' effects: a security camera watching her, a spotlight, steam, an
         // elevator shaft's beam, sparks, a beam, mist.
         "effects" => {
-            use crate::LevelGroup::PortalNative as N;
+            use crate::LevelGroup::Portal as N;
             vec![
                 Chamber(N, "testchmb_a_00"),
                 Wait(60),
@@ -1223,7 +1201,7 @@ fn script(name: &str) -> Vec<Act> {
                 Menu(Screen::Chambers),
                 Wait(10),
                 Shot("menu_chambers"),
-                Menu(Screen::Folder(crate::LevelGroup::PortalNative)),
+                Menu(Screen::Folder(crate::LevelGroup::Portal)),
                 Wait(10),
                 Shot("menu_native"),
                 Menu(Screen::Folder(crate::LevelGroup::Testing)),
@@ -1595,39 +1573,26 @@ fn script(name: &str) -> Vec<Act> {
             ]);
             v
         }
-        // #25's gaps: a floor indicator strip in Chamber 00, imported and native; the portal
-        // gun on Chamber 02's turning pedestal.
+        // #25's gaps: a floor indicator strip in Chamber 00; the portal gun on Chamber 02's
+        // turning pedestal.
         "gaps25" => {
-            use crate::LevelGroup::{PortalImported as I, PortalNative as N};
+            use crate::LevelGroup::Portal as N;
             vec![
-                Chamber(I, "testchmb_a_00"),
-                Wait(60),
-                Teleport(Vec3::new(24.0, 3.25, 22.5)),
-                Launch(Vec3::ZERO),
-                Look(0.0, -45.0),
-                Wait(60),
-                Shot("gaps25_floor_strip_imported"),
                 Chamber(N, "testchmb_a_00"),
                 Wait(60),
                 Teleport(Vec3::new(24.0, 3.25, 22.5)),
                 Launch(Vec3::ZERO),
                 Look(0.0, -45.0),
                 Wait(60),
-                Shot("gaps25_floor_strip_native"),
-                Chamber(I, "testchmb_a_01"),
-                Wait(100),
-                Teleport(Vec3::new(-4.06, -3.25, 0.4)),
-                Look(0.0, -12.0),
-                Wait(60),
-                Shot("gaps25_pedestal_imported_a"),
-                Wait(90),
-                Shot("gaps25_pedestal_imported_b"),
+                Shot("gaps25_floor_strip"),
                 Chamber(N, "testchmb_a_01"),
                 Wait(100),
                 Teleport(Vec3::new(-4.06, -3.25, 0.4)),
                 Look(0.0, -12.0),
                 Wait(60),
-                Shot("gaps25_pedestal_native"),
+                Shot("gaps25_pedestal_a"),
+                Wait(90),
+                Shot("gaps25_pedestal_b"),
             ]
         }
         // The level editor's lights (PORTAL_EDIT=1): a dark room with a red point light and a

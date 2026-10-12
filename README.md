@@ -91,9 +91,8 @@ is baked. Other GPUs (or Settings > Graphics > Ray-traced lighting off, which sw
 away, or `PORTAL_NORT=1` for one run) light them the ordinary way.
 
 It opens on the title screen: **Continue** (or **Play**) picks up at the last chamber you were
-in, **Chambers** lists them all with your best times, in three folders (Portal's maps as
-imported, the game's own native copies of them, and the testing chambers: the game's own and
-the levels made in the editor), and **Settings** and **Controls** are there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.
+in, **Chambers** lists them all with your best times, in two folders (Portal's chambers, and
+the testing chambers: the game's own and the levels made in the editor), and **Settings** and **Controls** are there too. In game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`.
 
 ## Controls
 
@@ -143,9 +142,11 @@ M and N cycle through them; finishing one moves on to the next.
 Then Mirror's Edge's own courses from Faith Runner (Rooftops, Moves, Springboard, Training),
 where every roof and wall takes portals.
 
-Then **Portal's own maps** (test chambers 00-19 and the escape), when `portal_extract` has
-taken them from your install: drawn from their own faces with Portal's textures (and Portal
-with RTX's materials), white surfaces taking portals as in Portal, goo, cubes and the gun's
+Then **Portal's own chambers** (test chambers 00-19 and the escape): level files of the game's
+own, kept in the repository (`levels/portal/`), that hold each map's layout (its brushes,
+entities, props and overlays) and name its assets, which `portal_extract` takes from your
+install. They're drawn from their brushes with Portal's textures (and Portal with RTX's
+materials), white surfaces taking portals as in Portal, goo, cubes and the gun's
 colours from the map, with their props (Portal's models: doors, elevators, droppers, furniture),
 and their logic: Source's entity I/O runs (relays, timers, counters, triggers), so buttons
 open doors, preset portals come and go, droppers make cubes, elevators ride and the exit
@@ -159,12 +160,10 @@ spotlights' beams show as the logic switches them, security cameras follow you, 
 props (chairs, mugs, clipboards) can be knocked about and picked up, portal detectors and
 bumpers work, and each map's colour correction and tonemapping are applied.
 
-Each map is also a **native chamber**: a level file of the game's own, kept in the repository
-(`levels/portal/`, made from the map's brushes, entities, props and overlays by `aperture::port`),
-that plays and looks as the map does (drawn with the extracted assets it names), and opens in the
-level editor, every brush, entity and wire of it there to change. `cargo run --release -p
-portal_extract -- --port-maps` makes them again from the extracted maps, but keeps one that's
-been edited (delete it to have it made again).
+Each opens in the level editor, every brush, entity and wire of it there to change. They were
+made from the maps by `aperture::port`; `cargo run --release -p portal_extract -- --port-maps`
+makes them again from the extracted maps, but keeps one that's been edited (delete it to have
+it made again).
 
 Each chamber is beaten start to finish by a scripted test (`cargo test -p aperture`), so a
 change that makes one impossible is caught.
@@ -211,7 +210,7 @@ VSync off.)
 parkour pieces and Mirror's Edge props in from the content browser, move, turn and size them
 with the gizmo, wire buttons to doors in the details panel, and press **F5** to play it. Levels
 made there are saved as `.ron` files in `levels/` and listed after the game's chambers. Portal's
-maps open in it as their native chambers: Portal's brushes and materials (a texture browser),
+chambers open in it: Portal's brushes and materials (a texture browser),
 its entities with their keys and outputs (wire relays, timers and triggers to doors), and its
 logic pieces to drop in.
 
@@ -237,16 +236,16 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   doc.rs                  a level as a file (the editor's), Portal's maps' brushes and
                           entities in it too
   brush.rs                brushes: faces to draw and boxes to collide with
-  port.rs                 Portal's maps made into level files (the native chambers)
+  port.rs                 Portal's maps made into level files (levels/portal/)
   art.rs                  what's drawn of a Portal map: faces, props, overlays, cables
   tests.rs                the mechanics, and each chamber beaten by script
 crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
                         their animations) out of your Portal and Portal 2 VPKs, and Portal
                         with RTX's remastered materials and models (remix.rs, usd.rs), and
-                        Portal's maps (bsp.rs: faces, brushes as boxes, entities; maps.rs),
+                        Portal's maps (bsp.rs: brushes, entities; maps.rs),
                         GLaDOS's scenes (scenes.rs), its sounds as a library with their
                         soundscripts and soundscapes (sounds.rs), its colour correction
-                        tables, and the maps as native chambers
+                        tables, and the maps as level files (--port-maps)
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces

@@ -221,10 +221,9 @@ pub struct Game {
 /// The chambers menu's folders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LevelGroup {
-    /// Portal's maps, played from what `portal_extract` wrote out of them.
-    PortalImported,
-    /// The game's own copies of Portal's maps: level files, to play and to edit.
-    PortalNative,
+    /// Portal's maps: the game's own copies of them (level files in `levels/portal/`), to play
+    /// and to edit.
+    Portal,
     /// The game's own chambers and the level files made in the editor.
     Testing,
     /// The editor's own level (not in the menu).
@@ -232,12 +231,11 @@ pub enum LevelGroup {
 }
 
 impl LevelGroup {
-    pub const MENU: [LevelGroup; 3] = [LevelGroup::PortalImported, LevelGroup::PortalNative, LevelGroup::Testing];
+    pub const MENU: [LevelGroup; 2] = [LevelGroup::Portal, LevelGroup::Testing];
 
     pub fn name(self) -> &'static str {
         match self {
-            LevelGroup::PortalImported => "Portal 1: imported chambers",
-            LevelGroup::PortalNative => "Portal 1: native chambers",
+            LevelGroup::Portal => "Portal 1 chambers",
             LevelGroup::Testing => "Testing chambers",
             LevelGroup::Editor => "Editor",
         }
@@ -246,8 +244,7 @@ impl LevelGroup {
     /// What's under it, for its folder in the menu.
     pub fn about(self) -> &'static str {
         match self {
-            LevelGroup::PortalImported => "Portal's maps, as they are",
-            LevelGroup::PortalNative => "Portal's maps as level files: open them in the editor",
+            LevelGroup::Portal => "Portal's chambers: open them in the editor to change them",
             LevelGroup::Testing => "The game's own chambers and the levels made in the editor",
             LevelGroup::Editor => "",
         }
@@ -264,14 +261,10 @@ pub struct Sun;
 
 fn setup_world(mut commands: Commands) {
     commands.insert_resource(progress::Progress::load());
-    // The game's chambers, then Portal's own maps where they were extracted.
-    let root = extracted::find_root();
-    let mut levels: Vec<(String, source_map::LevelFn)> = aperture::levels::all().into_iter().map(|(name, f)| (name.to_string(), std::sync::Arc::new(f) as source_map::LevelFn)).collect();
-    let mut source_names = vec![None; levels.len()];
-    let mut groups = vec![LevelGroup::Testing; levels.len()];
-    levels.extend(source_map::levels(root.as_deref()));
-    source_names.extend(source_map::map_names(root.as_deref()).into_iter().map(Some));
-    groups.resize(levels.len(), LevelGroup::PortalImported);
+    // The game's chambers (Portal's and the level files follow: `editor::add_levels`).
+    let levels: Vec<(String, source_map::LevelFn)> = aperture::levels::all().into_iter().map(|(name, f)| (name.to_string(), std::sync::Arc::new(f) as source_map::LevelFn)).collect();
+    let source_names = vec![None; levels.len()];
+    let groups = vec![LevelGroup::Testing; levels.len()];
     let first = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(levels.len() - 1);
     let level = (levels[first].1)();
     let cp = level.checkpoints[0].clone();

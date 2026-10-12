@@ -419,22 +419,9 @@ impl Editor {
         }
     }
 
-    /// Edit level `i` of the game's list: its file, or a copy of a built chamber. One of
-    /// Portal's maps as imported: the game's own copy of it (a level file), if there is one.
-    /// Whether what's open is that level (or its copy).
+    /// Edit level `i` of the game's list: its file, or a copy of a built chamber. Whether
+    /// what's open is that level (or its copy).
     pub fn open_level(&mut self, game: &Game, i: usize) -> bool {
-        let i = if game.groups.get(i) == Some(&crate::LevelGroup::PortalImported) {
-            match (0..game.levels.len()).find(|&j| game.groups[j] == crate::LevelGroup::PortalNative && game.source_names[j] == game.source_names[i]) {
-                Some(j) => j,
-                None => {
-                    self.status = "No copy of this map to edit in levels/portal (cargo run --release -p portal_extract -- --port-maps makes it). Starting a new level".into();
-                    self.open(LevelDoc::starter("Untitled"), None);
-                    return false;
-                }
-            }
-        } else {
-            i
-        };
         if let Some(path) = self.files.iter().find(|(j, _)| *j == i).map(|(_, p)| p.clone()) {
             let path = &path;
             let started = std::time::Instant::now();
@@ -575,7 +562,7 @@ pub fn add_levels(mut game: ResMut<Game>, mut ed: ResMut<Editor>) {
         ed.files.push((game.levels.len(), path.clone()));
         game.levels.push((name, file_level(path)));
         game.source_names.push(Some(map));
-        game.groups.push(crate::LevelGroup::PortalNative);
+        game.groups.push(crate::LevelGroup::Portal);
     }
     for path in level_files() {
         let name = doc_name(&path);
