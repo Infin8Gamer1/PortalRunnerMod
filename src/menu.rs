@@ -15,7 +15,10 @@ use crate::Game;
 pub enum Screen {
     Title,
     Pause,
+    /// The chambers' folders.
     Chambers,
+    /// One folder's chambers.
+    Folder(crate::LevelGroup),
     Settings(Page),
     Controls,
 }
@@ -88,6 +91,7 @@ enum Action {
     Quit,
     Back,
     Load(usize),
+    Folder(crate::LevelGroup),
 }
 
 enum Item {
@@ -170,7 +174,20 @@ fn items(menu: &Menu, game: &Game, progress: &Progress) -> Vec<Item> {
             a("Quit", Action::Quit),
         ],
         Screen::Chambers => {
-            let mut v: Vec<Item> = game.levels.iter().enumerate().map(|(i, (name, _))| Item::Chamber(i, name.to_string(), progress.best_for(name))).collect();
+            let mut v: Vec<Item> = crate::LevelGroup::MENU
+                .iter()
+                .map(|&g| {
+                    let n = game.groups.iter().filter(|x| **x == g).count();
+                    a(&format!("{}  ({n})", g.name()), Action::Folder(g))
+                })
+                .collect();
+            v.push(a("Back", Action::Back));
+            v
+        }
+        Screen::Folder(g) => {
+            // (Their own names, without the folder's.)
+            let short = |name: &str| name.strip_prefix("Portal native: ").or_else(|| name.strip_prefix("Portal: ")).unwrap_or(name).to_string();
+            let mut v: Vec<Item> = game.levels.iter().enumerate().filter(|(i, _)| game.groups[*i] == g).map(|(i, (name, _))| Item::Chamber(i, short(name), progress.best_for(name))).collect();
             v.push(a("Back", Action::Back));
             v
         }
@@ -235,6 +252,7 @@ fn build(commands: &mut Commands, root: Entity, fonts: &UiFonts, menu: &Menu, li
             Screen::Title => ("PORTAL RUNNER", "Mirror's Edge, with a portal gun"),
             Screen::Pause => ("PAUSED", game.levels[game.level_index].0.as_str()),
             Screen::Chambers => ("CHAMBERS", "Best times are saved"),
+            Screen::Folder(g) => ("CHAMBERS", g.about()),
             Screen::Settings(_) => ("SETTINGS", "Saved as you change them"),
             Screen::Controls => ("CONTROLS", "Keyboard and mouse  /  gamepad"),
         };
@@ -280,7 +298,11 @@ fn build(commands: &mut Commands, root: Entity, fonts: &UiFonts, menu: &Menu, li
                 commands.entity(row).add_child(t);
             }
             Item::Chamber(_, name, best) => {
-                let t = commands.spawn((Text::new(name.clone()), fonts.regular(20.0), TextColor(INK), Node { flex_grow: 1.0, ..default() })).id();
+                // (A long list, closer together.)
+                if list.len() > 12 {
+                    commands.entity(row).entry::<Node>().and_modify(|mut n| n.padding = UiRect::axes(px(14.0), px(3.0)));
+                }
+                let t = commands.spawn((Text::new(name.clone()), fonts.regular(if list.len() > 12 { 18.0 } else { 20.0 }), TextColor(INK), Node { flex_grow: 1.0, ..default() })).id();
                 let b = commands
                     .spawn((Text::new(best.map(crate::hud::fmt_time).unwrap_or_else(|| "-".into())), fonts.regular(17.0), TextColor(if best.is_some() { INK } else { DIM })))
                     .id();
@@ -449,6 +471,7 @@ pub fn update(
                 menu.close();
             }
             Some(Action::Chambers) => menu.go(Screen::Chambers, true),
+            Some(Action::Folder(g)) => menu.go(Screen::Folder(g), true),
             Some(Action::Settings) => menu.go(Screen::Settings(Page::Audio), true),
             Some(Action::Controls) => menu.go(Screen::Controls, true),
             Some(Action::MainMenu) => {

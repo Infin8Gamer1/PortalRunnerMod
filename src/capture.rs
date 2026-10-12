@@ -81,6 +81,8 @@ enum Act {
     Mouse(Hand),
     /// Ray-traced lighting on or off (the setting, not saved).
     RayTracing(bool),
+    /// Load one of Portal's maps: as imported, or the game's own copy of it.
+    Chamber(crate::LevelGroup, &'static str),
 }
 
 /// What the mouse does.
@@ -1096,6 +1098,126 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("menu_controls"),
             ]
         }
+        // Portal's maps as imported and the game's own copies of them, from where she starts:
+        // they should look the same.
+        "native" => {
+            use crate::LevelGroup::{PortalImported as I, PortalNative as N};
+            vec![
+                Chamber(I, "testchmb_a_00"),
+                Wait(120),
+                Shot("a00_imported"),
+                Chamber(N, "testchmb_a_00"),
+                Wait(120),
+                Shot("a00_native"),
+                Chamber(I, "testchmb_a_08"),
+                Wait(120),
+                Shot("a08_imported"),
+                Chamber(N, "testchmb_a_08"),
+                Wait(120),
+                Shot("a08_native"),
+                Chamber(I, "testchmb_a_11"),
+                Wait(120),
+                Shot("a11_imported"),
+                Chamber(N, "testchmb_a_11"),
+                Wait(120),
+                Shot("a11_native"),
+                Chamber(I, "escape_02"),
+                Wait(120),
+                Shot("e02_imported"),
+                Chamber(N, "escape_02"),
+                Wait(120),
+                Shot("e02_native"),
+            ]
+        }
+        // From Portal's Chamber 00 as imported into the editor (its native copy opens), a wall
+        // moved, Portal's brushes and a trigger dropped in, then played.
+        "nativeedit" => {
+            use crate::LevelGroup::PortalImported as I;
+            vec![
+                Chamber(I, "testchmb_a_00"),
+                Wait(60),
+                Edit(|_, menu| menu.edit = Some(false)),
+                Wait(150),
+                Shot("nativeedit_01_opened"),
+                Edit(|ed, _| {
+                    // The nearest white wall in front of the camera, a metre up.
+                    let (pos, look) = (ed.cam.pos, Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0) * Vec3::NEG_Z);
+                    let i = ed.doc.objects.iter().enumerate().filter(|(_, o)| matches!(&o.kind, aperture::doc::Kind::Brush(b) if b.faces.iter().any(|f| f.mat.starts_with("plastic/plasticwall"))) && (o.at - pos).normalize_or_zero().dot(look) > 0.8).min_by(|a, b| a.1.at.distance(pos).total_cmp(&b.1.at.distance(pos))).map(|(i, _)| i);
+                    if let Some(i) = i {
+                        ed.selected = Some(i);
+                        ed.change(|d| d.objects[i].at.y += 1.0);
+                    }
+                }),
+                Wait(90),
+                Shot("nativeedit_02_moved"),
+                Edit(|ed, _| {
+                    use crate::editor::catalog::find;
+                    let (pos, look) = (ed.cam.pos, Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0) * Vec3::NEG_Z);
+                    let floor = pos + Vec3::new(look.x, 0.0, look.z).normalize_or_zero() * 4.0 - Vec3::Y * 2.5;
+                    ed.add_entry(find("Portal black metal"), floor, Vec3::Y, look);
+                    ed.add_entry(find("Portal light panel"), floor + Vec3::new(2.0, 0.0, 0.0), Vec3::Y, look);
+                    ed.add_entry(find("Trigger"), floor + Vec3::new(-3.0, 0.0, 0.0), Vec3::Y, look);
+                    ed.add_entry(find("Relay"), floor + Vec3::new(-3.0, 0.0, 2.0), Vec3::Y, look);
+                }),
+                Wait(90),
+                Shot("nativeedit_03_added"),
+                Edit(|ed, menu| ed.play(menu)),
+                Wait(120),
+                Shot("nativeedit_04_playing"),
+            ]
+        }
+        // The chambers menu's folders.
+        "chambersmenu" => {
+            use crate::menu::Screen;
+            vec![
+                Wait(30),
+                Menu(Screen::Chambers),
+                Wait(10),
+                Shot("menu_chambers"),
+                Menu(Screen::Folder(crate::LevelGroup::PortalNative)),
+                Wait(10),
+                Shot("menu_native"),
+                Menu(Screen::Folder(crate::LevelGroup::Testing)),
+                Wait(10),
+                Shot("menu_testing"),
+            ]
+        }
+        // The game's copy of Portal's Chamber 00 in the editor (PORTAL_EDIT=1): opened, a
+        // relay's outputs and what fires at it, a brush and the material picker.
+        "nativeeditor" => vec![
+            Wait(60),
+            Edit(|ed, _| {
+                let files = crate::source_map::native_files();
+                if let Some((p, _)) = files.into_iter().find(|(_, m)| m == "testchmb_a_00") {
+                    if let Ok(d) = crate::editor::read_doc(&p) {
+                        ed.open(d, Some(p));
+                    }
+                }
+            }),
+            Wait(150),
+            Shot("native_editor_01_opened"),
+            Edit(|ed, _| {
+                // The relay that opens the first door, seen from across the room.
+                let i = ed.doc.objects.iter().position(|o| matches!(&o.kind, aperture::doc::Kind::Entity { class, .. } if class == "logic_relay") && !o.outputs.is_empty());
+                ed.selected = i;
+                if let Some(o) = i.map(|i| &ed.doc.objects[i]) {
+                    ed.cam = crate::editor::FlyCam { pos: o.at + Vec3::new(0.0, 2.0, 6.0), yaw: 0.0, pitch: -0.25, speed: 8.0 };
+                }
+            }),
+            Wait(30),
+            Shot("native_editor_02_relay"),
+            Edit(|ed, _| {
+                // A white wall brush near the start, and the material picker for it.
+                let spawn = ed.cam.pos;
+                let i = ed.doc.objects.iter().enumerate().filter(|(_, o)| matches!(&o.kind, aperture::doc::Kind::Brush(b) if b.faces.iter().any(|f| f.mat.starts_with("plastic/plasticwall")))).min_by(|a, b| a.1.at.distance(spawn).total_cmp(&b.1.at.distance(spawn))).map(|(i, _)| i);
+                ed.selected = i;
+            }),
+            Wait(30),
+            Shot("native_editor_03_brush"),
+            Edit(|ed, _| ed.picking = ed.selected.map(|obj| crate::editor::MatTarget { obj, face: None })),
+            Wait(90),
+            Shot("native_editor_04_materials"),
+        ],
         // The level editor (start it with PORTAL_EDIT=1): the chamber it opens on, a new room
         // with pieces dropped in and wired up, then playing it.
         "editor" => vec![
@@ -1696,6 +1818,14 @@ pub fn run(
             let pause = if cap.real_ms > 0.0 && cap.real_ms < 40.0 { 300 } else { 1500 };
             cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
         }
+        Act::Chamber(group, map) => match (0..game.levels.len()).find(|&i| game.groups[i] == *group && game.source_names[i].as_deref() == Some(*map)) {
+            Some(i) => {
+                game.pending = Some(i);
+                let pause = if cap.real_ms > 0.0 && cap.real_ms < 40.0 { 600 } else { 1500 };
+                cap.hold_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(pause));
+            }
+            None => println!("capture: no {map} in {group:?}"),
+        },
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Edit(f) => f(&mut editor, &mut menu),
         Act::Mouse(m) => mouse.act(*m, &editor),

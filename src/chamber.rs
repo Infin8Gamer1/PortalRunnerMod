@@ -581,7 +581,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             || (r.bridges && sim.bridges.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.2)))
             || (r.pellets && (sim.launchers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.35)) || sim.pellet_catchers.iter().any(|x| aperture::geom::contains(b, x.at - x.facing * 0.45))))
             // (A source map's launcher is its own prop: the box behind it is that prop's.)
-            || (l.source.is_some() && sim.launchers.iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.35)))
+            || sim.launchers[..sim.map_launchers].iter().any(|x| aperture::geom::contains(b, x.at - x.dir * 0.35))
     };
     // Faith plate models sit in pits: holes in the floor as drawn (her feet stay on the
     // plate as before).
@@ -589,7 +589,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     // The chamber's boxes (and the boxes of emitters and the like).
     for s in &sim.statics {
         // One of Portal's maps is drawn from its own faces (`source_map`).
-        if l.source.is_some() && matches!(s.owner, Owner::Level(_)) {
+        if matches!(s.owner, Owner::Level(i) if i < l.map_solids) {
             continue;
         }
         match s.owner {
@@ -779,7 +779,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     // A hand-built chamber's movers: their boxes, moving together. (A Portal map's that have
     // no model of their own, a cube dropper's hatch, are drawn by their props.)
     for (i, mv) in sim.movers.iter().enumerate() {
-        if mv.def.model != aperture::level::NO_MODEL || sim.level.source.is_some() {
+        if mv.def.model != aperture::level::NO_MODEL || i < sim.map_movers {
             continue;
         }
         for b in &mv.def.boxes {

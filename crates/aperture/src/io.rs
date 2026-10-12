@@ -27,17 +27,37 @@ const SCENE_SECONDS: f32 = 3.0;
 
 /// One connection: when the entity fires `event`, send `input` (with `param`) to `target`
 /// after `delay` seconds, at most `times` times (-1: always).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub event: String,
     pub target: String,
     pub input: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub param: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub delay: f32,
+    #[serde(default = "always", skip_serializing_if = "is_always")]
     pub times: i32,
 }
 
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+fn always() -> i32 {
+    -1
+}
+
+fn is_always(v: &i32) -> bool {
+    *v == -1
+}
+
 impl Output {
+    /// As an entity key's value has it: `target,Input,param,delay,times`.
+    pub fn value(&self) -> String {
+        format!("{},{},{},{},{}", self.target, self.input, self.param, self.delay, self.times)
+    }
+
     /// From an entity key (`OnTrigger`) and its value (`target,Input,param,delay,times`).
     pub fn parse(event: &str, value: &str) -> Option<Output> {
         let f: Vec<&str> = value.split([',', '\x1b']).collect();

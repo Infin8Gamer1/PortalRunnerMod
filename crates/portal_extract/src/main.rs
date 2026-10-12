@@ -619,16 +619,19 @@ fn main() {
         }
     }
     // Portal's own test chambers (`--no-maps` skips them).
-    if let Some(dir) = maps_dir.filter(|d| d.is_dir() && !args.iter().any(|a| a == "--no-maps")) {
+    if let Some(dir) = maps_dir.clone().filter(|d| d.is_dir() && !args.iter().any(|a| a == "--no-maps")) {
         let (mut n, mut mats) = (0, 0);
         let mut models: Vec<maps::UsedModel> = Vec::new();
+        // Every map's materials, for the game's own copies of the maps (and its editor).
+        let mut table: std::collections::BTreeMap<String, u8> = std::collections::BTreeMap::new();
         for name in MAPS {
             let Ok(bytes) = std::fs::read(dir.join(format!("{name}.bsp"))) else { continue };
             match maps::extract(name, &bytes, &read_any, remix.as_ref(), &out) {
-                Ok((_, _, m, used)) => {
+                Ok(x) => {
                     n += 1;
-                    mats += m;
-                    for (model, skin, anims) in used {
+                    mats += x.materials.len();
+                    table.extend(x.materials);
+                    for (model, skin, anims) in x.used {
                         match models.iter_mut().find(|(m, s, _)| *m == model && *s == skin) {
                             Some((_, _, list)) => list.extend(anims.into_iter().filter(|a| !list.contains(a)).collect::<Vec<_>>()),
                             None => models.push((model, skin, anims)),
@@ -639,6 +642,8 @@ fn main() {
             }
         }
         println!("  {n} of Portal's maps ({mats} materials)");
+        let list: String = table.iter().map(|(m, f)| format!("{f} {m}\n")).collect();
+        std::fs::write(out.join("maps").join("materials.txt"), list).expect("write materials");
         // Their props' models, once each (kept from an earlier run unless they animate, or with
         // `--props`), with
         // the animations the maps play on them (under the sequence's name, or `@` and it).
@@ -749,6 +754,11 @@ fn main() {
             }
             None => println!("  no scenes.image: GLaDOS stays quiet"),
         }
+    }
+    // The game's own copies of the maps, to play and edit (`levels/portal/` in the repository:
+    // made again only when asked, `--port-maps`).
+    if maps_dir.is_some() && !args.iter().any(|a| a == "--no-maps") && args.iter().any(|a| a == "--port-maps") {
+        port_maps(&out);
     }
     // Every prop of both games, for the level editor (`--no-props` skips it: it's big).
     if !args.iter().any(|a| a == "--no-props") {
@@ -1045,6 +1055,54 @@ fn vmt_base_texture(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A file's fingerprint (FNV-1a): whether it's as it was written.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The game's own copy of each extracted map, as a level file in the repository
+/// (`levels/portal/<map>.ron`, `aperture::port`): the map's layout, naming the assets it uses
+/// (which stay in the extracted folder). A copy that's been changed since it was written (in
+/// the level editor) is kept: `levels/portal/written.txt` has each one's fingerprint as
+/// written. Delete it to have it made again.
+fn port_maps(out: &Path) {
+    let maps = out.join("maps");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/portal");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let ledger = dir.join("written.txt");
+    let mut written: std::collections::BTreeMap<String, u64> = std::fs::read_to_string(&ledger)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(' ').and_then(|(n, f)| Some((n.to_string(), f.parse().ok()?))))
+        .collect();
+    let (mut made, mut kept) = (0, Vec::new());
+    for (name, title) in aperture::port::MAPS {
+        let read = |ext: &str| std::fs::read_to_string(maps.join(format!("{name}.{ext}")));
+        let (Ok(brushes), Ok(ents)) = (read("brushes"), read("ents")) else { continue };
+        let file = dir.join(format!("{name}.ron"));
+        if let Ok(old) = std::fs::read(&file) {
+            if written.get(*name) != Some(&fingerprint(&old)) {
+                kept.push(*name);
+                continue;
+            }
+        }
+        let doc = aperture::port::convert(name, &aperture::port::native_title(title), &aperture::port::MapFiles { brushes: &brushes, ents: &ents, props: &read("props").unwrap_or_default(), overlays: &read("overlays").unwrap_or_default() });
+        let text = doc.to_ron();
+        if std::fs::write(&file, &text).is_ok() {
+            written.insert(name.to_string(), fingerprint(text.as_bytes()));
+            made += 1;
+        }
+    }
+    let list: String = written.iter().map(|(n, f)| format!("{n} {f}\n")).collect();
+    let _ = std::fs::write(&ledger, list);
+    println!("  {made} of the maps as the game's own levels (levels/portal/)");
+    if !kept.is_empty() {
+        println!("  kept as edited (delete them to have them made again): {}", kept.join(", "));
+    }
 }
 
 /// Source units are inches, +X forward, +Y left, +Z up; ours are metres, +X right, +Y up,

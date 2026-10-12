@@ -5,6 +5,8 @@
 //! simulation ([`Sim`]) that moves a faith_move [`Controller`](faith_move::Controller)
 //! through portals. The test chambers are in [`levels`].
 
+pub mod art;
+pub mod brush;
 pub mod collide;
 pub mod doc;
 pub mod geom;
@@ -12,6 +14,7 @@ pub mod gel;
 pub mod io;
 pub mod level;
 pub mod levels;
+pub mod port;
 pub mod portal;
 pub mod rope;
 pub mod sim;

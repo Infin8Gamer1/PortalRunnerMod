@@ -169,8 +169,11 @@ pub struct Game {
     /// The chamber as Mirror's Edge's sounds see it (footstep surfaces, checkpoints).
     pub level: greybox::Level,
     pub levels: Vec<(String, source_map::LevelFn)>,
-    /// Parallel to `levels`: the BSP name of a Portal map, or none for a built chamber.
+    /// Parallel to `levels`: the BSP name of a Portal map (or of the map a level file is the
+    /// game's own copy of), or none for a built chamber.
     pub source_names: Vec<Option<String>>,
+    /// Parallel to `levels`: the folder each is in (the chambers menu).
+    pub groups: Vec<LevelGroup>,
     pub level_index: usize,
     /// Load this level next frame (chamber finished, or a key).
     pub pending: Option<usize>,
@@ -207,6 +210,42 @@ pub struct Game {
     pub loads: u64,
 }
 
+/// The chambers menu's folders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LevelGroup {
+    /// Portal's maps, played from what `portal_extract` wrote out of them.
+    PortalImported,
+    /// The game's own copies of Portal's maps: level files, to play and to edit.
+    PortalNative,
+    /// The game's own chambers and the level files made in the editor.
+    Testing,
+    /// The editor's own level (not in the menu).
+    Editor,
+}
+
+impl LevelGroup {
+    pub const MENU: [LevelGroup; 3] = [LevelGroup::PortalImported, LevelGroup::PortalNative, LevelGroup::Testing];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LevelGroup::PortalImported => "Portal 1: imported chambers",
+            LevelGroup::PortalNative => "Portal 1: native chambers",
+            LevelGroup::Testing => "Testing chambers",
+            LevelGroup::Editor => "Editor",
+        }
+    }
+
+    /// What's under it, for its folder in the menu.
+    pub fn about(self) -> &'static str {
+        match self {
+            LevelGroup::PortalImported => "Portal's maps, as they are",
+            LevelGroup::PortalNative => "Portal's maps as level files: open them in the editor",
+            LevelGroup::Testing => "The game's own chambers and the levels made in the editor",
+            LevelGroup::Editor => "",
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct PlayerCamera;
 
@@ -221,8 +260,10 @@ fn setup_world(mut commands: Commands) {
     let root = extracted::find_root();
     let mut levels: Vec<(String, source_map::LevelFn)> = aperture::levels::all().into_iter().map(|(name, f)| (name.to_string(), std::sync::Arc::new(f) as source_map::LevelFn)).collect();
     let mut source_names = vec![None; levels.len()];
+    let mut groups = vec![LevelGroup::Testing; levels.len()];
     levels.extend(source_map::levels(root.as_deref()));
     source_names.extend(source_map::map_names(root.as_deref()).into_iter().map(Some));
+    groups.resize(levels.len(), LevelGroup::PortalImported);
     let first = std::env::var("PORTAL_MAP").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(levels.len() - 1);
     let level = (levels[first].1)();
     let cp = level.checkpoints[0].clone();
@@ -251,6 +292,7 @@ fn setup_world(mut commands: Commands) {
         level: level.greybox(),
         levels,
         source_names,
+        groups,
         level_index: first,
         arrival: None,
         pending: None,
@@ -693,8 +735,10 @@ fn play(
                 // A Portal changelevel names its map. Switch without the three-second wait, so
                 // the elevator's delayed door-open doesn't play on the map being left, and
                 // stand in the next map's elevator rather than at its player start.
+                // (The next map's own copy, from one of the game's copies.)
+                let group = game.groups[game.level_index];
                 let next = game.sim.transition.clone().and_then(|tr| {
-                    let i = game.source_names.iter().position(|n| n.as_deref() == Some(tr.map.as_str()))?;
+                    let i = (0..game.levels.len()).find(|&i| game.source_names[i].as_deref() == Some(tr.map.as_str()) && game.groups[i] == group)?;
                     Some((i, tr))
                 });
                 match next {

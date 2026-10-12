@@ -346,8 +346,17 @@ pub struct Level {
     /// The fill light everywhere, as the level wants it (colour, brightness).
     pub ambient: Option<(Vec3, f32)>,
     /// One of Portal's own maps (its name, `testchmb_a_00`): drawn from its faces, not
-    /// [`Level::solids`]' boxes.
+    /// [`Level::solids`]' boxes (the first [`Level::map_solids`] of them: the map's own), and
+    /// played by Portal's rules (its portals are Portal's size). The game's own copy of a map
+    /// (a level file) names it too.
     pub source: Option<String>,
+    /// How many of [`Level::solids`] (the first) are the map's, drawn from its faces.
+    pub map_solids: usize,
+    /// And how many of [`Level::items`] (the first): the map's own movers, launchers and
+    /// catchers are drawn as its props; the pieces after them (a level's own) as the game's.
+    pub map_items: usize,
+    /// What's drawn of the map: its faces, props, overlays and cables.
+    pub art: Option<std::sync::Arc<crate::art::MapArt>>,
     /// Its lights (Portal's `light` and `light_spot` entities).
     pub lights: Vec<SourceLight>,
     /// Where its emancipation grills' emitters are: the middle of each one's edge, a grill's
@@ -501,6 +510,9 @@ impl Level {
             sun: None,
             ambient: None,
             source: None,
+            map_solids: 0,
+            map_items: 0,
+            art: None,
             lights: Vec::new(),
             grill_edges: Vec::new(),
             hidden_models: Vec::new(),
@@ -562,6 +574,18 @@ impl Level {
         let cut = Aabb::new(Vec3::from(a), Vec3::from(b));
         let mut out = Vec::with_capacity(self.solids.len());
         for s in &self.solids {
+            out.extend(geom::subtract(&s.b, &cut).into_iter().map(|b| Solid { b, mat: s.mat }));
+        }
+        self.solids = out;
+        self
+    }
+
+    /// Cut a region out of the solids from the `first` on (the ones before are a map's, drawn
+    /// as they are).
+    pub fn cut_from(&mut self, first: usize, a: [f32; 3], b: [f32; 3]) -> &mut Self {
+        let cut = Aabb::new(Vec3::from(a), Vec3::from(b));
+        let mut out: Vec<Solid> = self.solids[..first.min(self.solids.len())].to_vec();
+        for s in self.solids.iter().skip(first) {
             out.extend(geom::subtract(&s.b, &cut).into_iter().map(|b| Solid { b, mat: s.mat }));
         }
         self.solids = out;

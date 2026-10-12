@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::light::NotShadowCaster;
@@ -24,26 +24,7 @@ use crate::Game;
 pub type LevelFn = Arc<dyn Fn() -> Level + Send + Sync>;
 
 /// Portal's maps, in order, with what the game calls them.
-const MAPS: &[(&str, &str)] = &[
-    ("testchmb_a_00", "Portal: Chambers 00-01"),
-    ("testchmb_a_01", "Portal: Chambers 02-03"),
-    ("testchmb_a_02", "Portal: Chambers 04-05"),
-    ("testchmb_a_03", "Portal: Chambers 06-07"),
-    ("testchmb_a_04", "Portal: Chamber 08"),
-    ("testchmb_a_05", "Portal: Chamber 09"),
-    ("testchmb_a_06", "Portal: Chamber 10"),
-    ("testchmb_a_07", "Portal: Chambers 11-12"),
-    ("testchmb_a_08", "Portal: Chamber 13"),
-    ("testchmb_a_09", "Portal: Chamber 14"),
-    ("testchmb_a_10", "Portal: Chamber 15"),
-    ("testchmb_a_11", "Portal: Chamber 16"),
-    ("testchmb_a_13", "Portal: Chamber 17"),
-    ("testchmb_a_14", "Portal: Chamber 18"),
-    ("testchmb_a_15", "Portal: Chamber 19"),
-    ("escape_00", "Portal: Escape 1"),
-    ("escape_01", "Portal: Escape 2"),
-    ("escape_02", "Portal: Escape 3"),
-];
+const MAPS: &[(&str, &str)] = aperture::port::MAPS;
 
 fn available(dir: &Path) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
     MAPS.iter().copied().filter(move |(name, _)| dir.join(format!("{name}.mesh")).is_file())
@@ -55,22 +36,51 @@ pub fn map_names(root: Option<&Path>) -> Vec<String> {
     available(&dir).map(|(name, _)| name.to_string()).collect()
 }
 
+/// GLaDOS's scenes (`maps/scenes.txt`), shared by every map and every level file with
+/// Portal's entities.
+pub fn scenes() -> Arc<aperture::source::Scenes> {
+    static SCENES: OnceLock<Arc<aperture::source::Scenes>> = OnceLock::new();
+    SCENES
+        .get_or_init(|| {
+            let text = crate::extracted::find_root().and_then(|r| std::fs::read_to_string(r.join("maps").join("scenes.txt")).ok()).unwrap_or_default();
+            Arc::new(aperture::source::parse_scenes(&text))
+        })
+        .clone()
+}
+
+/// Each of Portal's materials' flags (`maps/materials.txt`: as the mesh files have them),
+/// for what the game's own copies of the maps draw.
+pub fn material_flags() -> &'static HashMap<String, u8> {
+    static FLAGS: OnceLock<HashMap<String, u8>> = OnceLock::new();
+    FLAGS.get_or_init(|| {
+        let text = crate::extracted::find_root().and_then(|r| std::fs::read_to_string(r.join("maps").join("materials.txt")).ok()).unwrap_or_default();
+        text.lines().filter_map(|l| l.split_once(' ')).filter_map(|(f, n)| Some((n.to_string(), f.parse().ok()?))).collect()
+    })
+}
+
 /// The extracted maps there are, as levels.
 pub fn levels(root: Option<&Path>) -> Vec<(String, LevelFn)> {
     let Some(dir) = root.map(|r| r.join("maps")) else { return Vec::new() };
-    // GLaDOS's scenes, shared by every map.
-    let scenes = Arc::new(aperture::source::parse_scenes(&std::fs::read_to_string(dir.join("scenes.txt")).unwrap_or_default()));
     available(&dir)
         .map(|(name, title)| {
             let dir: PathBuf = dir.clone();
-            let scenes = scenes.clone();
             let f: LevelFn = Arc::new(move || {
                 let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap_or_default();
-                aperture::source::level_with_scenes(name, title, &read("solids"), &read("ents"), &scenes)
+                let ents = read("ents");
+                let mut l = aperture::source::level_with_scenes(name, title, &read("solids"), &ents, &scenes());
+                l.art = Some(Arc::new(aperture::art::MapArt::from_files(name, &read("props"), &read("overlays"), &ents)));
+                l
             });
             (title.to_string(), f)
         })
         .collect()
+}
+
+/// The game's own copies of Portal's maps (`levels/portal/`, made by `portal_extract
+/// --port-maps`), in the maps' order: each one's file and map.
+pub fn native_files() -> Vec<(PathBuf, String)> {
+    let dir = crate::editor::levels_dir().join("portal");
+    MAPS.iter().map(|(name, _)| (dir.join(format!("{name}.ron")), name.to_string())).filter(|(p, _)| p.is_file()).collect()
 }
 
 /// A brush model's faces (one material's): they move with the sim's mover for that model.
@@ -143,13 +153,6 @@ pub struct MapPropPlayer {
     /// Which clip that cycle is showing: 1 open, 2 close.
     showing: u8,
     node: Option<AnimationNodeIndex>,
-}
-
-/// Source's angles (pitch, yaw, roll; degrees) as a turn in our space.
-fn source_rotation(a: Vec3) -> Quat {
-    let r = Quat::from_rotation_z(a.y.to_radians()) * Quat::from_rotation_y(a.x.to_radians()) * Quat::from_rotation_x(a.z.to_radians());
-    let to_ours = Quat::from_mat3(&Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
-    to_ours * r * to_ours.inverse()
 }
 
 /// Materials made for maps' textures, kept from map to map.
@@ -318,6 +321,32 @@ fn glow_mask(img: &Image) -> Option<Image> {
     Some(out)
 }
 
+/// A map's faces to draw: (brush model, material, its flags, the mesh), from its mesh file
+/// or (the game's own copy of a map) its brushes.
+fn face_meshes(art: &aperture::art::MapArt, root: &Path) -> Vec<(u32, String, u8, Mesh)> {
+    if let Some(mesh) = &art.mesh {
+        let path = root.join("maps").join(format!("{mesh}.mesh"));
+        let Some(file) = std::fs::read(&path).ok().and_then(|b| read_mesh(&b)) else {
+            warn!("{}: can't read", path.display());
+            return Vec::new();
+        };
+        return file.groups.into_iter().map(|g| (g.model, file.materials[g.material].0.clone(), file.materials[g.material].1, g.mesh)).collect();
+    }
+    let flags = material_flags();
+    art.faces
+        .iter()
+        .map(|g| {
+            let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, g.pos.clone())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, g.nrm.clone())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, g.uv.clone())
+                .with_inserted_indices(Indices::U32(g.idx.clone()));
+            // (A material no map has: drawn as one with a texture, if it's been extracted.)
+            (g.model as u32, g.mat.clone(), flags.get(&g.mat).copied().unwrap_or(32), mesh)
+        })
+        .collect()
+}
+
 /// Draw the map when one's loaded (after the chamber's geometry is cleared and spawned).
 #[allow(clippy::too_many_arguments)]
 pub fn sync(
@@ -332,59 +361,60 @@ pub fn sync(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut drawn: Local<Option<u64>>,
+    mut scaled: Option<ResMut<crate::raytrace::ScaledEmissive>>,
 ) {
     if *drawn == Some(game.loads) {
         return;
     }
     let Some(m) = m else { return };
+    // A material of its own made from a shared one (cached from an earlier map) whose glow the
+    // traced light has scaled already: it's scaled as that one is, not again.
+    let mut same_glow = |from: &Handle<StandardMaterial>, to: &Handle<StandardMaterial>| {
+        if let Some(s) = scaled.as_mut() {
+            if let Some(v) = s.0.get(&from.id()).copied() {
+                s.0.insert(to.id(), v);
+            }
+        }
+    };
     *drawn = Some(game.loads);
     let level = &game.sim.level;
-    let Some(name) = level.source.as_deref() else { return };
-    let Some(root) = extracted.root.as_ref() else { return };
-    let path = root.join("maps").join(format!("{name}.mesh"));
-    let Some(file) = std::fs::read(&path).ok().and_then(|b| read_mesh(&b)) else {
-        warn!("{}: can't read", path.display());
-        return;
-    };
-    let mut handles = Vec::with_capacity(file.materials.len());
+    let Some(art) = level.art.clone() else { return };
+    let name = level.source.clone().unwrap_or_default();
+    let Some(root) = extracted.root.clone() else { return };
     let mut frames: HashMap<String, Vec<Handle<Image>>> = HashMap::new();
-    for (mat, flags) in &file.materials {
-        let h = match cache.0.get(mat) {
-            Some(h) => h.clone(),
-            None => {
-                let h = material(mat, *flags, &extracted, &mut images, &mut materials, &m, &mut lamps);
-                cache.0.insert(mat.clone(), h.clone());
-                h
-            }
-        };
-        handles.push(h);
-    }
-    for g in file.groups {
-        let (mat, flags) = &file.materials[g.material];
-        if level.hidden_models.contains(&(g.model as usize)) {
+    for (model, mat, flags, mut mesh) in face_meshes(&art, &root) {
+        if level.hidden_models.contains(&(model as usize)) {
             continue;
         }
         // Goo is drawn as the level's goo.
         if mat == "nature/hazard_liquid" {
             continue;
         }
-        let mut mesh = g.mesh;
         if mesh.generate_tangents().is_err() {
             warn!("{name}: no tangents for {mat}");
         }
+        let shared = match cache.0.get(&mat) {
+            Some(h) => h.clone(),
+            None => {
+                let h = material(&mat, flags, &extracted, &mut images, &mut materials, &m, &mut lamps);
+                cache.0.insert(mat.clone(), h.clone());
+                h
+            }
+        };
         // A texture the logic switches between frames (a door's state panel: X, then the check)
         // on a brush of its own: its own material, so each panel follows its own door.
-        let mut handle = handles[g.material].clone();
+        let mut handle = shared.clone();
         let mut switched = None;
-        if g.model != 0 {
+        if model != 0 {
             let frames = frames.entry(mat.clone()).or_insert_with(|| (1..64).map_while(|k| extracted.texture(&format!("map/{mat}_frame{k}"))).map(|t| images.add(t)).collect::<Vec<_>>()).clone();
             if let Some(own) = (!frames.is_empty()).then(|| materials.get(&handle).cloned()).flatten() {
                 let first = own.base_color_texture.clone();
                 handle = materials.add(own);
-                if lamps.0.contains(&handles[g.material].id()) {
+                same_glow(&shared, &handle);
+                if lamps.0.contains(&shared.id()) {
                     lamps.0.insert(handle.id());
                 }
-                switched = first.map(|f| TextureFrames { key: FrameKey::Model(g.model as usize), frames: std::iter::once(f).chain(frames).collect(), shown: 0 });
+                switched = first.map(|f| TextureFrames { key: FrameKey::Model(model as usize), frames: std::iter::once(f).chain(frames).collect(), shown: 0 });
             }
         }
         let mut e = commands.spawn((ChamberGeom, Mesh3d(meshes.add(mesh)), MeshMaterial3d(handle), Transform::default()));
@@ -394,172 +424,146 @@ pub fn sync(
         if flags & (1 | 8) != 0 || mat.starts_with("glass/") {
             e.insert(NotShadowCaster);
         }
-        if g.model != 0 {
-            e.insert(MapModel(g.model as usize));
+        if model != 0 {
+            e.insert(MapModel(model as usize));
         }
     }
-    // Its props: models where the map puts them, riding with what they're parented to.
-    let text = std::fs::read_to_string(root.join("maps").join(format!("{name}.props"))).unwrap_or_default();
-    let animated: HashMap<&str, usize> = game
-        .sim
-        .io
-        .iter()
-        .flat_map(|io| io.ents.iter().enumerate())
-        .filter_map(|(i, e)| (e.kind == aperture::io::Kind::Animated).then_some((e.name.as_str(), i)))
-        .collect();
-    let movers: HashMap<&str, usize> = game
+    // Its props: models where the map puts them, riding with what they're parented to. (The
+    // logic's names, lower case.)
+    let of_kind = |kind: aperture::io::Kind| -> HashMap<String, usize> {
+        game.sim.io.iter().flat_map(|io| io.ents.iter().enumerate()).filter(|(_, e)| e.kind == kind && !e.name.is_empty()).map(|(i, e)| (e.name.to_ascii_lowercase(), i)).collect()
+    };
+    let animated = of_kind(aperture::io::Kind::Animated);
+    let movers: HashMap<String, usize> = game
         .sim
         .io
         .iter()
         .flat_map(|io| io.ents.iter())
         .filter_map(|e| match e.kind {
-            aperture::io::Kind::Mover { index, .. } if !e.name.is_empty() => Some((e.name.as_str(), index)),
+            aperture::io::Kind::Mover { index, .. } if !e.name.is_empty() => Some((e.name.to_ascii_lowercase(), index)),
             _ => None,
         })
         .collect();
-    let floats = |v: &str| -> Vec3 {
-        let f: Vec<f32> = v.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-        Vec3::new(f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(0.0), f.get(2).copied().unwrap_or(0.0))
-    };
+    let sprites = of_kind(aperture::io::Kind::Sprite);
     let mut cabin_lamp: Option<(Handle<Mesh>, Handle<StandardMaterial>)> = None;
     let mut sprite_quad: Option<Handle<Mesh>> = None;
     let (mut grill_mats, mut grill_seed) = (crate::grill_fx::Mats::default(), 1u32);
-    let sprites: HashMap<&str, usize> = game
-        .sim
-        .io
-        .iter()
-        .flat_map(|io| io.ents.iter().enumerate())
-        .filter_map(|(i, e)| (e.kind == aperture::io::Kind::Sprite).then_some((e.name.as_str(), i)))
-        .collect();
-    for line in text.lines() {
-        let f: Vec<&str> = line.split('|').collect();
-        if f.len() < 6 {
-            continue;
-        }
-        // An emancipation grill's particles.
-        if f[0] == "particles" {
-            if let Some(kind) = crate::grill_fx::Kind::of(f[1]) {
-                let at = aperture::source::to_ours(floats(f[2]));
-                let seed = grill_seed;
-                grill_seed += 1;
-                crate::grill_fx::spawn(&mut commands, &mut meshes, &mut materials, &mut images, &extracted, &mut grill_mats, &game.sim, kind, at, source_rotation(floats(f[3])), seed);
-            }
-            continue;
-        }
-        // A glow sprite: a quad facing the camera, glowing additively in its colour.
-        if f[0] == "sprite" {
-            let v: Vec<f32> = f[3].split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            let Some(tex) = extracted.texture(&format!("map/{}", f[1])) else { continue };
-            let (size, rgb, alpha) = (v.first().copied().unwrap_or(64.0) * 0.0254, Vec3::new(v.get(1).copied().unwrap_or(255.0), v.get(2).copied().unwrap_or(255.0), v.get(3).copied().unwrap_or(255.0)) / 255.0, v.get(4).copied().unwrap_or(255.0) / 255.0);
-            let mover = movers.get(f[4]).copied();
-            let at = aperture::source::to_ours(floats(f[2])) + mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
-            let mat = materials.add(StandardMaterial {
-                base_color: Color::linear_rgb(rgb.x * alpha * SPRITE_GLOW, rgb.y * alpha * SPRITE_GLOW, rgb.z * alpha * SPRITE_GLOW),
-                base_color_texture: Some(images.add(tex)),
-                alpha_mode: AlphaMode::Add,
-                unlit: true,
-                double_sided: true,
-                cull_mode: None,
-                ..default()
-            });
-            let ent = sprites.get(f[5]).map(|&e| (e, Handle::default()));
-            commands.spawn((
-                ChamberGeom,
-                MapProp { base: at, turn: Quat::IDENTITY, mover, animated: ent, model: f[1].to_string(), skin: 0 },
-                MapSprite,
-                Mesh3d(sprite_quad.get_or_insert_with(|| meshes.add(Rectangle::new(1.0, 1.0))).clone()),
-                MeshMaterial3d(mat),
-                Transform::from_translation(at).with_scale(Vec3::splat(size)),
-                Visibility::default(),
-                NotShadowCaster,
-            ));
-            continue;
-        }
-        let Some(path) = extracted.model(f[1]) else { continue };
-        let mover = movers.get(f[4]).copied();
+    for p in &art.props {
+        let mover = movers.get(&p.parent).copied();
         let shift = mover.and_then(|m| game.sim.movers.get(m)).map_or(Vec3::ZERO, |m| m.def.shift);
-        let at = aperture::source::to_ours(floats(f[2])) + shift;
-        let animated = animated.get(f[5]).map(|&e| (e, assets.load(path.clone())));
-        let (model, skin) = match f[1].rsplit_once("_skin").and_then(|(m, k)| Some((m, k.parse::<u32>().ok()?))) {
-            Some((m, k)) => (m.to_string(), k),
-            None => (f[1].to_string(), 0),
-        };
-        let turn = source_rotation(floats(f[3]));
-        // A caught pellet in its catcher (Portal's `combineball`, sprite cards): drawn as the
-        // game's own pellets are, a glowing ball, shown when the logic enables it.
-        if f[1].ends_with("effects/combineball") {
-            commands
-                .spawn((
-                    ChamberGeom,
-                    MapProp { base: at, turn, mover, animated: animated.clone(), model: model.clone(), skin },
-                    Visibility::default(),
-                    Transform::from_translation(at).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS)),
-                    PointLight { intensity: 40_000.0, range: 7.0, radius: 0.15, color: Color::srgb(1.0, 0.42, 0.05), shadow_maps_enabled: false, ..default() },
-                ))
-                .with_children(|c| {
-                    c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet.clone()), Transform::default(), NotShadowCaster));
-                    c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.42)), NotShadowCaster));
+        match &p.kind {
+            // An emancipation grill's particles.
+            aperture::art::PropKind::Particles => {
+                if let Some(kind) = crate::grill_fx::Kind::of(&p.model) {
+                    let seed = grill_seed;
+                    grill_seed += 1;
+                    crate::grill_fx::spawn(&mut commands, &mut meshes, &mut materials, &mut images, &extracted, &mut grill_mats, &game.sim, kind, p.at, p.turn, seed);
+                }
+            }
+            // A glow sprite: a quad facing the camera, glowing additively in its colour.
+            aperture::art::PropKind::Sprite { size, color, alpha } => {
+                let Some(tex) = extracted.texture(&format!("map/{}", p.model)) else { continue };
+                let at = p.at + shift;
+                let k = alpha * SPRITE_GLOW;
+                let mat = materials.add(StandardMaterial {
+                    base_color: Color::linear_rgb(color.x * k, color.y * k, color.z * k),
+                    base_color_texture: Some(images.add(tex)),
+                    alpha_mode: AlphaMode::Add,
+                    unlit: true,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
                 });
-            continue;
-        }
-        // A loose prop on one of the map's cubes stands on ours.
-        let perched = (f[0] == "physics").then(|| aperture::source::Perched::find(&game.sim, at, f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254))).flatten();
-        let at = perched.map_or(at, |p| p.at);
-        let mut spawned = commands.spawn((
-            ChamberGeom,
-            MapProp { base: at, turn, mover, animated, model, skin },
-            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
-            Visibility::default(),
-            Transform::from_translation(at).with_rotation(turn),
-        ));
-        if let Some(p) = perched {
-            spawned.insert(Perch(p));
-        }
-        // The shaft lights stay where they are, so the car goes dark as it leaves them, and
-        // its doors shut them out. A light on the car rides with it (`move_models` moves this
-        // prop): a lamp under its roof (the model's origin is its floor's middle, its roof 3.6 m
-        // up). Ray tracing lights by what glows, so the lamp glows; the ordinary path has the
-        // point light too.
-        if f[1].contains("round_elevator_body") {
-            let lamp = cabin_lamp.get_or_insert_with(|| {
-                let warm = LinearRgba::rgb(1.0, 0.93, 0.82) * CABIN_GLOW;
-                (meshes.add(Cylinder::new(0.42, 0.03)), materials.add(StandardMaterial { base_color: Color::WHITE, emissive: warm, ..default() }))
-            });
-            let lamp = lamp.clone();
-            spawned.with_children(|c| {
-                c.spawn((
-                    PointLight { intensity: 80_000.0, color: Color::srgb(1.0, 0.95, 0.88), range: 4.5, radius: 0.0, shadow_maps_enabled: false, ..default() },
-                    Transform::from_xyz(0.0, 1.45, 0.0),
+                let ent = sprites.get(&p.name).map(|&e| (e, Handle::default()));
+                commands.spawn((
+                    ChamberGeom,
+                    MapProp { base: at, turn: Quat::IDENTITY, mover, animated: ent, model: p.model.clone(), skin: 0 },
+                    MapSprite,
+                    Mesh3d(sprite_quad.get_or_insert_with(|| meshes.add(Rectangle::new(1.0, 1.0))).clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(at).with_scale(Vec3::splat(*size)),
+                    Visibility::default(),
+                    NotShadowCaster,
                 ));
-                c.spawn((Mesh3d(lamp.0), MeshMaterial3d(lamp.1), Transform::from_xyz(0.0, 3.3, 0.0), NotShadowCaster));
-            });
+            }
+            kind => {
+                let Some(path) = extracted.model(&p.model) else { continue };
+                let at = p.at + shift;
+                let animated = animated.get(&p.name).map(|&e| (e, assets.load(path.clone())));
+                let (model, skin) = match p.model.rsplit_once("_skin").and_then(|(m, k)| Some((m, k.parse::<u32>().ok()?))) {
+                    Some((m, k)) => (m.to_string(), k),
+                    None => (p.model.clone(), 0),
+                };
+                let turn = p.turn;
+                // A caught pellet in its catcher (Portal's `combineball`, sprite cards): drawn as
+                // the game's own pellets are, a glowing ball, shown when the logic enables it.
+                if p.model.ends_with("effects/combineball") {
+                    commands
+                        .spawn((
+                            ChamberGeom,
+                            MapProp { base: at, turn, mover, animated: animated.clone(), model: model.clone(), skin },
+                            Visibility::default(),
+                            Transform::from_translation(at).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS)),
+                            PointLight { intensity: 40_000.0, range: 7.0, radius: 0.15, color: Color::srgb(1.0, 0.42, 0.05), shadow_maps_enabled: false, ..default() },
+                        ))
+                        .with_children(|c| {
+                            c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet.clone()), Transform::default(), NotShadowCaster));
+                            c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.42)), NotShadowCaster));
+                        });
+                    continue;
+                }
+                // A loose prop on one of the map's cubes stands on ours.
+                let perched = match kind {
+                    aperture::art::PropKind::Physics { bottom } => aperture::source::Perched::find(&game.sim, at, *bottom),
+                    _ => None,
+                };
+                let at = perched.map_or(at, |q| q.at);
+                let mut spawned = commands.spawn((
+                    ChamberGeom,
+                    MapProp { base: at, turn, mover, animated, model, skin },
+                    WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
+                    Visibility::default(),
+                    Transform::from_translation(at).with_rotation(turn),
+                ));
+                if let Some(q) = perched {
+                    spawned.insert(Perch(q));
+                }
+                // The shaft lights stay where they are, so the car goes dark as it leaves them,
+                // and its doors shut them out. A light on the car rides with it (`move_models`
+                // moves this prop): a lamp under its roof (the model's origin is its floor's
+                // middle, its roof 3.6 m up). Ray tracing lights by what glows, so the lamp
+                // glows; the ordinary path has the point light too.
+                if p.model.contains("round_elevator_body") {
+                    let lamp = cabin_lamp.get_or_insert_with(|| {
+                        let warm = LinearRgba::rgb(1.0, 0.93, 0.82) * CABIN_GLOW;
+                        (meshes.add(Cylinder::new(0.42, 0.03)), materials.add(StandardMaterial { base_color: Color::WHITE, emissive: warm, ..default() }))
+                    });
+                    let lamp = lamp.clone();
+                    spawned.with_children(|c| {
+                        c.spawn((
+                            PointLight { intensity: 80_000.0, color: Color::srgb(1.0, 0.95, 0.88), range: 4.5, radius: 0.0, shadow_maps_enabled: false, ..default() },
+                            Transform::from_xyz(0.0, 1.45, 0.0),
+                        ));
+                        c.spawn((Mesh3d(lamp.0), MeshMaterial3d(lamp.1), Transform::from_xyz(0.0, 3.3, 0.0), NotShadowCaster));
+                    });
+                }
+            }
         }
     }
     // Its cables, hung as Portal hangs them (what hangs from them: Chamber 16's cage lights).
-    let ents = std::fs::read_to_string(root.join("maps").join(format!("{name}.ents"))).unwrap_or_default();
-    let ropes = aperture::rope::hang(&aperture::source::parse_entities(&ents));
-    if !ropes.is_empty() {
+    if !art.ropes.is_empty() {
         let cable = materials.add(StandardMaterial { base_color: Color::srgb(0.03, 0.03, 0.03), perceptual_roughness: 0.6, ..default() });
-        commands.spawn((ChamberGeom, Mesh3d(meshes.add(cable_mesh(&ropes))), MeshMaterial3d(cable), Transform::default(), NotShadowCaster));
+        commands.spawn((ChamberGeom, Mesh3d(meshes.add(cable_mesh(&art.ropes))), MeshMaterial3d(cable), Transform::default(), NotShadowCaster));
     }
     // Its overlays (decals: indicator light strips, signs, stains), each a quad just off its
     // surface. A named one has its own material, so its strip follows its own door.
-    let text = std::fs::read_to_string(root.join("maps").join(format!("{name}.overlays"))).unwrap_or_default();
     let mut overlay_mats: HashMap<String, Handle<StandardMaterial>> = HashMap::new();
-    for line in text.lines() {
-        let f: Vec<&str> = line.split('|').collect();
-        if f.len() < 5 {
-            continue;
-        }
-        let (mat, flags, target) = (f[0], f[1].parse::<u8>().unwrap_or(0), f[2].to_ascii_lowercase());
-        let v: Vec<f32> = f[3].split_whitespace().filter_map(|x| x.parse().ok()).collect();
-        let n = floats(f[4]);
-        if v.len() < 20 || n == Vec3::ZERO {
-            continue;
-        }
+    for o in &art.overlays {
+        let (mat, target, n) = (o.mat.as_str(), o.name.clone(), o.normal);
+        let flags = o.flags.or_else(|| material_flags().get(mat).copied()).unwrap_or(32 | 1);
         let lift = n * OVERLAY_LIFT;
-        let pos: Vec<[f32; 3]> = (0..4).map(|k| (Vec3::new(v[k * 5], v[k * 5 + 1], v[k * 5 + 2]) + lift).to_array()).collect();
-        let uv: Vec<[f32; 2]> = (0..4).map(|k| [v[k * 5 + 3], v[k * 5 + 4]]).collect();
+        let pos: Vec<[f32; 3]> = o.corners.iter().map(|(c, _)| (*c + lift).to_array()).collect();
+        let uv: Vec<[f32; 2]> = o.corners.iter().map(|(_, uv)| *uv).collect();
         // (Wound to face the way it faces.)
         let (a, b, c) = (Vec3::from(pos[0]), Vec3::from(pos[1]), Vec3::from(pos[2]));
         let idx = if (b - a).cross(c - a).dot(n) >= 0.0 { vec![0, 1, 2, 0, 2, 3] } else { vec![0, 2, 1, 0, 3, 2] };
@@ -578,7 +582,9 @@ pub fn sync(
                 // A decal: blended over what it's on (or darkening it: DecalModulate), in front.
                 own.alpha_mode = if flags & 64 != 0 { AlphaMode::Multiply } else if flags & 1 != 0 { AlphaMode::Blend } else if flags & 2 != 0 { AlphaMode::Mask(0.5) } else { own.alpha_mode };
                 own.depth_bias = 1.0;
-                materials.add(own)
+                let h = materials.add(own);
+                same_glow(&base, &h);
+                h
             })
             .clone();
         let frames: Vec<Handle<Image>> = if target.is_empty() { Vec::new() } else { (1..64).map_while(|k| extracted.texture(&format!("map/{mat}_frame{k}"))).map(|t| images.add(t)).collect() };
