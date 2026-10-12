@@ -157,7 +157,7 @@ pub static CATALOG: &[Entry] = &[
     e("Bounce gel", Category::Gel, Place::Flat, Vec3::new(2.0, 0.02, 2.0), || Kind::Painted { paint: Paint::Bounce, normal: Vec3::Y }, [40, 120, 255], "⬛"),
     e("Speed gel", Category::Gel, Place::Flat, Vec3::new(2.0, 0.02, 6.0), || Kind::Painted { paint: Paint::Speed, normal: Vec3::Y }, [255, 140, 30], "⬛"),
     e("Portal gel", Category::Gel, Place::Flat, Vec3::new(2.0, 0.02, 3.0), || Kind::Painted { paint: Paint::Portal, normal: Vec3::Y }, [240, 240, 240], "⬛"),
-    e("Spawn", Category::Gameplay, Place::Floor, P, || Kind::Spawn, [80, 220, 120], "🏃"),
+    e("Spawn", Category::Gameplay, Place::Floor, P, || Kind::Spawn { gravity: None }, [80, 220, 120], "🏃"),
     e("Checkpoint", Category::Gameplay, Place::Box, Vec3::new(4.0, 3.0, 4.0), || Kind::Checkpoint { name: "Checkpoint".into(), spawn: Vec3::new(0.0, -1.5, 0.0) }, [80, 200, 220], "⚑"),
     e("Exit", Category::Gameplay, Place::Box, Vec3::new(3.0, 3.0, 3.0), || Kind::Exit, [80, 230, 90], "🏁"),
     e("Hint", Category::Gameplay, Place::Box, Vec3::new(4.0, 3.0, 4.0), || Kind::Hint { text: "A hint".into() }, [180, 120, 230], "?"),

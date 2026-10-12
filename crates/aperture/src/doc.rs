@@ -138,8 +138,12 @@ pub enum Kind {
     Decor { mat: Mat },
     /// Box: removed from every block (doorways, windows, pits).
     Cut,
-    /// Where Faith starts (the floor under her), facing `yaw`.
-    Spawn,
+    /// Where Faith starts (the floor under her), facing `yaw`; and the level's gravity for
+    /// her (m/s², none: the game's, Portal's 15.2).
+    Spawn {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gravity: Option<f32>,
+    },
     /// Box: walking in makes it the respawn point, `spawn` from its centre, facing `yaw`.
     Checkpoint { name: String, spawn: Vec3 },
     /// Box: walking in finishes the chamber.
@@ -288,7 +292,7 @@ impl Kind {
         match self {
             Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } | Kind::SpotLight { .. } | Kind::Sun { .. } => Some(Turns::Aim),
             Kind::MeProp { .. } | Kind::Model { .. } | Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => Some(Turns::Free),
-            Kind::Spawn | Kind::Turret | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(Turns::Yaw),
+            Kind::Spawn { .. } | Kind::Turret | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(Turns::Yaw),
             _ => None,
         }
     }
@@ -299,7 +303,7 @@ impl Kind {
             Kind::Block { mat } => format!("{mat:?} block"),
             Kind::Decor { mat } => format!("{mat:?} decor"),
             Kind::Cut => "Cut".into(),
-            Kind::Spawn => "Spawn".into(),
+            Kind::Spawn { .. } => "Spawn".into(),
             Kind::Checkpoint { name, .. } => format!("Checkpoint '{name}'"),
             Kind::Exit => "Exit".into(),
             Kind::Hint { .. } => "Hint".into(),
@@ -635,7 +639,7 @@ impl Object {
         let up = |w: f32, h: f32| Aabb::from_center_size(self.at + Vec3::Y * (h * 0.5), Vec3::new(w, h, w));
         let around = |r: f32| Aabb::from_center_size(self.at, Vec3::splat(r * 2.0));
         match &self.kind {
-            Kind::Spawn => up(0.6, 1.8),
+            Kind::Spawn { .. } => up(0.6, 1.8),
             Kind::FloorButton { .. } => up(1.9, 0.15),
             Kind::Pedestal { .. } => up(0.5, 1.1),
             Kind::FaithPlate { .. } => up(1.6, 0.2),
@@ -717,7 +721,7 @@ impl LevelDoc {
                 d.objects.push(Object::new(Kind::Lamp, Vec3::new(x, h - 0.05, z)));
             }
         }
-        d.objects.push(Object::new(Kind::Spawn, Vec3::new(0.0, 0.0, -2.0)));
+        d.objects.push(Object::new(Kind::Spawn { gravity: None }, Vec3::new(0.0, 0.0, -2.0)));
         d
     }
 
@@ -727,7 +731,10 @@ impl LevelDoc {
     }
 
     pub fn from_ron(text: &str) -> Result<LevelDoc, String> {
-        ron::from_str(text).map_err(|e| e.to_string())
+        // (A file from before the spawn could set the gravity has a plain `Spawn`: it's
+        // `Spawn()` now.)
+        let text = if text.contains("kind: Spawn,") || text.contains("kind: Spawn)") { std::borrow::Cow::Owned(text.replace("kind: Spawn,", "kind: Spawn(),").replace("kind: Spawn)", "kind: Spawn())")) } else { std::borrow::Cow::Borrowed(text) };
+        ron::from_str(&text).map_err(|e| e.to_string())
     }
 
     /// Make it into a level. Its words live as long as the program (a level's are `'static`):
@@ -780,7 +787,10 @@ impl LevelDoc {
                 Kind::Decor { mat } => {
                     l.decor(*mat, a, b);
                 }
-                Kind::Spawn => {
+                Kind::Spawn { gravity } => {
+                    if spawn.is_none() {
+                        l.gravity = gravity.filter(|g| *g > 0.0);
+                    }
                     spawn.get_or_insert((at, o.yaw));
                 }
                 Kind::Checkpoint { name, spawn } => {
@@ -1034,7 +1044,7 @@ impl LevelDoc {
         }
         for (i, cp) in l.checkpoints.iter().enumerate() {
             let mut o = if i == 0 {
-                Object::new(Kind::Spawn, cp.spawn)
+                Object::new(Kind::Spawn { gravity: None }, cp.spawn)
             } else {
                 boxed(Kind::Checkpoint { name: cp.name.to_string(), spawn: cp.spawn - cp.region.center() }, &cp.region)
             };
@@ -1149,6 +1159,28 @@ impl LevelDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spawn can set the level's gravity for her; one that doesn't (an older file's plain
+    /// `Spawn`) leaves the game's.
+    #[test]
+    fn a_spawn_sets_the_gravity() {
+        let old = LevelDoc::from_ron("(name: \"T\", objects: [(kind: Spawn, at: (0.0, 0.0, 0.0))])").expect("a plain Spawn reads");
+        assert_eq!(old.objects[0].kind, Kind::Spawn { gravity: None });
+        assert_eq!(old.build().gravity, None);
+        let mut d = LevelDoc::starter("T");
+        for o in &mut d.objects {
+            if let Kind::Spawn { gravity } = &mut o.kind {
+                *gravity = Some(9.81);
+            }
+        }
+        let back = LevelDoc::from_ron(&d.to_ron()).unwrap();
+        assert_eq!(back, d);
+        let mut sim = crate::Sim::new(back.build());
+        let mut c = faith_move::Controller::new(crate::tuning(5.3, 15.0), Vec3::ZERO, 0.0);
+        assert_eq!(c.tuning.gravity, crate::FAITH_GRAVITY);
+        sim.step_player(&mut c, &faith_move::Input::default(), 1.0 / 60.0);
+        assert_eq!(c.tuning.gravity, 9.81);
+    }
 
     /// A level with a Portal brush in it is built as a map, but its own pieces are still its
     /// own (drawn as the game's): only the map's movers count as the map's.

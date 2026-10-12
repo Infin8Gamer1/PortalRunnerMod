@@ -816,10 +816,20 @@ fn portals_maps_stand_her_up() {
             bad.push(format!("{name}: after 20 s waiting, {:?} at {} (died: {})", c.state, c.feet, ev.contains(&SimEvent::PlayerDied)));
             continue;
         }
+        // Walking ahead she doesn't fall through the floor. (Into the map's own goo is the
+        // map: escape_02 starts beside it. The walk ends there.)
         let stood_at = c.feet;
-        run(&mut sim, &mut c, 3.0, |_, _| forward());
-        if c.feet.y < stood_at.y - 2.0 {
-            bad.push(format!("{name}: walking from {stood_at} fell to {}", c.feet));
+        let mut lowest = stood_at;
+        for _ in 0..180 {
+            if run(&mut sim, &mut c, DT * 0.5, |_, _| forward()).contains(&SimEvent::PlayerDied) {
+                break;
+            }
+            if c.feet.y < lowest.y {
+                lowest = c.feet;
+            }
+        }
+        if lowest.y < stood_at.y - 2.0 && !sim.goo.iter().any(|g| lowest.x > g.min.x && lowest.x < g.max.x && lowest.z > g.min.z && lowest.z < g.max.z) {
+            bad.push(format!("{name}: walking from {stood_at} fell to {lowest}"));
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
@@ -2060,3 +2070,4 @@ fn a_turned_physics_prop_is_hit_where_it_stands() {
     let end = sim.raycast(at + Vec3::new(0.0, 0.0, 2.0), Vec3::NEG_Z, 5.0, crate::sim::Mask::SHOT).expect("hit from the end");
     assert!((end.t - 1.4).abs() < 0.02, "{}", end.t);
 }
+

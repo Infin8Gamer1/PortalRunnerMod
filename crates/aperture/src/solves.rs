@@ -493,8 +493,9 @@ impl Play {
                 // Out of a floor portal: once she's down beside it, clear of it. Out of a wall
                 // (or ceiling) one: once she's clear of its mouth.
                 let done = if q.normal.y > 0.5 {
+                    // (Or up on a step beside it: not in it.)
                     let l = q.to_local(feet);
-                    self.c.state == State::Ground && (l.x.abs() > q.half.x + 0.4 || l.y.abs() > q.half.y + 0.4)
+                    self.c.state == State::Ground && (l.x.abs() > q.half.x + 0.4 || l.y.abs() > q.half.y + 0.4 || (feet.y > q.center.y + 0.1 && flat_q > q.half.x))
                 } else {
                     self.sim.player_env.is_none() && (feet - q.center).dot(q.normal) > out
                 };
@@ -1509,6 +1510,8 @@ fn solve_testchmb_a_08() {
     let low = p.sim.portals[0].unwrap().center;
     p.enter_now(PortalColor::Blue, low, Some(beyond));
     eprintln!("past the exit doors at {}", p.c.feet);
+    // (Off the doors' sill, should she come down on it, to the floor beside the portal.)
+    p.nudge(Vec3::new(1.5, 3.25, -14.0));
     p.assert_alive("in Chamber 13");
     p.ride_exit("testchmb_a_09");
 }
@@ -2098,3 +2101,34 @@ on_the_copy!(
     chamber_16_props_sit_on_their_cube => copy_chamber_16_props_sit_on_their_cube,
     chamber_15_grills_reach_their_emitters => copy_chamber_15_grills_reach_their_emitters,
 );
+
+/// Chamber 15's section 3 fling (#57): over the glass (x 23) from the room by the lift, as
+/// Portal has it. Blue high on the east wall, orange on the floor: into orange, out of blue,
+/// and orange again where she'll come down, facing the way she's flying (as Portal turns a
+/// floor portal shot while she's in the air): the second time she comes out rising, fast,
+/// and over the glass.
+#[test]
+fn chamber_15_section_3_fling_clears_the_glass() {
+    let Some(mut p) = Play::load("testchmb_a_10") else { return };
+    let half = p.sim.portal_half();
+    let floor = |x: f32| Some(crate::Portal::sized(Vec3::new(x, -6.5, 8.87), Vec3::Y, Vec3::NEG_X, half));
+    p.sim.set_portal(PortalColor::Blue, Some(crate::Portal::sized(Vec3::new(42.27, 3.87, 8.87), Vec3::NEG_X, Vec3::Y, half)));
+    p.sim.set_portal(PortalColor::Orange, floor(39.0));
+    // (Dropping in from the ledge over it.)
+    p.c.feet = Vec3::new(39.0, -3.0, 8.87);
+    p.c.state = State::Air;
+    let g = p.sim.level.gravity.unwrap_or(crate::FAITH_GRAVITY);
+    let (mut high, mut moved) = (false, false);
+    for _ in 0..600 {
+        p.step(&Input::default());
+        high |= p.c.feet.y > 0.0;
+        if high && !moved && p.c.vel.y < 0.0 && p.sim.player_env.is_none() {
+            let (v, y) = (p.c.vel, p.c.feet.y + 6.5);
+            let t = (v.y + (v.y * v.y + 2.0 * g * y).sqrt()) / g;
+            p.sim.set_portal(PortalColor::Orange, floor(p.c.feet.x + v.x * t));
+            moved = true;
+        }
+    }
+    assert_eq!(p.deaths, 0);
+    assert!(p.c.state == State::Ground && p.c.feet.x < 22.0, "short of the glass: at {}", p.c.feet);
+}

@@ -411,6 +411,9 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                     l.spawn(at.to_array(), angles(e, "angles").1);
                     spawned = true;
                 }
+                // (Ours, not Source's: the gravity Faith falls under here, in units/s² as
+                // Source's sv_gravity is: Portal's is 600.)
+                l.gravity = key(e, "gravity").and_then(|g| g.trim().parse::<f32>().ok()).filter(|g| *g > 0.0).map(|g| g * 0.0254);
             }
             _ if is_metal_box(e) && !templated.contains(&name.to_ascii_lowercase()) => {
                 if let Some(at) = origin(e) {
