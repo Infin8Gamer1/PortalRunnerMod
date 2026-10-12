@@ -502,6 +502,9 @@ pub fn sync(
                 });
             continue;
         }
+        // A loose prop on one of the map's cubes stands on ours.
+        let perched = (f[0] == "physics").then(|| aperture::source::Perched::find(&game.sim, at, f.get(6).and_then(|b| b.trim().parse::<f32>().ok()).map(|b| b * 0.0254))).flatten();
+        let at = perched.map_or(at, |p| p.at);
         let mut spawned = commands.spawn((
             ChamberGeom,
             MapProp { base: at, turn, mover, animated, model, skin },
@@ -509,6 +512,9 @@ pub fn sync(
             Visibility::default(),
             Transform::from_translation(at).with_rotation(turn),
         ));
+        if let Some(p) = perched {
+            spawned.insert(Perch(p));
+        }
         // The shaft lights stay where they are, so the car goes dark as it leaves them, and
         // its doors shut them out. A light on the car rides with it (`move_models` moves this
         // prop): a lamp under its roof (the model's origin is its floor's middle, its roof 3.6 m
@@ -651,6 +657,21 @@ pub fn move_models(game: Res<Game>, mut q: Query<(&MapModel, &mut Transform, &mu
         let want = if mv.present { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
+        }
+    }
+}
+
+/// A loose prop standing on one of the map's cubes (see [`aperture::source::Perched`]).
+#[derive(Component)]
+pub struct Perch(aperture::source::Perched);
+
+/// Loose props ride the cubes they're on, and drop off them.
+pub fn perch_props(game: Res<Game>, time: Res<Time>, mut props: Query<(&mut Perch, &mut Transform)>) {
+    let dt = time.delta_secs().min(0.1);
+    for (mut p, mut tf) in &mut props {
+        p.0.step(&game.sim, dt);
+        if tf.translation != p.0.at {
+            tf.translation = p.0.at;
         }
     }
 }

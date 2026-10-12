@@ -200,7 +200,9 @@ fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) ->
 pub type UsedModel = (String, i32, Vec<String>);
 
 /// Write a map's props out (`maps/<name>.props`, a line each: `kind|model file|x y z|pitch
-/// yaw roll|parent|name`, Source space), and say which models they use.
+/// yaw roll|parent|name`, Source space; a physics prop's line goes on `|bottom`, how far its
+/// lowest point is below its origin as it's turned, so the game can stand it on what's under
+/// it), and say which models they use.
 fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<UsedModel>, String> {
     // Props the logic puts on an attachment of the prop they're parented to (a catcher's ball
     // on `ball_attachment`): they're written where that is (#52).
@@ -260,7 +262,8 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
         if OWN_MODELS.contains(&model.as_str()) || model.contains("portal_cleanser") || !model.ends_with(".mdl") {
             return;
         }
-        text.push_str(&format!("{kind}|{}|{} {} {}|{} {} {}|{parent}|{name}\n", prop_glb(&model, skin), o.x, o.y, o.z, a.x, a.y, a.z));
+        let bottom = if kind == "physics" { read(&model).and_then(|m| hull_bottom(&m, a)).map(|b| format!("|{b}")).unwrap_or_default() } else { String::new() };
+        text.push_str(&format!("{kind}|{}|{} {} {}|{} {} {}|{parent}|{name}{bottom}\n", prop_glb(&model, skin), o.x, o.y, o.z, a.x, a.y, a.z));
         let mut its: Vec<String> = anims.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default();
         its.extend(default_anim.map(|d| d.to_ascii_lowercase()));
         let switched = if name.is_empty() { Vec::new() } else { skins.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default() };
@@ -345,6 +348,19 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
     text.push_str(&sprites);
     std::fs::write(path, text).map_err(|e| e.to_string())?;
     Ok(used)
+}
+
+/// How far a model's lowest point is below its origin, turned by Source's angles (pitch yaw
+/// roll): the corners of its hull (the MDL header's `hull_min`/`hull_max`).
+fn hull_bottom(mdl: &[u8], a: Vec3) -> Option<f32> {
+    let f = |o: usize| -> Option<f32> { Some(f32::from_le_bytes(mdl.get(o..o + 4)?.try_into().ok()?)) };
+    let (lo, hi) = (Vec3::new(f(104)?, f(108)?, f(112)?), Vec3::new(f(116)?, f(120)?, f(124)?));
+    if lo == hi {
+        return None;
+    }
+    let turn = glam::Quat::from_rotation_z(a.y.to_radians()) * glam::Quat::from_rotation_y(a.x.to_radians()) * glam::Quat::from_rotation_x(a.z.to_radians());
+    let low = (0..8).map(|k| (turn * Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z })).z).fold(f32::MAX, f32::min);
+    Some(-low)
 }
 
 /// Write a map out (see the module notes). Returns (groups, boxes, materials) written, and

@@ -1973,3 +1973,50 @@ fn chamber_15_rail_carts_run() {
     }
     assert!(runs >= 2, "the maker's cart ran {runs} times in 70 s");
 }
+
+/// Chamber 16's hideout panel (testchmb_a_11): the stacked cubes keep it shut, resting against
+/// it, not in it, until they're moved (#68).
+#[test]
+fn chamber_16_cubes_hold_the_hideout_panel() {
+    let Some(mut p) = Play::load("testchmb_a_11") else { return };
+    p.wait(3.0);
+    let panel = p.mover("door_spaz_pannel1");
+    assert!(p.sim.movers[panel].node == 0 && p.sim.movers[panel].goal.is_none(), "the panel opened by itself");
+    let top = p.sim.props.iter().position(|c| c.alive && (c.pos.x + 17.98).abs() < 0.1 && c.pos.y > 1.0).expect("no cube on top of the stack");
+    // (The panel's face is at z 8.7376.)
+    assert!(p.sim.props[top].pos.z - crate::sim::CUBE_HALF > 8.73, "the top cube is in the panel: {}", p.sim.props[top].pos);
+    // Taken away: the panel spazzes open.
+    p.sim.props[top].alive = false;
+    p.wait_for(3.0, "the panel to open", |p| p.sim.movers[panel].node == 1);
+}
+
+/// Chamber 16's clock radio, mug and tools stand on a cube (testchmb_a_11): on ours, smaller
+/// than Portal's, they sit on its top, not over it, and drop to the floor when it's taken (#72).
+#[test]
+fn chamber_16_props_sit_on_their_cube() {
+    let Some(mut p) = Play::load("testchmb_a_11") else { return };
+    // (The radio, mug and wrench: where the map has them, and how far their lowest points are
+    // below that, as `portal_extract` writes them.)
+    let on = [(Vec3::new(239.0, -104.0, 44.0), 0.339), (Vec3::new(248.0, -77.0, 45.356), 3.175), (Vec3::new(254.779, -97.016, 43.201), 0.249)];
+    let mut perched: Vec<_> = on.iter().map(|&(at, bottom)| crate::source::Perched::find(&p.sim, crate::source::to_ours(at), Some(bottom * 0.0254)).expect("not on a cube")).collect();
+    let cube = perched[0].cube.unwrap();
+    assert!(perched.iter().all(|q| q.cube == Some(cube)), "not all on the one cube");
+    let foot = |q: &crate::source::Perched, bottom: f32| q.at.y - bottom * 0.0254;
+    for _ in 0..180 {
+        p.wait(1.0 / 60.0);
+        perched.iter_mut().for_each(|q| q.step(&p.sim, 1.0 / 60.0));
+    }
+    let i = p.sim.props.iter().position(|c| c.id == cube).unwrap();
+    let top = p.sim.props[i].pos.y + crate::sim::CUBE_HALF;
+    for (q, &(_, bottom)) in perched.iter().zip(&on) {
+        assert!((foot(q, bottom) - top).abs() < 0.01, "{q:?} isn't on the cube's top ({top})");
+    }
+    // Taken away: they fall to the floor.
+    p.sim.props[i].alive = false;
+    for _ in 0..120 {
+        perched.iter_mut().for_each(|q| q.step(&p.sim, 1.0 / 60.0));
+    }
+    for (q, &(_, bottom)) in perched.iter().zip(&on) {
+        assert!(q.cube.is_none() && foot(q, bottom).abs() < 0.01, "{q:?} didn't land on the floor");
+    }
+}

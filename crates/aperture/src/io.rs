@@ -419,7 +419,11 @@ impl Io {
                 *armed |= !inside;
             }
         }
-        let cubes: Vec<(u32, Aabb)> = sim.props.iter().filter(|p| p.alive && p.fizzle.is_none()).map(|p| (p.id, p.aabb())).collect();
+        // (The map's triggers were placed round Portal's cubes, which are bigger than ours: a
+        // cube touches one as a cube of Portal's size standing where it stands would. Chamber
+        // 16's stacked cubes keep the hideout's panel shut this way: ours, smaller, settle
+        // lower than the trigger over them.)
+        let cubes: Vec<(u32, Aabb)> = sim.props.iter().filter(|p| p.alive && p.fizzle.is_none()).map(|p| (p.id, crate::source::portal_cube(p.pos))).collect();
         for e in 0..self.ents.len() {
             if !self.ents[e].alive {
                 continue;

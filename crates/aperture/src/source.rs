@@ -155,6 +155,83 @@ fn mat_of(kind: &str) -> Option<Mat> {
     })
 }
 
+/// Half the size of Portal's cube (its metal_box's hull, 20.25 units): bigger than ours.
+pub const PORTAL_CUBE_HALF: f32 = 20.25 * 0.0254;
+
+/// The box a cube of Portal's size takes up, standing where one of ours (its centre at `at`)
+/// stands.
+pub fn portal_cube(at: Vec3) -> Aabb {
+    let bottom = at.y - crate::sim::CUBE_HALF;
+    Aabb::new(Vec3::new(at.x - PORTAL_CUBE_HALF, bottom, at.z - PORTAL_CUBE_HALF), Vec3::new(at.x + PORTAL_CUBE_HALF, bottom + PORTAL_CUBE_HALF * 2.0, at.z + PORTAL_CUBE_HALF))
+}
+
+/// A loose prop a Portal map stands on one of its cubes (Chamber 16's clock radio, mug and
+/// tools: physics props the game only draws). Our cube is smaller than Portal's, so it's stood
+/// on ours as it stood on Portal's; it rides the cube while the cube stays put, and drops to
+/// what's under it once the cube's picked up, knocked away or gone (#72).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Perched {
+    /// The cube it's on (its id), while it's on one.
+    pub cube: Option<u32>,
+    /// Where its origin is.
+    pub at: Vec3,
+    /// How far its origin is above its lowest point.
+    lift: f32,
+    /// Its origin from its cube's centre.
+    offset: Vec3,
+    /// How fast it's falling.
+    fall: f32,
+}
+
+impl Perched {
+    /// The cube under a loose prop the map has at `at` (ours), whose lowest point is `bottom`
+    /// below that (if its model says), if it's standing on one.
+    pub fn find(sim: &crate::sim::Sim, at: Vec3, bottom: Option<f32>) -> Option<Perched> {
+        // (A cube as the map placed it: the level lifts it a little to settle.)
+        let placed = sim.level.items.iter().filter_map(|i| match i {
+            Item::Cube { at, .. } => Some(*at - Vec3::Y * 0.02),
+            _ => None,
+        });
+        let (cube, top) = placed
+            .filter_map(|c| {
+                let top = c.y + PORTAL_CUBE_HALF;
+                let foot = at.y - bottom.unwrap_or(0.0);
+                let flat = Vec3::new(at.x - c.x, 0.0, at.z - c.z);
+                (flat.length() < PORTAL_CUBE_HALF * 1.3 && foot > top - 0.1 && foot < top + 0.15).then_some((c, top))
+            })
+            .min_by(|a, b| (a.0 - at).length_squared().total_cmp(&(b.0 - at).length_squared()))?;
+        let id = sim.props.iter().find(|p| p.alive && p.dropper.is_none() && Vec3::new(p.pos.x - cube.x, 0.0, p.pos.z - cube.z).length() < 0.1)?.id;
+        // (Without its model's size, it stays as high over the cube's top as it was.)
+        let lift = bottom.unwrap_or(at.y - top);
+        let k = crate::sim::CUBE_HALF / PORTAL_CUBE_HALF;
+        let offset = Vec3::new((at.x - cube.x) * k, crate::sim::CUBE_HALF + lift, (at.z - cube.z) * k);
+        Some(Perched { cube: Some(id), at: cube + offset, lift, offset, fall: 0.0 })
+    }
+
+    pub fn step(&mut self, sim: &crate::sim::Sim, dt: f32) {
+        if let Some(id) = self.cube {
+            let on = sim.props.iter().enumerate().find(|(_, c)| c.id == id && c.alive && c.fizzle.is_none());
+            match on {
+                // (Knocked hard, or thrown up, it doesn't stay on.)
+                Some((i, c)) if sim.held != Some(i) && Vec3::new(c.vel.x, 0.0, c.vel.z).length() < 1.0 && c.vel.y < 1.0 => {
+                    self.at = c.pos + self.offset;
+                    return;
+                }
+                _ => self.cube = None,
+            }
+        }
+        // Off it: down onto what's under it.
+        let foot = self.at - Vec3::Y * self.lift;
+        let Some(ground) = sim.raycast(foot + Vec3::Y * 0.05, Vec3::NEG_Y, 100.0, crate::sim::Mask::SOLID).map(|h| h.point.y) else { return };
+        if foot.y > ground + 1e-3 {
+            self.fall = (self.fall + crate::sim::GRAVITY * dt).min(crate::sim::TERMINAL);
+            self.at.y = (self.at.y - self.fall * dt).max(ground + self.lift);
+        } else {
+            self.fall = 0.0;
+        }
+    }
+}
+
 fn is_metal_box(e: &Entity) -> bool {
     matches!(key(e, "classname"), Some("prop_physics" | "prop_physics_override" | "prop_physics_multiplayer"))
         && key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/metal_box.mdl"))
