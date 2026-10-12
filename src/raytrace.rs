@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::camera::visibility::{RenderLayers, VisibilitySystems};
 use bevy::camera::CameraMainTextureUsages;
-use bevy::core_pipeline::prepass::{DeferredPrepass, DepthPrepass};
+use bevy::core_pipeline::prepass::{DeferredPrepass, DeferredPrepassDoubleBuffer, DepthPrepass, DepthPrepassDoubleBuffer};
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::material::OpaqueRendererMethod;
@@ -145,13 +145,15 @@ fn switch(
             *n -= 1;
         } else {
             *off_in = None;
-            // (The player's anti-aliasing is the graphics settings' business: they've put back
-            // what they want.)
+            // (The player's anti-aliasing is the graphics settings' business: they put back what
+            // they want once the deferred pass has gone.) The traced light's double buffers go
+            // too: they bring their passes back with them in the renderer (a deferred pass there
+            // every frame for nothing, and with MSAA, a crash).
             for e in &player {
-                commands.entity(e).remove::<(SolariLighting, DeferredPrepass)>().insert(CameraMainTextureUsages::default());
+                commands.entity(e).remove::<(SolariLighting, DeferredPrepass, DeferredPrepassDoubleBuffer, DepthPrepassDoubleBuffer)>().insert(CameraMainTextureUsages::default());
             }
             for e in &portals {
-                commands.entity(e).remove::<(SolariLighting, DepthPrepass, DeferredPrepass, bevy::anti_alias::taa::TemporalAntiAliasing)>().insert(CameraMainTextureUsages::default());
+                commands.entity(e).remove::<(SolariLighting, DepthPrepass, DeferredPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass, DeferredPrepassDoubleBuffer, DepthPrepassDoubleBuffer, bevy::anti_alias::taa::TemporalAntiAliasing)>().insert(CameraMainTextureUsages::default());
             }
         }
     }
