@@ -217,6 +217,9 @@ pub struct PelletLauncher {
     pub launch: crate::level::Launch,
     /// Told to fire (LaunchBall): it does, next frame it's on.
     pub queued: bool,
+    /// Where it is and which way it fires as the map has it, and how its mover
+    /// ([`Launch::mover`](crate::level::Launch::mover)) was then: it goes as that goes.
+    pub home: (Vec3, Vec3, glam::Quat, Vec3),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,6 +317,10 @@ pub struct Mover {
     pub spin_angle: f32,
     /// How much of its top speed it's spinning up to, and which way (-1: backwards).
     pub spin_scale: f32,
+    /// One that follows its parent: let go of (ClearParent), it stays as it is; taken up again
+    /// (SetParent), it follows on from there, this far on from it.
+    pub detached: bool,
+    pub follow_off: Vec3,
 }
 
 /// How long a shuttling platform waits at each end.
@@ -867,11 +874,13 @@ impl Sim {
                     held: false,
                 }),
                 Item::PelletLauncher { at, dir, inputs, life, launch } => {
-                    if launch.model.is_none() {
+                    // (One on a mover: its body is the mover's.)
+                    if launch.model.is_none() && launch.mover.is_none() {
                         statics.push(Static { b: Aabb::from_center_size(at - dir * 0.35, Vec3::splat(0.7)), mat: Mat::Prop, owner: Owner::Emitter });
                     }
                     // (Ready to fire as soon as it's on.)
-                    sim.launchers.push(PelletLauncher { at, dir: dir.normalize_or_zero(), inputs, life, on: false, pellet: None, idle: f32::INFINITY, since_shot: 99.0, launch, queued: false });
+                    let dir = dir.normalize_or_zero();
+                    sim.launchers.push(PelletLauncher { at, dir, inputs, life, on: false, pellet: None, idle: f32::INFINITY, since_shot: 99.0, launch, queued: false, home: (at, dir, glam::Quat::IDENTITY, Vec3::ZERO) });
                 }
                 Item::PelletCatcher { sig, at, facing } => {
                     statics.push(Static { b: Aabb::from_center_size(at - facing * 0.45, Vec3::splat(0.9)), mat: Mat::Prop, owner: Owner::Emitter });
@@ -881,12 +890,19 @@ impl Sim {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
                     let spin_on = def.spin.as_ref().is_some_and(|s| s.on);
                     let spin_rate = def.spin.as_ref().filter(|s| s.on).map_or(0.0, |s| s.speed);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, def });
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, detached: false, follow_off: Vec3::ZERO, def });
                 }
             }
         }
         if level.map_items >= level.items.len() {
             sim.count_map_items();
+        }
+        // (A launcher on a mover: how that mover is as the map has the launcher.)
+        for l in sim.launchers.iter_mut() {
+            if let Some(m) = l.launch.mover.and_then(|m| sim.movers.get(m)) {
+                let (turn, moved) = Self::mover_pose(m);
+                (l.home.2, l.home.3) = (turn, moved);
+            }
         }
         // A map's physics props, after its cubes (the map's logic knows its cubes by order).
         // One the map stands on a cube stands on ours (smaller than Portal's: as far in from
@@ -2495,6 +2511,16 @@ impl Sim {
     /// into catchers; deadly to Faith.
     fn update_pellets(&mut self, dt: f32, ctrl: &mut Controller) {
         for i in 0..self.launchers.len() {
+            // On a mover: where that's taken it, turned as it's turned.
+            if let Some(m) = self.launchers[i].launch.mover.and_then(|m| self.movers.get(m)) {
+                let (turn, moved) = Self::mover_pose(m);
+                let l = &mut self.launchers[i];
+                let (at, dir, turn0, moved0) = l.home;
+                let r = turn * turn0.inverse();
+                let pivot = m.def.swing.map_or(at, |sw| sw.pivot + moved0);
+                l.at = pivot + r * (at - pivot) + (moved - moved0);
+                l.dir = (r * dir).normalize_or_zero();
+            }
             let l = &mut self.launchers[i];
             l.on = l.inputs.eval(&self.signals);
             l.since_shot += dt;
@@ -2595,6 +2621,11 @@ impl Sim {
                     c.lit = true;
                     caught = true;
                 }
+            }
+            // Into a standing turret: over it goes (as Portal's), and the pellet carries on.
+            let ball = Aabb::from_center_size(p.pos, Vec3::splat(PELLET_RADIUS * 2.0));
+            if let Some(i) = (0..self.turrets.len()).find(|&i| self.turrets[i].upright() && !self.turrets[i].held && self.turrets[i].aabb().overlaps(&ball)) {
+                self.tip_turret(i, p.vel);
             }
             if caught || gone {
                 p.alive = false;
@@ -2728,11 +2759,33 @@ impl Sim {
                 if self.movers[i].def.follows {
                     let (at, node, carried) = (self.movers[p].at, self.movers[p].node, self.movers[p].carried);
                     let m = &mut self.movers[i];
-                    (m.at, m.node, m.carried) = (at, node, carried);
+                    if !m.detached {
+                        (m.at, m.node, m.carried) = (at + m.follow_off, node, carried);
+                    }
                 } else {
                     self.movers[i].carried = self.movers[p].offset();
                 }
             }
+        }
+    }
+
+    /// How mover `m` is turned (a swinging one) and how far it's been carried or moved.
+    fn mover_pose(m: &Mover) -> (glam::Quat, Vec3) {
+        match m.def.swing {
+            Some(sw) => (sw.rotation(m.at.x), m.carried),
+            None => (glam::Quat::IDENTITY, m.offset()),
+        }
+    }
+
+    /// Let go of a mover that follows its parent (ClearParent: it stays where it is, turned as
+    /// it is), or take it up again (SetParent: it follows on from there).
+    pub fn detach_mover(&mut self, i: usize, off: bool) {
+        let Some(p) = self.movers[i].def.parent.filter(|&p| p < self.movers.len() && self.movers[i].def.follows) else { return };
+        let parent = self.movers[p].at;
+        let m = &mut self.movers[i];
+        m.detached = off;
+        if !off {
+            m.follow_off = m.at - parent;
         }
     }
 

@@ -895,6 +895,10 @@ impl Io {
                 }
                 _ => {}
             },
+            // (Only off and back onto the mover it follows: Chamber 18's launcher arm, let go of
+            // by its turning hatch at the end of each quarter turn and taken up again once the
+            // hatch has turned back.)
+            Kind::Mover { index, .. } if matches!(i.as_str(), "clearparent" | "setparent") => sim.detach_mover(index, i == "clearparent"),
             Kind::Mover { index, kind } => {
                 let m = &mut sim.movers[index];
                 let last = m.def.path.len().saturating_sub(1);

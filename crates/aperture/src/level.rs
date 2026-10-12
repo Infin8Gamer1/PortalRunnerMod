@@ -323,11 +323,14 @@ pub struct Launch {
     /// from (Chamber 15's): the wall stands for its body, and portals don't go over it. `None`:
     /// its body is a box just behind it.
     pub model: Option<Vec3>,
+    /// The mover it's on (Portal's maps: Chamber 18's launcher, on an arm that turns a quarter
+    /// round after each shot): it goes where that goes and turns as that turns.
+    pub mover: Option<usize>,
 }
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { speed: 7.0, after_portal: 6.0, reload: Some(1.5), model: None }
+        Launch { speed: 7.0, after_portal: 6.0, reload: Some(1.5), model: None, mover: None }
     }
 }
 

@@ -742,6 +742,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                         after_portal: num(e, "MinLifeAfterPortal", 6.0),
                         reload: (respawn >= 0.0 && num(e, "ballcount", 1.0) > 0.0).then_some(respawn),
                         model: None,
+                        mover: None,
                     };
                     // Its model: usually just behind it. Chamber 15's is set in the wall in front
                     // of it (it fires into a plate there, which sends the pellet back out): the
@@ -890,6 +891,14 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
             && parent != index
         {
             children.push((*index, *parent));
+        }
+    }
+    // A launcher on a mover (Chamber 18's, on its turning arm) goes as that goes.
+    for (e, ent) in ents.iter().zip(&io_ents) {
+        if let (io::Kind::Launcher { index, .. }, Some(m)) = (&ent.kind, parent_mover(e))
+            && let Some(Item::PelletLauncher { launch, .. }) = l.items.iter_mut().filter(|i| matches!(i, Item::PelletLauncher { .. })).nth(*index)
+        {
+            launch.mover = Some(m);
         }
     }
     // (Through parents' parents, up to the first that moves by itself: a launcher's panel on
