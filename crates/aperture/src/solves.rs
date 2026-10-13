@@ -2079,3 +2079,50 @@ fn chamber_15_section_3_fling_clears_the_glass() {
     assert_eq!(p.deaths, 0);
     assert!(p.c.state == State::Ground && p.c.feet.x < 22.0, "short of the glass: at {}", p.c.feet);
 }
+
+
+/// escape_00's crusher room 2 (#87, #88): she rides a piston's head (a brush that follows the
+/// piston) up into the ceiling. `portals`: blue in the ceiling over it, orange on the wall
+/// above the floor over the room. What became of her: crushed, or through.
+fn ride_crusher_into_ceiling(portals: bool) -> Option<Play> {
+    let mut p = Play::load("escape_00")?;
+    // (Into the trigger that starts the room's pistons.)
+    p.c.feet = Vec3::new(18.7, -8.13, -16.4);
+    p.wait(0.5);
+    let piston = p.mover("crusher_room_2_0");
+    let head = (0..p.sim.movers.len()).find(|&m| p.sim.movers[m].def.parent == Some(piston) && p.sim.movers[m].def.follows).unwrap();
+    let top = |p: &Play| p.sim.movers[head].boxes().map(|b| b.max.y).fold(-1e9, f32::max);
+    p.wait_for(20.0, "the head down", |p| top(p) < -13.7);
+    let n = p.sim.movers[head].boxes().count() as f32;
+    let c = p.sim.movers[head].boxes().fold(Vec3::ZERO, |a, b| a + b.center()) / n;
+    if portals {
+        assert!(p.sim.fire(PortalColor::Blue, Aim { eye: Vec3::new(c.x, -12.0, c.z), dir: Vec3::Y, yaw: 0.0 }));
+        assert!(p.sim.fire(PortalColor::Orange, Aim { eye: Vec3::new(-11.0, -6.7, -18.5), dir: Vec3::NEG_X, yaw: std::f32::consts::FRAC_PI_2 }));
+    }
+    p.c.feet = Vec3::new(c.x, top(&p) + 0.01, c.z);
+    p.c.vel = Vec3::ZERO;
+    let end = p.time + 8.0;
+    while p.deaths == 0 && !p.events.iter().any(|e| matches!(e, SimEvent::Teleported { .. })) {
+        assert!(p.time < end, "escape_00: the piston neither crushed her nor took her through (at {})", p.c.feet);
+        assert!(p.c.feet.y < -8.94 - 1.0, "escape_00: the piston pushed her up into the ceiling (at {})", p.c.feet);
+        p.step(&Input::default());
+    }
+    p.wait(1.0);
+    Some(p)
+}
+
+/// #88: a crusher that meets her against the ceiling kills her; it doesn't push her through it.
+#[test]
+fn escape_00_crusher_kills() {
+    let Some(p) = ride_crusher_into_ceiling(false) else { return };
+    assert_eq!(p.deaths, 1, "escape_00: not crushed (at {})", p.c.feet);
+}
+
+/// #87: Portal's way up: a portal in the ceiling the piston pushes her into, and she comes out
+/// of the other on the floor over the room.
+#[test]
+fn escape_00_crusher_pushes_through_a_portal() {
+    let Some(p) = ride_crusher_into_ceiling(true) else { return };
+    p.assert_alive("pushed through the ceiling's portal");
+    assert!(p.c.state == State::Ground && (p.c.feet.y + 8.13).abs() < 0.1 && p.c.feet.z < -14.43, "escape_00: not out on the floor over the room (at {}, {:?})", p.c.feet, p.c.state);
+}

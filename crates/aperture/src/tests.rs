@@ -1534,6 +1534,7 @@ fn movers_push_but_dont_crush() {
         faces: Vec::new(),
         spin: None,
         reset: None,
+        crush: 0.0,
     }));
     let (mut sim, mut c) = start(l);
     c.feet = Vec3::ZERO;

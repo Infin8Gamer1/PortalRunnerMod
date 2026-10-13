@@ -666,7 +666,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                     mk = io::MoverKind::Rotor;
                     Spin { pivot: origin(e).unwrap_or(Vec3::ZERO), axis: to_ours(axis).normalize(), speed, ramp, on: f & 1 != 0, sound: key(e, "message").unwrap_or("").to_string() }
                 });
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default(), spin }));
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default(), spin, crush: num(e, "dmg", 0.0).max(0.0) }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }
@@ -795,7 +795,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                 if key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/box_dropper_cover.mdl")) {
                     if let Some(o) = origin(e) {
                         let b = Aabb::new(o - Vec3::new(0.6, 0.1, 0.6), o + Vec3::new(0.6, 0.0, 0.6));
-                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None }));
+                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None, crush: 0.0 }));
                         hatches.insert(io_ents.len(), movers);
                         movers += 1;
                     }
