@@ -35,6 +35,13 @@ one: a white room with lamps and a start.
   arrows to move that end along an axis, or its ring to move it about. Lines show what the
   selection is wired to; outlines show what the game doesn't draw
   (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
+  A zipline's **Sag** hangs its cable's middle below the straight line between its ends: she
+  rides the curve, slower climbing out of a deep one.
+- **A course**: with **Checkpoints: a course** in the level's settings (nothing selected), its
+  checkpoints are passed in order, as a time trial's: only the next one counts (a red beacon
+  stands over it, then over the exit), and the exit only finishes it once they all have. The
+  timer shows how many of how many, and each checkpoint's split. A checkpoint's details move it
+  **Earlier** or **Later** in the order (their order in the file).
 - **Lights**: a point light shines all round, a spot light in a cone the way it faces (turn it
   with the gizmo); each has a colour, an intensity in lumens (the ceiling lamps are 900,000), a
   range, a size (bigger is softer) and shadows on or off. A sun replaces the level's (its
@@ -131,7 +138,9 @@ Training map and its three time trials):
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
   of what it is).
-- Its sun is its brightest directional light; she starts at its start.
+- Its sun is its brightest directional light; she starts at its start. A zipline sags as its
+  spline does. A time trial's timer checkpoints are a course (in the order they lead on to each
+  other), the last its finish.
 
 As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 

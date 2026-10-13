@@ -182,6 +182,7 @@ fn time_trials_start_her_on_their_course() {
         // Their start, their checkpoints, their finish line.
         assert_eq!(l.checkpoints.len(), checkpoints + 1, "{file}");
         assert!(l.exit.is_some(), "{file}: no finish");
+        assert!(l.course, "{file}: its checkpoints aren't a course (#104)");
         let cp = l.checkpoints[0].clone();
         let mut r = Run::new(l, cp.spawn, cp.yaw);
         r.run(2.0, |_| Input::default());

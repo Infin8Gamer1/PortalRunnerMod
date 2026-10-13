@@ -309,6 +309,8 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
             }
             doc.objects.push(o);
         }
+        // (Passed in order, as the game's are: #104.)
+        doc.course = true;
         report.push_str(&format!("  a time trial: {} checkpoints, the last its finish\n", order.len()));
     }
     starts.sort_by_key(|s| s.0);

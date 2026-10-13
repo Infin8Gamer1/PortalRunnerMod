@@ -2535,4 +2535,5 @@
         (kind: Exit, at: (-58.85, 44.84, 71.27), size: (4.0, 4.0, 4.0), name: "TdTimerCheckpoint_20"),
         (kind: Spawn(), at: (-13.96, 49.96, -14.24), yaw: 129.633),
     ],
+    course: true,
 )

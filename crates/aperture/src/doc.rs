@@ -46,6 +46,10 @@ pub struct LevelDoc {
     /// changes lead to the next map's copy, and it's played by Portal's rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map: Option<String>,
+    /// Its checkpoints are a course (a time trial's), in the order they're in the file: each
+    /// counts only after the one before it, and the exit only once they've all been passed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub course: bool,
 }
 
 /// The fill light everywhere: its colour (sRGB, 0-1) and brightness.
@@ -752,7 +756,7 @@ impl Object {
 
 impl LevelDoc {
     pub fn new(name: &str) -> Self {
-        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None }
+        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None, course: false }
     }
 
     /// A white room to start from: floor, walls, ceiling, a lamp grid and the start.
@@ -830,6 +834,7 @@ impl LevelDoc {
         l.intro = leak(&self.intro);
         l.indoor = self.indoor;
         l.kill_y = self.kill_y;
+        l.course = self.course;
         l.gun = Gun { blue: self.blue, orange: self.orange };
         let corners = |o: &Object| {
             let b = o.bounds();

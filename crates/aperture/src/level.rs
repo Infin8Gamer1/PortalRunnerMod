@@ -383,6 +383,9 @@ pub struct Level {
     pub gun: Gun,
     /// Walking in here finishes the chamber.
     pub exit: Option<Aabb>,
+    /// Its checkpoints are a course (a time trial's): each counts only after the one before
+    /// it, and the exit only once they've all been passed.
+    pub course: bool,
     /// Messages shown while you stand in a region.
     pub hints: Vec<(Aabb, &'static str)>,
     /// Falling below this kills you.
@@ -567,6 +570,7 @@ impl Level {
             portals: Vec::new(),
             gun: Gun::BOTH,
             exit: None,
+            course: false,
             hints: Vec::new(),
             kill_y: -30.0,
             gravity: None,
