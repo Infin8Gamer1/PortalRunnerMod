@@ -227,13 +227,13 @@ pub fn sync(
             // A spotlight: a light along its way, and its beam, a cone fading out to its end.
             PropKind::Spotlight { length, width, color, start_on, light } => {
                 let c = color.min(Vec3::splat(4.0));
-                let beam = beam_cone(*length, *width);
+                let beam = beam_fan(*length, *width);
                 let mat = materials.add(StandardMaterial { base_color: Color::linear_rgb(c.x * 0.35, c.y * 0.35, c.z * 0.35), alpha_mode: AlphaMode::Add, unlit: true, double_sided: true, cull_mode: None, ..default() });
                 let up = if fwd.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
                 commands
                     .spawn((ChamberGeom, Shown { ent, start_on: *start_on }, Transform::from_translation(p.at).looking_to(fwd, up), Visibility::Hidden))
                     .with_children(|ch| {
-                        ch.spawn((Mesh3d(meshes.add(beam)), MeshMaterial3d(mat), Transform::default(), NotShadowCaster));
+                        ch.spawn((FacesEye, Mesh3d(meshes.add(beam)), MeshMaterial3d(mat), Transform::default(), NotShadowCaster));
                         if !*light {
                             return;
                         }
@@ -276,25 +276,33 @@ fn floor_under(sim: &aperture::Sim, p: Vec3) -> f32 {
     sim.statics.iter().filter(|s| s.b.min.x <= p.x && s.b.max.x >= p.x && s.b.min.z <= p.z && s.b.max.z >= p.z && s.b.max.y <= p.y).map(|s| s.b.max.y).fold(p.y - 20.0, f32::max)
 }
 
-/// A spotlight's beam: a cone along -Z, `length` long, `width` across at its end, bright at
-/// its start and fading out (in its vertices' colour).
-fn beam_cone(length: f32, width: f32) -> Mesh {
-    let sides = 16;
-    let (mut pos, mut nrm, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+/// A spotlight's beam: a flat fan along -Z (lying in its X), `length` long, `width` across at
+/// its end, its brightness in its vertices' colour.
+fn beam_fan(length: f32, width: f32) -> Mesh {
+    // (Across it: bright down its middle, nothing at its sides; along it: from its lamp, a
+    // little way in to full, then fading out to its end. Turned about its line to face the eye,
+    // it's a cone of light in the air with no edge to see.)
+    const ACROSS: [f32; 7] = [-1.0, -0.66, -0.33, 0.0, 0.33, 0.66, 1.0];
+    let rows = 12;
     let start = width * 0.15;
-    for k in 0..=sides {
-        let a = k as f32 / sides as f32 * std::f32::consts::TAU;
-        let d = Vec2::new(a.cos(), a.sin());
-        pos.push([d.x * start * 0.5, d.y * start * 0.5, 0.0]);
-        pos.push([d.x * width * 0.5, d.y * width * 0.5, -length]);
-        nrm.push([d.x, d.y, 0.0]);
-        nrm.push([d.x, d.y, 0.0]);
-        col.push([1.0f32, 1.0, 1.0, 1.0]);
-        col.push([0.0f32, 0.0, 0.0, 1.0]);
+    let (mut pos, mut nrm, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for r in 0..=rows {
+        let t = r as f32 / rows as f32;
+        let half = (start + (width - start) * t) * 0.5;
+        let along = (t / 0.08).min(1.0) * (1.0 - t) * (1.0 - t);
+        for x in ACROSS {
+            let b = (1.0 - x * x) * (1.0 - x * x) * along;
+            pos.push([x * half, 0.0, -length * t]);
+            nrm.push([0.0, 1.0, 0.0]);
+            col.push([b, b, b, 1.0]);
+        }
     }
-    for k in 0..sides as u32 {
-        let (a, b) = (k * 2, k * 2 + 2);
-        idx.extend([a, a + 1, b, b, a + 1, b + 1]);
+    let n = ACROSS.len() as u32;
+    for r in 0..rows as u32 {
+        for c in 0..n - 1 {
+            let (a, b) = (r * n + c, (r + 1) * n + c);
+            idx.extend([a, b, a + 1, a + 1, b, b + 1]);
+        }
     }
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
@@ -302,6 +310,11 @@ fn beam_cone(length: f32, width: f32) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
         .with_inserted_indices(Indices::U32(idx))
 }
+
+/// A spotlight's beam (a child of the light, along its -Z): turned about its line to face the
+/// eye.
+#[derive(Component)]
+pub struct FacesEye;
 
 /// Whether the logic has something shown: its entity not hidden (or, one the logic can't
 /// name, as it starts).
@@ -454,8 +467,15 @@ pub fn update(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera
 
 /// Beams and spotlights shown as the logic says; a beam turned about its line to face the eye.
 #[allow(clippy::type_complexity)]
-pub fn beams(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera>>, mut q: Query<(&Shown, Option<&BeamBetween>, &mut Transform, &mut Visibility)>) {
+pub fn beams(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera>>, mut q: Query<(&Shown, Option<&BeamBetween>, &mut Transform, &mut Visibility), Without<FacesEye>>, mut fans: Query<(&ChildOf, &mut Transform), With<FacesEye>>, lamps: Query<&GlobalTransform, With<Shown>>) {
     let eye = camera.single().map(|c| c.translation()).unwrap_or(Vec3::ZERO);
+    for (parent, mut tf) in &mut fans {
+        let Ok(lamp) = lamps.get(parent.parent()) else { continue };
+        let e = lamp.affine().inverse().transform_point3(eye);
+        if Vec2::new(e.x, e.y).length_squared() > 1e-6 {
+            tf.rotation = Quat::from_rotation_z((-e.x).atan2(e.y));
+        }
+    }
     for (s, between, mut tf, mut vis) in &mut q {
         let want = if shown(&game, s.ent, s.start_on) { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
