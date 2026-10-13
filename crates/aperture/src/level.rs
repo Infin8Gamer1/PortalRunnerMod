@@ -518,6 +518,8 @@ pub struct MeProp {
     /// A solid that blocks where it stands and stands in for it without the game (its box
     /// is hidden when the prop is drawn).
     pub stand_in: Option<Aabb>,
+    /// Materials in place of its own, a section each (empty: its own).
+    pub materials: Vec<&'static str>,
 }
 
 /// A light placed in the level: a point light, or a spot light pointing `dir`.
@@ -609,7 +611,7 @@ impl Level {
     /// A Mirror's Edge prop: `mesh` from `package`, its origin at `at`, turned `yaw_deg` (see
     /// [`MeProp`]).
     pub fn me_prop(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32) -> &mut Self {
-        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in: None });
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in: None, materials: Vec::new() });
         self
     }
 
@@ -619,7 +621,7 @@ impl Level {
     pub fn me_prop_solid(&mut self, package: &'static str, mesh: &'static str, at: [f32; 3], yaw_deg: f32, a: [f32; 3], b: [f32; 3]) -> &mut Self {
         self.solid(Mat::Prop, a, b);
         let stand_in = Some(Aabb::new(Vec3::from(a).min(Vec3::from(b)), Vec3::from(a).max(Vec3::from(b))));
-        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in });
+        self.me_props.push(MeProp { package, mesh, at: Vec3::from(at), turn: glam::Quat::from_rotation_y(yaw_deg.to_radians()), scale: Vec3::ONE, stand_in, materials: Vec::new() });
         self
     }
 

@@ -37,6 +37,15 @@ fn tidy(v: Vec3) -> Vec3 {
     Vec3::new(round(v.x, 1e4), round(v.y, 1e4), round(v.z, 1e4))
 }
 
+/// A placed mesh's materials in place of its own, a section each (their paths in the package;
+/// empty: its own), none if it keeps them all.
+fn overrides(pkg: &Package, materials: &[i32]) -> Vec<String> {
+    if materials.iter().all(|&m| m == 0) {
+        return Vec::new();
+    }
+    materials.iter().map(|&m| if m == 0 { String::new() } else { pkg.path(m) }).collect()
+}
+
 /// A mesh's box (ours, from its origin).
 fn mesh_box(pkg: &Package, mesh: usize) -> Option<(Vec3, Vec3)> {
     let props = me_assets::props::Props::read(pkg, &pkg.exports[mesh]).ok()?;
@@ -169,7 +178,7 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                 true
             });
             let mut o = Object::new(
-                Kind::MeProp { package: name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true },
+                Kind::MeProp { package: name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true, materials: overrides(pkg, &p.materials) },
                 at,
             );
             o.set_rotation(turn(p.rotation));

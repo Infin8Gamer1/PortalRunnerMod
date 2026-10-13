@@ -265,6 +265,10 @@ pub enum Kind {
         solid: bool,
         #[serde(default, skip_serializing_if = "is_false")]
         own_shape: bool,
+        /// Materials in place of its own, a section each (the game's paths; empty: its own),
+        /// as a level's placed mesh can have (an orange catwalk, an advert).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        materials: Vec<String>,
     },
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
@@ -969,10 +973,11 @@ impl LevelDoc {
                 Kind::Ladder { height, pipe, exit } => {
                     l.fixtures.push(Fixture::Ladder(Ladder { base: at, top: at.y + *height, normal: o.dir(), pipe: *pipe, exit: *exit }));
                 }
-                Kind::MeProp { package, mesh, scale, bounds, solid, .. } => {
+                Kind::MeProp { package, mesh, scale, bounds, solid, materials, .. } => {
                     let shaped = shape_of(o).is_some();
                     let stand_in = (bounds.is_some() && *solid && !shaped).then(|| o.bounds());
-                    l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in });
+                    let materials = materials.iter().map(|m| leak(m)).collect();
+                    l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in, materials });
                 }
                 Kind::Model { path, scale, bounds, solid } => {
                     let solid = (bounds.is_some() && *solid).then(|| o.bounds());
@@ -1226,13 +1231,13 @@ impl LevelDoc {
         }
         for p in &l.me_props {
             // A prop that stands in a box of its own: that box is the prop's, not a block.
-            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false, own_shape: false }, p.at);
+            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false, own_shape: false, materials: p.materials.iter().map(|m| m.to_string()).collect() }, p.at);
             o.set_rotation(p.turn);
             if let Some(b) = p.stand_in {
                 if let Some(i) = d.objects.iter().position(|o| o.kind == Kind::Block { mat: Mat::Prop } && (o.bounds().min - b.min).length() < 1e-4 && (o.bounds().max - b.max).length() < 1e-4) {
                     d.objects.remove(i);
                 }
-                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true, own_shape: false };
+                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true, own_shape: false, materials: p.materials.iter().map(|m| m.to_string()).collect() };
             }
             push(&mut d, o);
         }

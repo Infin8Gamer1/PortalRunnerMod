@@ -120,8 +120,9 @@ fn load_detail(root: &Path, name: &str) -> Option<Detail> {
     let rough: Vec<f32> = r.pixels().map(|p| p[0] as f32 / 255.0).collect();
     let rmean = (rough.iter().sum::<f32>() / rough.len() as f32).max(1e-3);
     let rough = rough.into_iter().map(|x| x / rmean).collect();
-    // Its normals' X and Y (OpenGL's: Y up). The game's maps are the other way up (Unreal's,
-    // DirectX's): Y flipped to match them, so the two blend as one.
+    // Its normals' X and Y (OpenGL's: Y up the image). The game's maps are the other way up
+    // (Unreal's, DirectX's): Y flipped to match them, so the two blend as one (and the material
+    // reads the result as DirectX's: `flip_normal_map_y`).
     let normal = n.pixels().map(|p| [p[0] as f32 / 127.5 - 1.0, -(p[1] as f32 / 127.5 - 1.0)]).collect();
     Some(Detail { size, lum, normal, rough })
 }
@@ -178,7 +179,9 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
     };
     let mix4 = |a: [f32; 4], b: [f32; 4], t: f32| [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t), lerp(a[3], b[3], t)];
     let mix2 = |a: [f32; 2], b: [f32; 2], t: f32| [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
-    let base_lin = to_lin(base);
+    // (Tinted as the material instance has it: an orange catwalk.)
+    let tint = slot.tint.unwrap_or([1.0; 3]);
+    let base_lin: Vec<[f32; 4]> = to_lin(base).into_iter().map(|c| [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2], c[3]]).collect();
     let normal_map: Option<(Vec<[f32; 2]>, u32, u32)> = slot.normal.as_ref().map(|t| {
         (t.pixels.chunks_exact(4).map(|c| [c[0] as f32 / 127.5 - 1.0, c[1] as f32 / 127.5 - 1.0]).collect(), t.width, t.height)
     });
@@ -304,13 +307,14 @@ pub fn plain(t: &Rgba, srgb: bool) -> Image {
     with_mips(t.width, t.height, t.pixels.clone(), srgb)
 }
 
-/// The game's white kept under real paint's (a colour map's pixels, sRGB).
-pub fn tamed(t: &Rgba) -> Rgba {
+/// The game's colour map tinted (`tint`, linear) and its white kept under real paint's.
+pub fn tamed(t: &Rgba, tint: Option<[f32; 3]>) -> Rgba {
+    let k = tint.unwrap_or([1.0; 3]);
     let pixels = t
         .pixels
         .chunks_exact(4)
         .flat_map(|c| {
-            let rgb = [srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])];
+            let rgb = [srgb_to_linear(c[0]) * k[0], srgb_to_linear(c[1]) * k[1], srgb_to_linear(c[2]) * k[2]];
             let top = rgb[0].max(rgb[1]).max(rgb[2]);
             let f = if top > WHITEST { WHITEST / top } else { 1.0 };
             [linear_to_srgb(rgb[0] * f), linear_to_srgb(rgb[1] * f), linear_to_srgb(rgb[2] * f), c[3]]

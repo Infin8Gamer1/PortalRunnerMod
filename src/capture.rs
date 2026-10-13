@@ -1305,6 +1305,8 @@ fn script(name: &str) -> Vec<Act> {
             Wait(120),
             Shot("meedit_03_playing"),
         ],
+        // Which way up Bevy reads a normal map's green (with PORTAL_NORMAL_TEST=1).
+        "normaltest" => vec![Map(0), Wait(60), Spectate(Vec3::new(0.0, 3.0, -5.0), 0.0, 0.0), Wait(60), Shot("normaltest")],
         "nativeedit" => {
             use crate::LevelGroup::Portal as N;
             vec![
@@ -1667,7 +1669,7 @@ fn script(name: &str) -> Vec<Act> {
                 if let Kind::Model { scale, .. } = &mut big.kind {
                     *scale = Vec3::new(3.0, 1.5, 2.0);
                 }
-                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false, own_shape: false }, Vec3::new(0.0, 0.0, -11.0));
+                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false, own_shape: false, materials: Vec::new() }, Vec3::new(0.0, 0.0, -11.0));
                 ed.doc.objects.extend([radio, big, cistern]);
                 ed.selected = Some(ed.doc.objects.len() - 2);
                 ed.rebuild_now();
@@ -2362,4 +2364,34 @@ impl MouseHand<'_, '_> {
             _ => {}
         }
     }
+}
+
+/// A check of which way up Bevy reads a normal map's green (`PORTAL_NORMAL_TEST=1`, with the
+/// `normaltest` script): a wall-facing quad, a dome bumped out of it by a normal map whose green
+/// points up the image, lit from above. Its top half lit means green is up the image.
+pub fn normal_test(mut commands: Commands, mut done: Local<bool>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut images: ResMut<Assets<Image>>) {
+    if *done || std::env::var_os("PORTAL_NORMAL_TEST").is_none() {
+        return;
+    }
+    *done = true;
+    let n = 256u32;
+    let mut px = Vec::with_capacity((n * n * 4) as usize);
+    for row in 0..n {
+        for col in 0..n {
+            let x = (col as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let y_up = 1.0 - (row as f32 + 0.5) / n as f32 * 2.0;
+            let r2 = x * x + y_up * y_up;
+            let (nx, ny) = if r2 < 0.64 { (x, y_up) } else { (0.0, 0.0) };
+            let nz = (1.0f32 - nx * nx - ny * ny).max(0.0).sqrt();
+            px.extend_from_slice(&[((nx * 0.5 + 0.5) * 255.0) as u8, ((ny * 0.5 + 0.5) * 255.0) as u8, ((nz * 0.5 + 0.5) * 255.0) as u8, 255]);
+        }
+    }
+    let img = crate::me_remaster::with_mips(n, n, px, false);
+    let mut mesh = Mesh::from(Rectangle::new(4.0, 4.0));
+    let _ = mesh.generate_tangents();
+    commands.spawn((
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), normal_map_texture: Some(images.add(img)), perceptual_roughness: 0.9, ..default() })),
+        Transform::from_xyz(0.0, 3.0, -10.0),
+    ));
 }

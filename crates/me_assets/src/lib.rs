@@ -93,6 +93,9 @@ pub struct MaterialSlot {
     /// whether it glows (it has an emissive input).
     pub color: Option<[f32; 3]>,
     pub emissive: bool,
+    /// The colour its diffuse map is multiplied by (a colour variant's `DiffuseColor`
+    /// parameter: an orange catwalk, a blue rooftop box), linear, if it has one.
+    pub tint: Option<[f32; 3]>,
 }
 
 pub struct FaithArms {
@@ -290,9 +293,42 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             }
             let (color, emissive) = if diffuse.is_none() { constant_color(pkgs, pkg, m) } else { (None, false) };
             let path = material_path(pkgs, pkg, m);
-            MaterialSlot { material, path, diffuse, normal, specular, color, emissive }
+            // (Only a colour variant's, named for its colour: other instances' colour
+            // parameters tint through masks this doesn't follow, and would dye them all over.)
+            let named = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            let variant = ["orange", "blue", "yellow", "red", "green", "white", "black", "grey", "gray"].iter().any(|c| named.contains(c));
+            let tint = if variant { material_tint(pkgs, pkg, m) } else { None };
+            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint }
         })
         .collect()
+}
+
+/// A material instance's diffuse tint: its (or the instance it inherits from's) colour
+/// parameter named for the diffuse (`DiffuseColor`, `DiffuseColour01`, ...).
+fn material_tint(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> Option<[f32; 3]> {
+    let mut next = Some((pkg.clone(), m));
+    for _ in 0..4 {
+        let (p, obj) = next.take()?;
+        let (mp, mi) = pkgs.resolve(&p, obj)?;
+        let props = props::Props::read(&mp, &mp.exports[mi]).ok()?;
+        for el in props.struct_array(&mp, "VectorParameterValues") {
+            let name = el.name(&mp, "ParameterName").unwrap_or_default().to_ascii_lowercase();
+            if !(name.contains("diffusecol") || name == "color" || name == "colour" || name == "tint") {
+                continue;
+            }
+            let t = el.get("ParameterValue")?;
+            let c = if t.size == 16 {
+                let mut cur = package::Cursor::new(&mp.data, t.at);
+                [cur.f32().ok()?, cur.f32().ok()?, cur.f32().ok()?]
+            } else {
+                let inner = props::Props::read_list(&mp, t.at, t.at + t.size, "LinearColor").ok()?;
+                [inner.f32(&mp, "R")?, inner.f32(&mp, "G")?, inner.f32(&mp, "B")?]
+            };
+            return Some(c);
+        }
+        next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    None
 }
 
 /// A material's full path, where it's defined (an import followed to its package).
@@ -379,6 +415,28 @@ pub fn load_static_mesh(pkgs: &mut Packages, package: &str, name: &str, max_text
     let pkg = pkgs.get(package)?;
     let mesh = StaticMesh::read(&pkg, name)?;
     let mats: Vec<i32> = mesh.sections.iter().map(|s| s.material).collect();
+    let slots = slots_for(pkgs, &pkg, &mats, max_texture);
+    Ok((mesh, slots))
+}
+
+/// The same, with some of its sections' materials replaced (as a placed mesh's component
+/// replaces them): each override a material's path in `package` (its groups and name), or
+/// empty to keep the mesh's own.
+pub fn load_static_mesh_with(pkgs: &mut Packages, package: &str, name: &str, overrides: &[String], max_texture: u32) -> Result<(StaticMesh, Vec<MaterialSlot>)> {
+    let pkg = pkgs.get(package)?;
+    let mesh = StaticMesh::read(&pkg, name)?;
+    let mats: Vec<i32> = mesh
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            overrides
+                .get(k)
+                .filter(|o| !o.is_empty())
+                .and_then(|o| (0..pkg.exports.len()).find(|&i| pkg.path(i as i32 + 1) == *o))
+                .map_or(s.material, |i| i as i32 + 1)
+        })
+        .collect();
     let slots = slots_for(pkgs, &pkg, &mats, max_texture);
     Ok((mesh, slots))
 }

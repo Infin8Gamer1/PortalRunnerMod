@@ -69,6 +69,9 @@ pub struct MeLooks {
 #[derive(Resource, Default)]
 pub struct MePropCache {
     meshes: HashMap<(&'static str, &'static str), Option<Parts>>,
+    /// Meshes with some of their materials replaced (a placed mesh's own), by mesh and its
+    /// replacements.
+    overridden: HashMap<(&'static str, &'static str, Vec<&'static str>), Option<Parts>>,
     /// Remastered materials (#101), by material and how many times their detail tiles.
     remastered: HashMap<(String, u32), Handle<StandardMaterial>>,
     /// The same, wound the other way round, for where a level mirrors a mesh (scales it by
@@ -157,6 +160,9 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                             // (The map's: these scale it.)
                             perceptual_roughness: 1.0,
                             metallic: 1.0,
+                            // (Unreal's normal maps are DirectX's, Y down the image; Bevy's are
+                            // OpenGL's: the `normaltest` capture shows which way it reads them.)
+                            flip_normal_map_y: true,
                             alpha_mode: if cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque },
                             double_sided: cutout,
                             cull_mode: if cutout { None } else { Some(bevy::render::render_resource::Face::Back) },
@@ -176,7 +182,7 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
             if let Some(mat) = remastered.get(&key).filter(|_| !slot.path.is_empty()) {
                 return (meshes.add(m), mat.clone());
             }
-            let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t), true)));
+            let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t, slot.tint), true)));
             let normal_map = slot.normal.as_ref().map(|t| images.add(crate::me_remaster::plain(t, false)));
             let rough = slot.specular.as_ref().map(|t| {
                 let r = roughness_image(t);
@@ -195,6 +201,7 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                 perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
                 metallic_roughness_texture: rough,
                 normal_map_texture: normal_map,
+                flip_normal_map_y: true,
                 alpha_mode: if cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque },
                 double_sided: cutout,
                 cull_mode: if cutout { None } else { Some(bevy::render::render_resource::Face::Back) },
@@ -259,6 +266,35 @@ impl MePropCache {
     pub fn looks(&self, package: &str, mesh: &str) -> Option<&MeLooks> {
         self.looks.get(&format!("{package}.{mesh}"))
     }
+}
+
+/// A mesh's parts with some of its materials replaced (`overrides`, a section each; empty:
+/// its own), read once.
+fn get_with(
+    key: (&'static str, &'static str),
+    overrides: &[&'static str],
+    cache: &mut MePropCache,
+    pkgs: &mut MePackages,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) -> Option<Parts> {
+    if overrides.iter().all(|o| o.is_empty()) {
+        return get(key, cache, pkgs, meshes, materials, images);
+    }
+    let k = (key.0, key.1, overrides.to_vec());
+    if !cache.overridden.contains_key(&k) {
+        let names: Vec<String> = overrides.iter().map(|o| o.to_string()).collect();
+        let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, 512) {
+            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered)),
+            Err(e) => {
+                warn!("Mirror's Edge prop {}.{} with its own materials: {e}", key.0, key.1);
+                None
+            }
+        };
+        cache.overridden.insert(k.clone(), made);
+    }
+    cache.overridden.get(&k).cloned().flatten()
 }
 
 /// A mesh's parts and its box (ours, from its origin), read once (the level editor's
@@ -327,7 +363,7 @@ pub fn spawn_for_level(
         let level = &game.sim.level;
         cache.drawn = vec![false; level.me_props.len()];
         for (k, p) in level.me_props.iter().enumerate() {
-            if let Some(parts) = get((p.package, p.mesh), cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
+            if let Some(parts) = get_with((p.package, p.mesh), &p.materials, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
                 place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale));
                 cache.drawn[k] = true;
