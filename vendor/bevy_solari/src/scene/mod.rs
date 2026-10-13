@@ -6,7 +6,7 @@ mod types;
 
 use bevy_shader::load_shader_library;
 pub use binder::RaytracingSceneBindings;
-pub use portals::{RaytracingPortal, RaytracingPortals};
+pub use portals::{RaytracingAlphaMasked, RaytracingPortal, RaytracingPortals};
 pub use types::RaytracingMesh3d;
 
 use crate::SolariPlugins;
@@ -52,7 +52,9 @@ impl Plugin for RaytracingScenePlugin {
 
         app.add_plugins(ExtractResourcePlugin::<StandardMaterialAssets>::default())
             .add_plugins(ExtractResourcePlugin::<RaytracingPortals>::default())
-            .init_resource::<RaytracingPortals>();
+            .add_plugins(ExtractResourcePlugin::<RaytracingAlphaMasked>::default())
+            .init_resource::<RaytracingPortals>()
+            .init_resource::<RaytracingAlphaMasked>();
 
         let render_app = app.sub_app_mut(RenderApp);
 

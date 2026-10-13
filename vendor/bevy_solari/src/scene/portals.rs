@@ -22,3 +22,9 @@ pub struct RaytracingPortal {
     pub half_size: Vec2,
     pub to_other: Mat4,
 }
+
+/// Portal Runner patch: the meshes drawn with a cut-out (alpha-masked) material, whose BLAS are
+/// built non-opaque so rays test their texture's alpha (`trace_ray_plain`) and pass through the
+/// holes: fences, grates, a facade's windows.
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct RaytracingAlphaMasked(pub bevy_platform::collections::HashSet<bevy_asset::AssetId<bevy_mesh::Mesh>>);

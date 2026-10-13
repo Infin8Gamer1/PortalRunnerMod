@@ -99,6 +99,23 @@ pub struct MaterialSlot {
     /// Its colour parameters (lowercased names, linear colours): an instance's own first, then
     /// its parents', then the defaults its material's parameters have.
     pub vectors: Vec<(String, [f32; 3])>,
+    /// How it's drawn (its material's blend mode).
+    pub blend: Blend,
+    /// Drawn from both sides.
+    pub two_sided: bool,
+}
+
+/// A material's blend mode.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Blend {
+    #[default]
+    Opaque,
+    /// Cut out where its opacity is under this.
+    Masked(f32),
+    /// See-through (glass).
+    Translucent,
+    /// Added over what's behind (glows, light shafts).
+    Additive,
 }
 
 pub struct FaithArms {
@@ -321,6 +338,19 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
                 diffuse = read(&|n| !(is_normal(n) || is_spec(n) || n.contains("mask") || matches!(suffix(n).as_str(), "m" | "e" | "em")));
             }
             drop(files);
+            // A cut-out's opacity where its material takes it from (another texture, or another
+            // channel), into the colour map's alpha.
+            let (blend, two_sided) = material_blend(pkgs, pkg, m);
+            if let (Blend::Masked(_), Some(d)) = (blend, diffuse.as_mut()) {
+                if let Some((t, ch)) = material_opacity(pkgs, pkg, m, max_texture) {
+                    for y in 0..d.height {
+                        for x in 0..d.width {
+                            let (sx, sy) = (x * t.width / d.width, y * t.height / d.height);
+                            d.pixels[((y * d.width + x) * 4 + 3) as usize] = t.pixels[((sy * t.width + sx) * 4) as usize + ch];
+                        }
+                    }
+                }
+            }
             let (color, emissive) = if diffuse.is_none() { constant_color(pkgs, pkg, m) } else { (None, false) };
             let path = material_path(pkgs, pkg, m);
             // (Only a colour variant's, named for its colour: other instances' colour
@@ -329,9 +359,85 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             let variant = ["orange", "blue", "yellow", "red", "green", "white", "black", "grey", "gray"].iter().any(|c| named.contains(c));
             let tint = if variant { material_tint(pkgs, pkg, m) } else { None };
             let vectors = material_vectors(pkgs, pkg, m);
-            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, vectors }
+            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, vectors, blend, two_sided }
         })
         .collect()
+}
+
+/// Where a cut-out material's opacity comes from, when it's a texture: that texture (an
+/// instance's in place of its parameter's default) and its channel (0-3). None when it's worked
+/// out some other way (then the colour map's alpha stands in).
+fn material_opacity(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32, max_texture: u32) -> Option<(Rgba, usize)> {
+    let mut overrides: Vec<(String, Rc<Package>, i32)> = vec![];
+    let mut next = Some((pkg.clone(), m));
+    for _ in 0..6 {
+        let (p, obj) = next.take()?;
+        let (mp, mi) = pkgs.resolve(&p, obj)?;
+        let props = props::Props::read(&mp, &mp.exports[mi]).ok()?;
+        if mp.class_name(&mp.exports[mi]) != "Material" {
+            for (name, tex) in material_textures(&mp, mi) {
+                if !overrides.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(&name)) {
+                    overrides.push((name, mp.clone(), tex));
+                }
+            }
+            next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+            continue;
+        }
+        let t = props.get("OpacityMask")?;
+        let input = props::Props::read_list(&mp, t.at, t.at + t.size, "ExpressionInput").ok()?;
+        let ex = input.object(&mp, "Expression").filter(|&e| e > 0)? as usize - 1;
+        let class = mp.class_name(&mp.exports[ex]).to_string();
+        if !class.contains("TextureSample") {
+            return None;
+        }
+        let ch = if input.i32(&mp, "MaskA") == Some(1) {
+            3
+        } else if input.i32(&mp, "MaskR") == Some(1) {
+            0
+        } else if input.i32(&mp, "MaskG") == Some(1) {
+            1
+        } else if input.i32(&mp, "MaskB") == Some(1) {
+            2
+        } else {
+            3
+        };
+        let sample = props::Props::read(&mp, &mp.exports[ex]).ok()?;
+        let param = sample.name(&mp, "ParameterName");
+        let (tp, tex) = match param.and_then(|n| overrides.iter().find(|(o, _, _)| o.eq_ignore_ascii_case(&n)).cloned()) {
+            Some((_, op, t)) => (op, t),
+            None => (mp.clone(), sample.object(&mp, "Texture")?),
+        };
+        let (rp, ri) = pkgs.resolve(&tp, tex)?;
+        let read = texture::read_texture_from(&rp, &rp.exports[ri], max_texture, &mut |n| pkgs.raw(n)).ok()?;
+        return Some((read, ch));
+    }
+    None
+}
+
+/// A material's blend mode and two-sidedness: its root material's (an instance can't change
+/// them).
+fn material_blend(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> (Blend, bool) {
+    let mut next = Some((pkg.clone(), m));
+    for _ in 0..6 {
+        let Some((p, obj)) = next.take() else { break };
+        let Some((mp, mi)) = pkgs.resolve(&p, obj) else { break };
+        let Ok(props) = props::Props::read(&mp, &mp.exports[mi]) else { break };
+        if mp.class_name(&mp.exports[mi]) == "Material" {
+            let two = props.get("TwoSided").is_some_and(|t| t.bool_value);
+            let clip = props.f32(&mp, "OpacityMaskClipValue").unwrap_or(1.0 / 3.0);
+            let blend = match props.name(&mp, "BlendMode").as_deref() {
+                Some("BLEND_Masked") => Blend::Masked(clip),
+                Some("BLEND_Translucent") => Blend::Translucent,
+                Some("BLEND_Additive") | Some("BLEND_Modulate") => Blend::Additive,
+                // (An opaque material set to mask, as some are.)
+                _ if props.get("bIsMasked").is_some_and(|t| t.bool_value) => Blend::Masked(clip),
+                _ => Blend::Opaque,
+            };
+            return (blend, two);
+        }
+        next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    (Blend::Opaque, false)
 }
 
 /// A colour parameter's value: a LinearColor, as four floats or tagged R, G, B.

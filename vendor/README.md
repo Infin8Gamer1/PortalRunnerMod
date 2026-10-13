@@ -20,5 +20,14 @@ the game runs, and DLSS goes between ray reconstruction and plain upscaling with
 fix makes them again when ray reconstruction comes or goes (else it denoises nothing, and the
 traced light stays grainy).
 
+Rays through cut-outs (alpha-masked materials: fences, grates, a facade's window cut-outs):
+as published, Solari builds every BLAS opaque and has no alpha test, so the game left cut-out
+meshes out of the traced scene (no shadow, nothing in reflections). Now the game lists the meshes
+it draws with a cut-out material (`scene::RaytracingAlphaMasked`, a resource extracted to the
+render world); `blas.rs` builds theirs non-opaque, the GPU material carries the clip value (in
+what was padding: `binder.rs`, `raytracing_scene_bindings.wgsl`'s `Material.alpha_cutoff`), and
+`trace_ray_plain` loops over candidate hits, confirming one only where the base colour's alpha
+reaches it (`alpha_passes`). Opaque meshes stay on the fast path.
+
 Drop these, and the `[patch.crates-io]` entry in the root `Cargo.toml`, once Bevy's own release
 carries fixes.

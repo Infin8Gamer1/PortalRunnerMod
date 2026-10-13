@@ -131,8 +131,8 @@ fn load_detail(root: &Path, name: &str) -> Option<Detail> {
     let rmean = (rough.iter().sum::<f32>() / rough.len() as f32).max(1e-3);
     let rough = rough.into_iter().map(|x| x / rmean).collect();
     // Its normals' X and Y (OpenGL's: Y up the image). The game's maps are the other way up
-    // (Unreal's, DirectX's): Y flipped to match them, so the two blend as one (and the material
-    // reads the result as DirectX's: `flip_normal_map_y`).
+    // (Unreal's, DirectX's): Y flipped to match them, so the two blend as one (and the result
+    // written OpenGL's way up again).
     let normal = n.pixels().map(|p| [p[0] as f32 / 127.5 - 1.0, -(p[1] as f32 / 127.5 - 1.0)]).collect();
     Some(Detail { size, lum, normal, rough })
 }
@@ -208,10 +208,12 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
     let normal_map: Option<(Vec<[f32; 2]>, u32, u32)> = slot.normal.as_ref().map(|t| {
         (t.pixels.chunks_exact(4).map(|c| [c[0] as f32 / 127.5 - 1.0, c[1] as f32 / 127.5 - 1.0]).collect(), t.width, t.height)
     });
-    let spec: Option<(Vec<f32>, u32, u32)> = slot.specular.as_ref().map(|t| {
+    // The specular map: its brightness about its mean (varying the roughness), and where it's
+    // brightest (glass in a facade's windows, polished metal) glossy.
+    let spec: Option<(Vec<[f32; 2]>, u32, u32)> = slot.specular.as_ref().map(|t| {
         let v: Vec<f32> = t.pixels.chunks_exact(4).map(|c| (c[0] as f32 * 0.299 + c[1] as f32 * 0.587 + c[2] as f32 * 0.114) / 255.0).collect();
         let mean = (v.iter().sum::<f32>() / v.len() as f32).max(1e-3);
-        (v.into_iter().map(|x| x / mean).collect(), t.width, t.height)
+        (v.into_iter().map(|x| [x / mean, x]).collect(), t.width, t.height)
     });
     let k = surface.strength;
     let reps = repeats.max(1) as f32;
@@ -261,11 +263,14 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
                         let nz = (1.0 - g[0] * g[0] - g[1] * g[1]).max(0.0).sqrt();
                         let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-6);
                         let enc = |c: f32| ((c / len * 0.5 + 0.5) * 255.0 + 0.5) as u8;
-                        n_row[o..o + 4].copy_from_slice(&[enc(nx), enc(ny), enc(nz), 255]);
+                        // (Written OpenGL's way up, Y flipped, as Bevy and Solari read maps.)
+                        n_row[o..o + 4].copy_from_slice(&[enc(nx), enc(-ny), enc(nz), 255]);
                         // Roughness: the surface's, varied by the detail's and (shinier where it's
                         // brighter) the game's specular map; metalness the surface's.
-                        let sp = spec.as_ref().map_or(1.0, |(sm, sw, sh)| bilinear(sm, *sw, *sh, u, v, lerp));
-                        let rough = (surface.roughness * lerp(1.0, dr, k) * lerp(1.0, 1.0 / sp.max(0.25), 0.35)).clamp(0.04, 1.0);
+                        let sp = spec.as_ref().map_or([1.0, 0.0], |(sm, sw, sh)| bilinear(sm, *sw, *sh, u, v, mix2));
+                        let rough = (surface.roughness * lerp(1.0, dr, k) * lerp(1.0, 1.0 / sp[0].max(0.25), 0.35)).clamp(0.04, 1.0);
+                        let gloss = ((sp[1] - 0.45) / 0.4).clamp(0.0, 1.0);
+                        let rough = lerp(rough, 0.06, gloss * gloss * (3.0 - 2.0 * gloss));
                         m_row[o..o + 4].copy_from_slice(&[255, (rough * 255.0 + 0.5) as u8, (surface.metallic * 255.0 + 0.5) as u8, 255]);
                     }
                 }
@@ -273,19 +278,34 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
         }
     });
     Some(Baked {
-        color: with_mips(w, h, color, true),
-        normal: with_mips(w, h, normal, false),
-        metal_rough: with_mips(w, h, mr, false),
+        color: compressed(w, h, color, Map::Color),
+        normal: compressed(w, h, normal, Map::Normal),
+        metal_rough: compressed(w, h, mr, Map::Data),
     })
 }
 
-/// An image with its mip chain (box-filtered; a colour map's in linear light), repeating, and
-/// filtered across mips and at a slant (anisotropic).
-pub fn with_mips(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Image {
-    let mut data = pixels.clone();
-    let (mut cw, mut ch, mut cur) = (w, h, pixels);
-    let mut levels = 1;
-    while cw > 1 || ch > 1 {
+/// What a map holds, for how it's compressed: a colour (sRGB), a normal (its X and Y), or data
+/// (roughness and metalness, linear).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Map {
+    Color,
+    Normal,
+    Data,
+}
+
+/// Whether the GPU takes block-compressed textures (BC1-7): it's asked at startup.
+pub static BC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// A map's mip chain, from itself down to a pixel (box-filtered; a colour map's in linear
+/// light).
+fn mip_levels(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut levels = vec![(w, h, pixels)];
+    loop {
+        let (cw, ch, cur) = levels.last().unwrap();
+        let (cw, ch) = (*cw, *ch);
+        if cw <= 1 && ch <= 1 {
+            break;
+        }
         let (nw, nh) = ((cw / 2).max(1), (ch / 2).max(1));
         let mut next = vec![0u8; (nw * nh * 4) as usize];
         for y in 0..nh {
@@ -301,17 +321,12 @@ pub fn with_mips(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Image {
                 }
             }
         }
-        data.extend_from_slice(&next);
-        (cw, ch, cur) = (nw, nh, next);
-        levels += 1;
+        levels.push((nw, nh, next));
     }
-    let mut img = Image::new(
-        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        data,
-        if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
-        RenderAssetUsages::default(),
-    );
+    levels
+}
+
+fn sampled(mut img: Image, levels: u32) -> Image {
     img.texture_descriptor.mip_level_count = levels;
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
@@ -325,9 +340,65 @@ pub fn with_mips(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Image {
     img
 }
 
-/// A game texture as it is, with mips (the colour map: `srgb`).
-pub fn plain(t: &Rgba, srgb: bool) -> Image {
-    with_mips(t.width, t.height, t.pixels.clone(), srgb)
+/// An image with its mip chain, uncompressed (RGBA), repeating, and filtered across mips and at
+/// a slant (anisotropic).
+pub fn with_mips(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Image {
+    let levels = mip_levels(w, h, pixels, srgb);
+    let n = levels.len() as u32;
+    let data: Vec<u8> = levels.into_iter().flat_map(|(_, _, p)| p).collect();
+    let img = Image::new(
+        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
+        RenderAssetUsages::default(),
+    );
+    sampled(img, n)
+}
+
+/// The same, block-compressed for the GPU where it can be (a fifth of the memory): a colour as
+/// BC1 (BC3 if it has any see-through), a normal as BC5 (X and Y; the shader works out Z), data
+/// as BC1.
+pub fn compressed(w: u32, h: u32, pixels: Vec<u8>, map: Map) -> Image {
+    let srgb = map == Map::Color;
+    if !BC.load(std::sync::atomic::Ordering::Relaxed) || w % 4 != 0 || h % 4 != 0 {
+        return with_mips(w, h, pixels, srgb);
+    }
+    let alpha = map == Map::Color && pixels.chunks_exact(4).any(|c| c[3] < 250);
+    let (format, wgpu) = match map {
+        Map::Color if alpha => (texpresso::Format::Bc3, TextureFormat::Bc3RgbaUnormSrgb),
+        Map::Color => (texpresso::Format::Bc1, TextureFormat::Bc1RgbaUnormSrgb),
+        Map::Normal => (texpresso::Format::Bc5, TextureFormat::Bc5RgUnorm),
+        Map::Data => (texpresso::Format::Bc1, TextureFormat::Bc1RgbaUnorm),
+    };
+    let params = texpresso::Params { algorithm: texpresso::Algorithm::RangeFit, ..default() };
+    let levels = mip_levels(w, h, pixels, srgb);
+    let n = levels.len() as u32;
+    let mut data = Vec::new();
+    for (lw, lh, px) in &levels {
+        let mut out = vec![0u8; format.compressed_size(*lw as usize, *lh as usize)];
+        format.compress(px, *lw as usize, *lh as usize, params, &mut out);
+        data.extend_from_slice(&out);
+    }
+    let mut img = Image::default();
+    img.data = Some(data);
+    img.texture_descriptor.size = Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+    img.texture_descriptor.dimension = TextureDimension::D2;
+    img.texture_descriptor.format = wgpu;
+    sampled(img, n)
+}
+
+/// A game texture as it is, with mips, compressed. A normal map OpenGL's way up: the game's
+/// (Unreal's, DirectX's) are the other way up, and Bevy and Solari both read OpenGL's (the
+/// `normaltest` capture shows Bevy's).
+pub fn plain(t: &Rgba, map: Map) -> Image {
+    let mut px = t.pixels.clone();
+    if map == Map::Normal {
+        for c in px.chunks_exact_mut(4) {
+            c[1] = 255 - c[1];
+        }
+    }
+    compressed(t.width, t.height, px, map)
 }
 
 /// The game's colour map tinted (`tint`, linear) and its white kept under real paint's.
@@ -378,6 +449,23 @@ mod tests {
         // The far city and plants keep their look.
         assert_eq!(of("B_Vista.SP00.M_Vista_Buildings"), None);
         assert_eq!(of("G_Vegetation.M_BushA_Leaves_White_01"), None);
+    }
+
+    /// Compressed: an opaque colour as BC1 (8 bytes a 4x4 block, down to the last mip's one
+    /// block), one with any see-through as BC3, a normal as BC5.
+    #[test]
+    fn maps_compress_to_blocks() {
+        let px = |a: u8| (0..16 * 16).flat_map(|i| [(i * 7 % 256) as u8, 128, 200, a]).collect::<Vec<u8>>();
+        let img = compressed(16, 16, px(255), Map::Color);
+        assert_eq!(img.texture_descriptor.format, TextureFormat::Bc1RgbaUnormSrgb);
+        assert_eq!(img.texture_descriptor.mip_level_count, 5);
+        assert_eq!(img.data.as_ref().unwrap().len(), (16 + 4 + 1 + 1 + 1) * 8);
+        assert_eq!(compressed(16, 16, px(100), Map::Color).texture_descriptor.format, TextureFormat::Bc3RgbaUnormSrgb);
+        let n = compressed(16, 16, px(255), Map::Normal);
+        assert_eq!(n.texture_descriptor.format, TextureFormat::Bc5RgUnorm);
+        assert_eq!(n.data.as_ref().unwrap().len(), (16 + 4 + 1 + 1 + 1) * 16);
+        // (Not a whole number of blocks across: left as it is.)
+        assert_eq!(compressed(6, 6, vec![255; 6 * 6 * 4], Map::Color).texture_descriptor.format, TextureFormat::Rgba8UnormSrgb);
     }
 
     /// A mip chain down to one pixel, a colour map's averaged in linear light.

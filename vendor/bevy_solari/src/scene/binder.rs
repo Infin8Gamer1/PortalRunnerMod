@@ -6,7 +6,7 @@ use bevy_ecs::{
     resource::Resource,
     system::{Query, Res, ResMut},
 };
-use bevy_math::{ops::cos, Mat4, Vec3};
+use bevy_math::{ops::cos, Mat4, Vec2, Vec3};
 use bevy_pbr::{
     DfgLut, ExtractedDirectionalLight, MeshMaterial3d, PreviousGlobalTransform, StandardMaterial,
 };
@@ -134,6 +134,10 @@ pub fn prepare_raytracing_scene_bindings(
             emissive: material.emissive.to_vec3(),
             metallic: material.metallic,
             reflectance: material.reflectance,
+            alpha_cutoff: match material.alpha_mode {
+                bevy_material::AlphaMode::Mask(c) => c.max(1e-3),
+                _ => 0.0,
+            },
             _padding: Default::default(),
         });
 
@@ -417,7 +421,10 @@ struct GpuMaterial {
     perceptual_roughness: f32,
     emissive: Vec3,
     metallic: f32,
-    _padding: Vec3,
+    // (Portal Runner patch: a cut-out material's clip value, 0 for the rest; in what was
+    // padding, so the layout's the same.)
+    alpha_cutoff: f32,
+    _padding: Vec2,
     reflectance: f32,
 }
 

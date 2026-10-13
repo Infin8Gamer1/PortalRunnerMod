@@ -683,7 +683,8 @@ fn script(name: &str) -> Vec<Act> {
             }
             // (PORTAL_ME_VIEW=x,y,z,yaw,pitch: a spectator's view too.)
             if let Some(f) = std::env::var("PORTAL_ME_VIEW").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<_>>()).filter(|f| f.len() == 5) {
-                v.extend([Spectate(Vec3::new(f[0], f[1], f[2]), f[3], f[4]), Wait(90)]);
+                let wait = std::env::var("PORTAL_ME_WAIT").ok().and_then(|w| w.parse().ok()).unwrap_or(90);
+                v.extend([Spectate(Vec3::new(f[0], f[1], f[2]), f[3], f[4]), Wait(wait)]);
             }
             v.extend([Wait(60), Shot("me_4")]);
             v

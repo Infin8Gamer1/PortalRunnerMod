@@ -78,6 +78,10 @@ version = "0.19.1"
 [dependencies.bevy_mesh]
 version = "0.19.1"
 
+# Portal Runner patch: a material's alpha mode (cut-outs tested by rays).
+[dependencies.bevy_material]
+version = "0.19.1"
+
 [dependencies.bevy_pbr]
 version = "0.19.1"
 features = ["dfg_lut"]

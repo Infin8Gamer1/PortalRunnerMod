@@ -151,7 +151,12 @@ placed mesh's own materials (an orange catwalk, the adverts) replace its mesh's,
 are tinted as the game has them, and the game's normal maps are read the right way up (theirs
 are DirectX's: the `normaltest` capture, with `PORTAL_NORMAL_TEST=1`, shows how Bevy reads one).
 Textures are read at up to 1024 square, their big mips from the packages they come from (a
-cooked map keeps only their small ones); backlit adverts glow in their colour.
+cooked map keeps only their small ones), and block-compressed for the GPU (BC1/BC3/BC5); backlit
+adverts glow in their colour. Materials are drawn as the game has them: cut out where its
+opacity says (from the texture and channel its material takes it from), and the ray-traced light
+goes through the holes too (fences cast their lattice); glass see-through, a building's still
+shading what's behind it in the traced light; and two-sided where it is. A specular map's
+brightest parts (windows) are glossy.
 
 As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 

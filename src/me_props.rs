@@ -75,6 +75,9 @@ pub struct MePropCache {
     /// Meshes with some of their materials replaced (a placed mesh's own), by mesh and its
     /// replacements.
     overridden: HashMap<(&'static str, &'static str, Vec<&'static str>), Option<Parts>>,
+    /// Materials whose meshes block traced light though they're drawn see-through (a
+    /// building's glass).
+    occluders: std::collections::HashSet<AssetId<StandardMaterial>>,
     /// Remastered materials (#101), by material and how many times their detail tiles.
     remastered: HashMap<(String, u32), Handle<StandardMaterial>>,
     /// The same, wound the other way round, for where a level mirrors a mesh (scales it by
@@ -92,6 +95,11 @@ pub struct MePropCache {
 }
 
 pub fn setup(world: &mut World) {
+    // (Textures go to the GPU block-compressed where it takes them.)
+    if let Some(d) = world.get_resource::<bevy::render::renderer::RenderDevice>() {
+        let bc = d.features().contains(bevy::render::render_resource::WgpuFeatures::TEXTURE_COMPRESSION_BC);
+        crate::me_remaster::BC.store(bc, std::sync::atomic::Ordering::Relaxed);
+    }
     world.insert_resource(MePropCache { level: u64::MAX, ..default() });
     let Some(cooked) = world.get_resource::<crate::me_viewmodel::MeArms>().map(|a| a.cooked_pc().to_path_buf()) else { return };
     // (Props collide with their meshes' own shapes, read from the same install.)
@@ -109,6 +117,19 @@ fn ue_dir(p: [f32; 3]) -> [f32; 3] {
     [p[1], p[2], -p[0]]
 }
 
+/// How a material's drawn, as the game has it: cut out (its clip value), see-through, or solid;
+/// and from both sides.
+fn drawn_as(slot: &MaterialSlot) -> (AlphaMode, bool) {
+    use me_assets::Blend;
+    match slot.blend {
+        Blend::Opaque => (AlphaMode::Opaque, slot.two_sided),
+        // (Cut-outs are fences and grates: seen from both sides.)
+        Blend::Masked(clip) => (AlphaMode::Mask(clip.clamp(0.01, 0.99)), true),
+        Blend::Translucent => (AlphaMode::Blend, true),
+        Blend::Additive => (AlphaMode::Add, true),
+    }
+}
+
 /// How many metres of the mesh one texture's width covers, over a section's triangles (its
 /// area over its UVs' area): how big the texture is in the world.
 fn metres_per_uv(mesh: &StaticMesh, first: usize, tris: usize) -> f32 {
@@ -123,7 +144,15 @@ fn metres_per_uv(mesh: &StaticMesh, first: usize, tris: usize) -> f32 {
     if uv > 1e-9 { (world / uv).sqrt() as f32 } else { 1.0 }
 }
 
-fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>, remastered: &mut HashMap<(String, u32), Handle<StandardMaterial>>) -> Parts {
+fn build(
+    mesh: &StaticMesh,
+    slots: &[MaterialSlot],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    remastered: &mut HashMap<(String, u32), Handle<StandardMaterial>>,
+    occluders: &mut std::collections::HashSet<AssetId<StandardMaterial>>,
+) -> Parts {
     let positions: Vec<[f32; 3]> = mesh.positions.iter().map(|&p| ue(p)).collect();
     let normals: Vec<[f32; 3]> = mesh.normals.iter().map(|&n| ue_dir(n)).collect();
     // Our axes are Unreal's mirrored, which turns cross(normal, tangent) round: so the
@@ -146,7 +175,11 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                 .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone())
                 .with_inserted_indices(Indices::U32(indices));
             // Cut-outs (fences, grilles) where the diffuse map's alpha says so.
-            let cutout = slot.diffuse.as_ref().is_some_and(|t| t.pixels.chunks_exact(4).filter(|c| c[3] < 128).count() * 20 > t.pixels.len() / 4);
+            // How it's drawn: as the game's material has it (cut out, see-through, from both
+            // sides).
+            let (alpha_mode, double_sided) = drawn_as(slot);
+            let cull_mode = if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) };
+            let glass = slot.blend == me_assets::Blend::Translucent;
             // Remastered (#101): what it's made of, its detail tiled at its real size (one
             // material for every mesh with it at that size).
             // (Once per material: its detail's tiling from the first mesh that has it.)
@@ -168,12 +201,10 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                             // (The map's: these scale it.)
                             perceptual_roughness: 1.0,
                             metallic: 1.0,
-                            // (Unreal's normal maps are DirectX's, Y down the image; Bevy's are
-                            // OpenGL's: the `normaltest` capture shows which way it reads them.)
-                            flip_normal_map_y: true,
-                            alpha_mode: if cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque },
-                            double_sided: cutout,
-                            cull_mode: if cutout { None } else { Some(bevy::render::render_resource::Face::Back) },
+                            // (A mask from the colour map: opaque, its alpha isn't opacity.)
+                            alpha_mode: if surface.mask { AlphaMode::Opaque } else { alpha_mode },
+                            double_sided,
+                            cull_mode,
                             ..default()
                         });
                         remastered.insert(key, m.clone());
@@ -190,12 +221,12 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
             if let Some(mat) = remastered.get(&key).filter(|_| !slot.path.is_empty()) {
                 return (meshes.add(m), mat.clone());
             }
-            let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t, slot.tint), true)));
-            let normal_map = slot.normal.as_ref().map(|t| images.add(crate::me_remaster::plain(t, false)));
+            let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t, slot.tint), crate::me_remaster::Map::Color)));
+            let normal_map = slot.normal.as_ref().map(|t| images.add(crate::me_remaster::plain(t, crate::me_remaster::Map::Normal)));
             let rough = slot.specular.as_ref().map(|t| {
                 let r = roughness_image(t);
                 let px = r.data.clone().unwrap_or_default();
-                images.add(crate::me_remaster::with_mips(t.width, t.height, px, false))
+                images.add(crate::me_remaster::compressed(t.width, t.height, px, crate::me_remaster::Map::Data))
             });
             // Without a texture: its constant colour (glowing, if it's a light's), else grey.
             let plain = slot.color.map(|[r, g, b]| Color::linear_rgb(r, g, b));
@@ -209,13 +240,26 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                 perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
                 metallic_roughness_texture: rough,
                 normal_map_texture: normal_map,
-                flip_normal_map_y: true,
-                alpha_mode: if cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque },
-                double_sided: cutout,
-                cull_mode: if cutout { None } else { Some(bevy::render::render_resource::Face::Back) },
-                reflectance: 0.3,
+                alpha_mode,
+                double_sided,
+                cull_mode,
+                reflectance: if glass { 0.5 } else { 0.3 },
                 ..default()
             });
+            // Glass: clear and smooth, its colour a tint (what it has of an opacity is its
+            // alpha; else mostly clear). A building's (its windows) still shades what's behind it
+            // in the traced light, as the rooms behind them would.
+            if glass && slot.path.starts_with("B_") {
+                occluders.insert(mat.id());
+            }
+            if glass {
+                if let Some(mut g) = materials.get_mut(&mat) {
+                    g.perceptual_roughness = 0.05;
+                    g.metallic_roughness_texture = None;
+                    let opaque = slot.diffuse.as_ref().is_none_or(|t| t.pixels.chunks_exact(4).all(|c| c[3] > 250));
+                    g.base_color = g.base_color.with_alpha(if opaque { 0.25 } else { 1.0 });
+                }
+            }
             if !slot.path.is_empty() {
                 remastered.insert(key, mat.clone());
             }
@@ -257,7 +301,7 @@ fn get(
                     }
                 }
                 cache.looks.insert(format!("{}.{}", key.0, key.1), looks);
-                Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered))
+                Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders))
             }
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{}: {e}", key.0, key.1);
@@ -294,7 +338,7 @@ fn get_with(
     if !cache.overridden.contains_key(&k) {
         let names: Vec<String> = overrides.iter().map(|o| o.to_string()).collect();
         let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, ME_TEXTURE) {
-            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered)),
+            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders)),
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{} with its own materials: {e}", key.0, key.1);
                 None
@@ -345,10 +389,13 @@ fn mirrored(key: (&'static str, &'static str), parts: &Parts, cache: &mut MeProp
     flipped
 }
 
-fn place(commands: &mut Commands, parts: &Parts, tf: Transform) {
+fn place(commands: &mut Commands, parts: &Parts, tf: Transform, occluders: &std::collections::HashSet<AssetId<StandardMaterial>>) {
     commands.spawn((ChamberGeom, crate::chamber::PlacedAt(tf.translation), tf, Visibility::default())).with_children(|c| {
         for (m, mat) in parts {
-            c.spawn((Mesh3d(m.clone()), MeshMaterial3d(mat.clone()), Transform::default()));
+            let mut e = c.spawn((Mesh3d(m.clone()), MeshMaterial3d(mat.clone()), Transform::default()));
+            if occluders.contains(&mat.id()) {
+                e.insert(crate::raytrace::CastsTracedShadow);
+            }
         }
     });
 }
@@ -373,7 +420,7 @@ pub fn spawn_for_level(
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get_with((p.package, p.mesh), &p.materials, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
-                place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale));
+                place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale), &cache.occluders);
                 cache.drawn[k] = true;
             }
         }
@@ -411,7 +458,7 @@ pub fn spawn_for_level(
                     let mut y = l.base.y;
                     while y < l.top + 0.9 {
                         let at = Vec3::new(l.base.x, y, l.base.z) + l.normal * 0.12;
-                        place(&mut commands, &parts, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)));
+                        place(&mut commands, &parts, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)), &cache.occluders);
                         y += LADDER_STEP;
                     }
                 }
