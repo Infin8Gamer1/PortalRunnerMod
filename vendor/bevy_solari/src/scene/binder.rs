@@ -1,4 +1,4 @@
-use super::{blas::BlasManager, extract::StandardMaterialAssets, RaytracingMesh3d};
+use super::{blas::BlasManager, extract::StandardMaterialAssets, RaytracingMesh3d, RaytracingPortals};
 use bevy_asset::{AssetId, Handle};
 use bevy_color::{ColorToComponents, LinearRgba};
 use bevy_ecs::{
@@ -52,6 +52,7 @@ pub fn prepare_raytracing_scene_bindings(
     render_device: Res<RenderDevice>,
     pipeline_cache: Res<PipelineCache>,
     render_queue: Res<RenderQueue>,
+    portals: Option<Res<RaytracingPortals>>,
     mut raytracing_scene_bindings: ResMut<RaytracingSceneBindings>,
 ) {
     raytracing_scene_bindings.bind_group = None;
@@ -261,6 +262,28 @@ pub fn prepare_raytracing_scene_bindings(
     directional_lights.write_buffer(&render_device, &render_queue);
     previous_frame_light_id_translations.write_buffer(&render_device, &render_queue);
 
+    // The linked portals, for light to go through.
+    let mut gpu_portals = GpuPortals::default();
+    if let Some(portals) = portals.as_deref().filter(|p| p.portals.len() == 2) {
+        gpu_portals.count = 2;
+        for (i, p) in portals.portals.iter().enumerate() {
+            gpu_portals.portals[i] = GpuPortal {
+                center: p.center,
+                half_x: p.half_size.x,
+                normal: p.normal,
+                half_y: p.half_size.y,
+                right: p.right,
+                other: 1 - i as u32,
+                up: p.up,
+                _padding: 0.0,
+                to_other: p.to_other,
+                from_other: p.to_other.inverse(),
+            };
+        }
+    }
+    let mut portals_buffer = StorageBuffer::from(gpu_portals);
+    portals_buffer.write_buffer(&render_device, &render_queue);
+
     let mut command_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("build_tlas_command_encoder"),
     });
@@ -294,6 +317,7 @@ pub fn prepare_raytracing_scene_bindings(
             previous_frame_light_id_translations.binding().unwrap(),
             dfg_view,
             dfg_sampler,
+            portals_buffer.binding().unwrap(),
         )),
     ));
 }
@@ -323,6 +347,7 @@ impl RaytracingSceneBindings {
                         storage_buffer_read_only_sized(false, None),
                         texture_2d(TextureSampleType::Float { filterable: true }),
                         sampler(SamplerBindingType::Filtering),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -394,6 +419,34 @@ struct GpuMaterial {
     metallic: f32,
     _padding: Vec3,
     reflectance: f32,
+}
+
+/// A portal, as the shaders see it (`raytracing_scene_bindings.wgsl`'s `Portal`): its opening,
+/// which of the two its partner is, and the transforms to and from that.
+#[derive(ShaderType, Clone, Copy)]
+struct GpuPortal {
+    center: Vec3,
+    half_x: f32,
+    normal: Vec3,
+    half_y: f32,
+    right: Vec3,
+    other: u32,
+    up: Vec3,
+    _padding: f32,
+    to_other: Mat4,
+    from_other: Mat4,
+}
+
+impl Default for GpuPortal {
+    fn default() -> Self {
+        Self { center: Vec3::ZERO, half_x: 0.0, normal: Vec3::Z, half_y: 0.0, right: Vec3::X, other: 0, up: Vec3::Y, _padding: 0.0, to_other: Mat4::IDENTITY, from_other: Mat4::IDENTITY }
+    }
+}
+
+#[derive(ShaderType, Clone, Copy, Default)]
+struct GpuPortals {
+    count: u32,
+    portals: [GpuPortal; 2],
 }
 
 #[derive(ShaderType)]

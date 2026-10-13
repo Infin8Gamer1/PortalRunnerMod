@@ -74,6 +74,27 @@ struct DirectionalLight {
 
 const LIGHT_NOT_PRESENT_THIS_FRAME = 0xFFFFFFFFu;
 
+// A portal's opening (an ellipse `half_x` by `half_y` across `right` and `up`), facing `normal`;
+// `other` is its partner, `to_other` takes what goes into it to where it comes out of that.
+struct Portal {
+    center: vec3<f32>,
+    half_x: f32,
+    normal: vec3<f32>,
+    half_y: f32,
+    right: vec3<f32>,
+    other: u32,
+    up: vec3<f32>,
+    _padding: f32,
+    to_other: mat4x4<f32>,
+    from_other: mat4x4<f32>,
+}
+
+// The linked portals: none, or a pair.
+struct Portals {
+    count: u32,
+    portals: array<Portal, 2>,
+}
+
 @group(0) @binding(0) var<storage> vertex_buffers: binding_array<VertexBuffer>;
 @group(0) @binding(1) var<storage> index_buffers: binding_array<IndexBuffer>;
 @group(0) @binding(2) var textures: binding_array<texture_2d<f32>>;
@@ -89,18 +110,81 @@ const LIGHT_NOT_PRESENT_THIS_FRAME = 0xFFFFFFFFu;
 @group(0) @binding(12) var<storage> previous_frame_light_id_translations: array<u32>;
 @group(0) @binding(13) var brdf_dfg_lut: texture_2d<f32>;
 @group(0) @binding(14) var brdf_dfg_lut_sampler: sampler;
+@group(0) @binding(15) var<storage> portals: Portals;
 
 const RAY_T_MIN = 0.001f;
 const RAY_T_MAX = 100000.0f;
 
 const RAY_NO_CULL = 0xFFu;
 
-fn trace_ray(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> RayIntersection {
+const NO_PORTAL = 0xFFFFFFFFu;
+// How far short of a portal's surface a ray stops before going through it (the portal lies on
+// its wall's surface), and how far past the other it starts again.
+const PORTAL_EPSILON = 0.01f;
+
+// A ray through the scene's geometry alone.
+fn trace_ray_plain(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> RayIntersection {
     let ray = RayDesc(ray_flag, RAY_NO_CULL, ray_t_min, ray_t_max, ray_origin, ray_direction);
     var rq: ray_query;
     rayQueryInitialize(&rq, tlas, ray);
     rayQueryProceed(&rq);
     return rayQueryGetCommittedIntersection(&rq);
+}
+
+struct PortalCrossing {
+    index: u32,
+    t: f32,
+}
+
+// The linked portal a ray goes into (from in front, through its opening) first between
+// `ray_t_min` and `ray_t_max`, and where along it; NO_PORTAL if none.
+fn portal_crossing(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32) -> PortalCrossing {
+    var best = PortalCrossing(NO_PORTAL, ray_t_max);
+    for (var i = 0u; i < portals.count; i++) {
+        let p = portals.portals[i];
+        let into = dot(ray_direction, p.normal);
+        if into > -1e-5 { continue; }
+        let t = dot(p.center - ray_origin, p.normal) / into;
+        if t < ray_t_min || t > best.t { continue; }
+        let q = ray_origin + ray_direction * t - p.center;
+        let x = dot(q, p.right) / p.half_x;
+        let y = dot(q, p.up) / p.half_y;
+        if x * x + y * y > 1.0 { continue; }
+        best = PortalCrossing(i, t);
+    }
+    return best;
+}
+
+// After `trace_ray`: how many portals the ray went through, and the transform that takes
+// where it ended up back to where that appears from where it started (behind the portal it
+// went into: "unfolded").
+var<private> portals_crossed: u32;
+var<private> portal_unfold: mat4x4<f32>;
+
+// A ray through the scene, through the linked portals (at most two of them): what it hits, as
+// it really is. `portals_crossed` and `portal_unfold` say how it got there.
+fn trace_ray(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> RayIntersection {
+    var origin = ray_origin;
+    var direction = ray_direction;
+    var t_min = ray_t_min;
+    var t_max = ray_t_max;
+    portals_crossed = 0u;
+    portal_unfold = mat4x4<f32>(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0));
+    for (var k = 0u; k < 2u; k++) {
+        let crossing = portal_crossing(origin, direction, t_min, t_max);
+        if crossing.index == NO_PORTAL { break; }
+        // (Up to the portal: what's in front of it.)
+        let hit = trace_ray_plain(origin, direction, t_min, max(t_min, crossing.t - PORTAL_EPSILON), ray_flag);
+        if hit.kind != RAY_QUERY_INTERSECTION_NONE { return hit; }
+        let p = portals.portals[crossing.index];
+        origin = (p.to_other * vec4(origin + direction * crossing.t, 1.0)).xyz;
+        direction = normalize((p.to_other * vec4(direction, 0.0)).xyz);
+        t_max -= crossing.t;
+        t_min = PORTAL_EPSILON;
+        portals_crossed += 1u;
+        portal_unfold = portal_unfold * p.from_other;
+    }
+    return trace_ray_plain(origin, direction, t_min, t_max, ray_flag);
 }
 
 fn sample_texture(id: u32, uv: vec2<f32>) -> vec3<f32> {

@@ -1,10 +1,12 @@
 mod binder;
 mod blas;
 mod extract;
+mod portals;
 mod types;
 
 use bevy_shader::load_shader_library;
 pub use binder::RaytracingSceneBindings;
+pub use portals::{RaytracingPortal, RaytracingPortals};
 pub use types::RaytracingMesh3d;
 
 use crate::SolariPlugins;
@@ -48,7 +50,9 @@ impl Plugin for RaytracingScenePlugin {
             return;
         }
 
-        app.add_plugins(ExtractResourcePlugin::<StandardMaterialAssets>::default());
+        app.add_plugins(ExtractResourcePlugin::<StandardMaterialAssets>::default())
+            .add_plugins(ExtractResourcePlugin::<RaytracingPortals>::default())
+            .init_resource::<RaytracingPortals>();
 
         let render_app = app.sub_app_mut(RenderApp);
 

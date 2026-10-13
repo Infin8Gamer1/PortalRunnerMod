@@ -629,18 +629,26 @@ fn script(name: &str) -> Vec<Act> {
         // map's own orange on the west wall with the pellet passing in front of it, blue on the
         // way in's west wall, and a spectator camera by the entrance elevator looking across
         // the floor at blue. A shot with the pellet far off, then a shot every 6 frames as it
-        // passes orange. PORTAL_NOPORTALS=1: the same without the portals.
+        // passes orange. PORTAL_NOPORTALS=1: the same without the portals; PORTAL_PELLET_GLOW=n
+        // makes the pellet n times as bright.
         "portallight08" => {
             use crate::LevelGroup::Portal as N;
             let orange = Vec3::new(-9.648, 1.434, 1.644);
-            let mut v = vec![Chamber(N, "testchmb_a_04"), Wait(60)];
+            // (Auto exposure off: one frame's brightness against another's is the light's.)
+            let mut v = vec![Set(|s| s.auto_exposure = 0.0), Chamber(N, "testchmb_a_04"), Wait(60)];
             if std::env::var_os("PORTAL_NOPORTALS").is_none() {
                 v.push(Portal(PortalColor::Orange, orange, Vec3::X, Vec3::Y));
                 v.push(Portal(PortalColor::Blue, Vec3::new(-6.5024, 1.45, 18.5), Vec3::X, Vec3::Y));
             }
             v.extend([Spectate(Vec3::new(-0.5, 1.5, 19.3), 70.0, -14.0), WaitPelletNear(Vec3::new(-8.08, 1.56, 12.0), 3.0, 900), Wait(20), Shot("light08_far"), WaitPelletNear(orange, 5.0, 900)]);
+            // (PORTAL_PELLET_STILL=1: the pellet held still in front of orange, and shots of
+            // the light settling.)
+            let still = std::env::var_os("PORTAL_PELLET_STILL").is_some();
             for k in 0..10 {
-                v.extend([Wait(6), Shot(Box::leak(format!("light08_{k:02}").into_boxed_str()))]);
+                if still {
+                    v.push(SendPellet(Vec3::new(-8.08, 1.56, orange.z), Vec3::ZERO));
+                }
+                v.extend([Wait(if still { 20 } else { 6 }), Shot(Box::leak(format!("light08_{k:02}").into_boxed_str()))]);
             }
             v
         }

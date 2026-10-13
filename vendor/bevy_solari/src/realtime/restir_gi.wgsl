@@ -9,7 +9,7 @@ enable wgpu_ray_query;
 #import bevy_solari::brdf::evaluate_diffuse_brdf
 #import bevy_solari::gbuffer_utils::{gpixel_resolve, pixel_dissimilar, permute_pixel}
 #import bevy_solari::sampling::{sample_random_light, trace_point_visibility, balance_heuristic, isnan}
-#import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN, RAY_T_MAX}
+#import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, portals_crossed, portal_unfold, RAY_T_MIN, RAY_T_MAX}
 #import bevy_solari::world_cache::{query_world_cache, WORLD_CACHE_CELL_LIFETIME}
 #import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gi_reservoirs_b, gbuffer, depth_buffer, motion_vectors, previous_gbuffer, previous_depth_buffer, view, previous_view, constants, Reservoir}
 #import bevy_solari::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD
@@ -98,6 +98,10 @@ fn generate_initial_reservoir(world_position: vec3<f32>, world_normal: vec3<f32>
     }
 
     let sample_point = resolve_ray_hit_full(ray);
+    // (Through a portal: where it appears from here, behind the portal the ray went into, so
+    // reusing it, its direction and distance, and whether it's in sight, all hold.)
+    let crossed = portals_crossed;
+    let unfold = portal_unfold;
 
     if any(sample_point.material.emissive != vec3(0.0)) {
         return reservoir;
@@ -105,6 +109,10 @@ fn generate_initial_reservoir(world_position: vec3<f32>, world_normal: vec3<f32>
 
     reservoir.sample_point_world_position = sample_point.world_position;
     reservoir.sample_point_world_normal = sample_point.world_normal;
+    if crossed > 0u {
+        reservoir.sample_point_world_position = (unfold * vec4(sample_point.world_position, 1.0)).xyz;
+        reservoir.sample_point_world_normal = normalize((unfold * vec4(sample_point.world_normal, 0.0)).xyz);
+    }
     reservoir.confidence_weight = 1.0;
 
 #ifdef NO_WORLD_CACHE

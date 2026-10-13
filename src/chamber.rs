@@ -511,7 +511,8 @@ pub fn setup(
         // it tonemaps to white, with an orange rim from the shell and the glow).
         pellet_core: materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.9, 0.7),
-            emissive: LinearRgba::rgb(400.0, 200.0, 60.0),
+            // (PORTAL_PELLET_GLOW: times this, to see its light plainly when testing.)
+            emissive: LinearRgba::rgb(400.0, 200.0, 60.0) * std::env::var("PORTAL_PELLET_GLOW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0),
             perceptual_roughness: 0.2,
             ..default()
         }),
