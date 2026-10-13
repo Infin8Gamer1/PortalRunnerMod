@@ -673,6 +673,23 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // Sunlight through portals (#94): on Rooftops, orange on the start roof facing the sky,
+        // its top to the south so the sun going down and north into it comes out of blue going
+        // down; blue low on the north face of the roof's back wall, over the floor that wall
+        // shades, so what lights that floor came through the portals. A spectator camera up the
+        // roof looking back at the wall. PORTAL_NOPORTALS=1: the same without the portals.
+        "portalsun" => {
+            let mut v = vec![Set(|s| s.auto_exposure = 0.0), Map(7), Wait(90)];
+            if std::env::var_os("PORTAL_NOPORTALS").is_none() {
+                v.push(Portal(PortalColor::Orange, Vec3::new(0.0, 0.0, -2.0), Vec3::Y, Vec3::Z));
+                v.push(Portal(PortalColor::Blue, Vec3::new(-1.5, 1.1, 5.5), Vec3::NEG_Z, Vec3::Y));
+            }
+            v.push(Spectate(Vec3::new(1.0, 4.5, -9.0), 180.0, -22.0));
+            for k in 0..4 {
+                v.extend([Wait(60), Shot(Box::leak(format!("sun_{k}").into_boxed_str()))]);
+            }
+            v
+        }
         // The spectator camera (#90): over Chamber 08's goo, where she'd drown, for as long as
         // it likes, following the pellet as it bounces; then back to her, where she stood.
         "spectate" => {
