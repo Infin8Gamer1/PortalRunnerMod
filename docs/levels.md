@@ -138,9 +138,15 @@ Training map and its three time trials):
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
   of what it is).
-- Its sun is its brightest directional light; she starts at its start. A zipline sags as its
+- Its sun is the directional light its lightmaps were baked with (the level's shadows'), as
+  bright as ours; she starts at its start. A zipline sags as its
   spline does. A time trial's timer checkpoints are a course (in the order they lead on to each
   other), the last its finish.
+
+Their materials are remastered for ray tracing (`assets/remaster/`, #101): each keeps the
+game's own art and gets, from what it's made of (plaster, concrete, roof, painted or bare metal,
+wood, fabric...: `assets/remaster/me.ron`), a CC0 physically based detail layer at its real
+size, a roughness and a metalness, and mipmaps; whites are kept under real white paint's.
 
 As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 

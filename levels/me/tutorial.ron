@@ -2520,7 +2520,7 @@
         (kind: MeProp(package: "Tutorial_LW", mesh: "s_van_01_bd", scale: (1.0, 1.0, 1.0), bounds: Some(((-3.3299, -0.032, -1.6275), (3.291, 2.357, 1.6275))), solid: false, own_shape: true), at: (-83.32, -0.08, -359.2794), yaw: -90.0, name: "InterpActor_7"),
         (kind: Hull(planes: [(0.00007, -0.0, 1.0, -1.2381), (0.99856, -0.0, 0.05358, -4.4559), (-0.00007, -0.0, -1.0, 1.3481), (-0.99855, -0.0, -0.05392, 41.5422), (-0.0, 1.0, -0.0, 4.42), (-0.0, -1.0, -0.0, 1.28)], mat: Clip), at: (-85.78, 59.2, 3.82), yaw: -90.005, name: "BlockingVolume_10"),
         (kind: MeProp(package: "Tutorial_Spt", mesh: "PX_SlideUnder_01", scale: (1.0, 1.0, 1.0), bounds: Some(((-4.0, -0.64, 0.0), (3.04, 0.48, 1.76))), solid: false, own_shape: true), at: (-79.2, 58.24, -11.04), name: "InterpActor_3"),
-        (kind: Sun(color: (0.855, 0.843, 0.812), illuminance: 11000.0), at: (0.0, 100.0, 0.0), yaw: -154.97864, pitch: -52.998047),
+        (kind: Sun(color: (1.0, 0.961, 0.882), illuminance: 11000.0), at: (0.0, 100.0, 0.0), yaw: -123.83789, pitch: -52.998047),
         (kind: Spawn(), at: (-62.6085, 42.5123, -20.1593), yaw: 180.044),
     ],
 )

@@ -13,7 +13,7 @@ use faith_move::Fixture;
 use me_assets::{MaterialSlot, Packages, StaticMesh};
 
 use crate::chamber::ChamberGeom;
-use crate::me_viewmodel::{image_from, normal_image, roughness_image};
+use crate::me_viewmodel::roughness_image;
 use crate::Game;
 
 /// The ladder drawn on ladders, and how tall one piece of it is.
@@ -69,6 +69,8 @@ pub struct MeLooks {
 #[derive(Resource, Default)]
 pub struct MePropCache {
     meshes: HashMap<(&'static str, &'static str), Option<Parts>>,
+    /// Remastered materials (#101), by material and how many times their detail tiles.
+    remastered: HashMap<(String, u32), Handle<StandardMaterial>>,
     /// The same, wound the other way round, for where a level mirrors a mesh (scales it by
     /// a negative amount an odd number of times): mirrored, its faces would face inwards.
     mirrored: HashMap<(&'static str, &'static str), Parts>,
@@ -101,7 +103,21 @@ fn ue_dir(p: [f32; 3]) -> [f32; 3] {
     [p[1], p[2], -p[0]]
 }
 
-fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>) -> Parts {
+/// How many metres of the mesh one texture's width covers, over a section's triangles (its
+/// area over its UVs' area): how big the texture is in the world.
+fn metres_per_uv(mesh: &StaticMesh, first: usize, tris: usize) -> f32 {
+    let (mut world, mut uv) = (0.0f64, 0.0f64);
+    for t in 0..tris {
+        let i = [mesh.indices[first + 3 * t] as usize, mesh.indices[first + 3 * t + 1] as usize, mesh.indices[first + 3 * t + 2] as usize];
+        let p = i.map(|k| Vec3::from(ue(mesh.positions[k])));
+        let q = i.map(|k| Vec2::from(mesh.uvs[k]));
+        world += (p[1] - p[0]).cross(p[2] - p[0]).length() as f64 * 0.5;
+        uv += ((q[1] - q[0]).perp_dot(q[2] - q[0])).abs() as f64 * 0.5;
+    }
+    if uv > 1e-9 { (world / uv).sqrt() as f32 } else { 1.0 }
+}
+
+fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>, remastered: &mut HashMap<(String, u32), Handle<StandardMaterial>>) -> Parts {
     let positions: Vec<[f32; 3]> = mesh.positions.iter().map(|&p| ue(p)).collect();
     let normals: Vec<[f32; 3]> = mesh.normals.iter().map(|&n| ue_dir(n)).collect();
     // Our axes are Unreal's mirrored, which turns cross(normal, tangent) round: so the
@@ -125,9 +141,48 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                 .with_inserted_indices(Indices::U32(indices));
             // Cut-outs (fences, grilles) where the diffuse map's alpha says so.
             let cutout = slot.diffuse.as_ref().is_some_and(|t| t.pixels.chunks_exact(4).filter(|c| c[3] < 128).count() * 20 > t.pixels.len() / 4);
-            let tex = slot.diffuse.as_ref().map(|t| images.add(image_from(t)));
-            let normal_map = slot.normal.as_ref().map(|t| images.add(normal_image(t)));
-            let rough = slot.specular.as_ref().map(|t| images.add(roughness_image(t)));
+            // Remastered (#101): what it's made of, its detail tiled at its real size (one
+            // material for every mesh with it at that size).
+            // (Once per material: its detail's tiling from the first mesh that has it.)
+            if let Some(surface) = slot.diffuse.as_ref().and(crate::me_remaster::surface_of(&slot.path)) {
+                let reps = crate::me_remaster::repeats(&surface, metres_per_uv(mesh, first, s.triangles as usize));
+                let key = (slot.path.clone(), 1);
+                let mat = match remastered.get(&key) {
+                    Some(m) => Some(m.clone()),
+                    None => crate::me_remaster::bake(slot, &surface, reps).map(|b| {
+                        let m = materials.add(StandardMaterial {
+                            base_color_texture: Some(images.add(b.color)),
+                            normal_map_texture: Some(images.add(b.normal)),
+                            metallic_roughness_texture: Some(images.add(b.metal_rough)),
+                            // (The map's: these scale it.)
+                            perceptual_roughness: 1.0,
+                            metallic: 1.0,
+                            alpha_mode: if cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque },
+                            double_sided: cutout,
+                            cull_mode: if cutout { None } else { Some(bevy::render::render_resource::Face::Back) },
+                            ..default()
+                        });
+                        remastered.insert(key, m.clone());
+                        m
+                    }),
+                };
+                if let Some(mat) = mat {
+                    return (meshes.add(m), mat);
+                }
+            }
+            // Else the game's own maps, with mips, its white kept under real paint's (one
+            // material for every mesh with it).
+            let key = (slot.path.clone(), 0);
+            if let Some(mat) = remastered.get(&key).filter(|_| !slot.path.is_empty()) {
+                return (meshes.add(m), mat.clone());
+            }
+            let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t), true)));
+            let normal_map = slot.normal.as_ref().map(|t| images.add(crate::me_remaster::plain(t, false)));
+            let rough = slot.specular.as_ref().map(|t| {
+                let r = roughness_image(t);
+                let px = r.data.clone().unwrap_or_default();
+                images.add(crate::me_remaster::with_mips(t.width, t.height, px, false))
+            });
             // Without a texture: its constant colour (glowing, if it's a light's), else grey.
             let plain = slot.color.map(|[r, g, b]| Color::linear_rgb(r, g, b));
             let mat = materials.add(StandardMaterial {
@@ -146,6 +201,9 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                 reflectance: 0.3,
                 ..default()
             });
+            if !slot.path.is_empty() {
+                remastered.insert(key, mat.clone());
+            }
             (meshes.add(m), mat)
         })
         .collect()
@@ -184,7 +242,7 @@ fn get(
                     }
                 }
                 cache.looks.insert(format!("{}.{}", key.0, key.1), looks);
-                Some(build(&mesh, &slots, meshes, materials, images))
+                Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered))
             }
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{}: {e}", key.0, key.1);

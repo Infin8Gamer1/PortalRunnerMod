@@ -1,0 +1,47 @@
+// Mirror's Edge's materials, remastered for ray tracing (#101): what each is made of.
+//
+// A material keeps the game's own art (its diffuse, normal and specular maps) and gets, from
+// the surface it's made of, a physically based detail layer (`surfaces/<detail>/`: albedo,
+// normal and roughness, CC0, see README.md) tiled at its real size, its roughness and
+// metalness. Its white is kept under what real paint reflects.
+//
+// `surfaces`: each surface's detail set (none: no detail), how big one tile of it is (metres),
+// how rough it is (0-1, before its detail and the game's specular map vary it), how metallic,
+// and how strongly the detail shows (0-1).
+//
+// `rules`: in order, the first whose `match` has a word in a material's path (its package,
+// groups and name, any case) gives its surface. A material no rule takes keeps the game's own
+// look (with mipmaps and its white kept under real paint's).
+(
+    surfaces: {
+        "plaster": (detail: Some("plaster"), size: 1.0, roughness: 0.85, metallic: 0.0, strength: 0.5),
+        "concrete": (detail: Some("concrete"), size: 2.71, roughness: 0.9, metallic: 0.0, strength: 0.55),
+        "roof": (detail: Some("concrete_floor"), size: 2.0, roughness: 0.9, metallic: 0.0, strength: 0.8),
+        "painted_metal": (detail: Some("painted_metal"), size: 1.0, roughness: 0.45, metallic: 0.0, strength: 0.12),
+        "bare_metal": (detail: Some("brushed_metal"), size: 1.0, roughness: 0.35, metallic: 1.0, strength: 0.35),
+        "wood": (detail: Some("plywood"), size: 0.5, roughness: 0.75, metallic: 0.0, strength: 0.4),
+        "fabric": (detail: Some("hessian"), size: 0.27, roughness: 0.95, metallic: 0.0, strength: 0.35),
+        "cardboard": (detail: None, size: 1.0, roughness: 0.9, metallic: 0.0, strength: 0.0),
+        "glass": (detail: None, size: 1.0, roughness: 0.05, metallic: 0.0, strength: 0.0),
+        "plastic": (detail: None, size: 1.0, roughness: 0.5, metallic: 0.0, strength: 0.0),
+    },
+    rules: [
+        // Living things and the far city keep their look.
+        (match: ["vegetation", "leaves", "bush", "tree", "b_vista", "mountain", "skydome"], surface: None),
+        (match: ["glass", "window"], surface: Some("glass")),
+        (match: ["cardboard"], surface: Some("cardboard")),
+        (match: ["tarp", "plasticcover", "housecover", "tent", "cover", "fabric", "cloth", "sack"], surface: Some("fabric")),
+        (match: ["wood", "plank", "pallet", "crate", "runnerobjects"], surface: Some("wood")),
+        (match: ["plastic", "barrel", "bin_", "bucket"], surface: Some("plastic")),
+        // Galvanised and bare steel: scaffolding, wire, fences, grates.
+        (match: ["scaffold", "fence", "wire", "razor", "barbed", "grate", "metalstack", "steel", "chain", "zipline"], surface: Some("bare_metal")),
+        // Painted metal: machinery, ducts, pipes, catwalks, cranes, doors, signs.
+        (match: ["ventilation", "acrooftop", "acsystem", "acunit", "airduct", "vent", "fan", "pipe", "catwalk", "crane", "railing", "ladder", "swingpole", "door", "billboard", "signad", "sign", "metal", "container", "cablebox", "antenna", "satellite", "tank", "cistern", "generator", "elevator"], surface: Some("painted_metal")),
+        // Concrete built on the roofs (their structures, plinths, plugs).
+        (match: ["rooftopstructure", "concrete", "plinth", "curb"], surface: Some("concrete")),
+        // What she runs on: roofs, walkways, pavements.
+        (match: ["rooftop", "roof", "floor", "walkway", "sidewalk", "road", "street", "pavement", "asphalt", "ground"], surface: Some("roof")),
+        // The buildings' walls: painted render.
+        (match: ["facade", "wall", "plaster", "storefront", "b_r_", "b_c_", "b_bd", "b_i_", "building"], surface: Some("plaster")),
+    ],
+)

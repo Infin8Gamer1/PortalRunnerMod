@@ -2520,7 +2520,7 @@
         (kind: MeProp(package: "Tutorial_LW", mesh: "S_Airliner_01", scale: (1.0, 1.0, 1.0), bounds: Some(((-36.7182, -13.5891, -30.4586), (692.5977, 12.5868, 30.4586))), solid: false, own_shape: true), at: (3413.2795, 1212.3599, -2495.8398), yaw: 38.145, name: "InterpActor_59"),
         (kind: MeProp(package: "Tutorial_LW", mesh: "s_van_01_bd", scale: (1.0, 1.0, 1.0), bounds: Some(((-3.3299, -0.032, -1.6275), (3.291, 2.357, 1.6275))), solid: false, own_shape: true), at: (-83.32, -0.08, -359.2794), yaw: -90.0, name: "InterpActor_7"),
         (kind: Hull(planes: [(0.00007, -0.0, 1.0, -1.2381), (0.99856, -0.0, 0.05358, -4.4559), (-0.00007, -0.0, -1.0, 1.3481), (-0.99855, -0.0, -0.05392, 41.5422), (-0.0, 1.0, -0.0, 4.42), (-0.0, -1.0, -0.0, 1.28)], mat: Clip), at: (-85.78, 59.2, 3.82), yaw: -90.005, name: "BlockingVolume_10"),
-        (kind: Sun(color: (0.855, 0.843, 0.812), illuminance: 11000.0), at: (0.0, 100.0, 0.0), yaw: -154.97864, pitch: -52.998047),
+        (kind: Sun(color: (1.0, 0.961, 0.882), illuminance: 11000.0), at: (0.0, 100.0, 0.0), yaw: -123.83789, pitch: -52.998047),
         (kind: Checkpoint(name: "1", spawn: (0.0, -2.0, 0.0)), at: (-46.9355, 41.32, 39.14), size: (4.0, 4.0, 4.0), yaw: -90.204, name: "TdTimerCheckpoint_0"),
         (kind: Checkpoint(name: "2", spawn: (0.0, -2.0, 0.0)), at: (-13.22, 43.4, 39.26), size: (4.0, 4.0, 4.0), yaw: 39.779, name: "TdTimerCheckpoint_1"),
         (kind: Checkpoint(name: "3", spawn: (0.0, -2.0, 0.0)), at: (-32.96, 46.28, 15.55), size: (4.0, 4.0, 4.0), yaw: -18.092, name: "TdTimerCheckpoint_18"),

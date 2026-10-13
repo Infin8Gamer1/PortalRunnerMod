@@ -17,6 +17,7 @@ mod grill_fx;
 mod gun;
 mod hud;
 mod me_props;
+mod me_remaster;
 mod me_viewmodel;
 mod map_audio;
 mod map_fx;

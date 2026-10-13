@@ -249,7 +249,9 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
         }
         for o in &m.others {
             *counts.entry(o.class.clone()).or_default() += 1;
-            // The sun: its brightest directional light.
+            // The sun: its directional light baked into the lightmaps (the one the level's
+            // shadows were made with; a brighter one only lights what moves, from wherever
+            // suits it), else its brightest.
             if o.class == "DirectionalLight" {
                 let a = map::Chain::new(pkg, o.export);
                 let Some(c) = a.object("LightComponent").filter(|&c| c > 0) else { continue };
@@ -258,11 +260,14 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                     continue;
                 }
                 let brightness = c.f32("Brightness").unwrap_or(1.0);
+                let baked = c.bool("bHasLightEverBeenBuiltIntoLightMap") == Some(true);
                 // (A Color: B, G, R, A.)
                 let color = c.bytes("LightColor").filter(|b| b.len() == 4).map_or(Vec3::ONE, |b| Vec3::new(b[2] as f32, b[1] as f32, b[0] as f32) / 255.0);
                 let dir = ue_dir(map::rotate(o.rotation, [1.0, 0.0, 0.0])).normalize();
-                if sun.as_ref().is_none_or(|s: &(f32, Vec3, Vec3)| brightness > s.0) {
-                    sun = Some((brightness, dir, color));
+                // (Ranked baked first, then by brightness.)
+                let rank = brightness + if baked { 1000.0 } else { 0.0 };
+                if sun.as_ref().is_none_or(|s: &(f32, Vec3, Vec3)| rank > s.0) {
+                    sun = Some((rank, dir, color));
                 }
             }
             // A time trial's course: its start, then each checkpoint the one before leads to.
@@ -277,10 +282,10 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
         report.push_str(&format!("  {name}: {props} meshes ({solid} solid), {} volumes\n", m.volumes.len()));
     }
     report.push_str(&format!("  {far} meshes with only triangles to collide with are out of her way: not solid\n"));
-    // (Mirror's Edge's brightest sun is 5: our outdoor sun's 11,000 lux.)
-    if let Some((brightness, dir, color)) = sun {
+    // (As bright as our outdoor sun: Mirror's Edge's brightness is its lightmaps'.)
+    if let Some((_, dir, color)) = sun {
         let c = Vec3::new(round(color.x, 1e3), round(color.y, 1e3), round(color.z, 1e3));
-        let mut o = Object::new(Kind::Sun { color: c, illuminance: round(brightness * 2200.0, 1.0) }, Vec3::new(0.0, 100.0, 0.0));
+        let mut o = Object::new(Kind::Sun { color: c, illuminance: 11_000.0 }, Vec3::new(0.0, 100.0, 0.0));
         o.face(dir);
         doc.objects.push(o);
     }

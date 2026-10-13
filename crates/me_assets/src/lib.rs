@@ -82,6 +82,8 @@ pub const ARMS_MORPHS: &str = "Female1p_UpperBody_MorphSet";
 /// One material slot: its diffuse, normal and specular textures.
 pub struct MaterialSlot {
     pub material: String,
+    /// Where it is: its package, groups and name (`M_Rooftops.M_C_RooftopsMat_01`).
+    pub path: String,
     pub diffuse: Option<Rgba>,
     /// Tangent-space normal map (the game's TC_Normalmap textures).
     pub normal: Option<Rgba>,
@@ -287,9 +289,18 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
                 diffuse = read(&|n| !(is_normal(n) || is_spec(n) || n.contains("mask") || matches!(suffix(n).as_str(), "m" | "e" | "em")));
             }
             let (color, emissive) = if diffuse.is_none() { constant_color(pkgs, pkg, m) } else { (None, false) };
-            MaterialSlot { material, diffuse, normal, specular, color, emissive }
+            let path = material_path(pkgs, pkg, m);
+            MaterialSlot { material, path, diffuse, normal, specular, color, emissive }
         })
         .collect()
+}
+
+/// A material's full path, where it's defined (an import followed to its package).
+fn material_path(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> String {
+    match pkgs.resolve(pkg, m) {
+        Some((p, i)) => p.path(i as i32 + 1),
+        None => pkg.path(m),
+    }
 }
 
 /// A plain material's colour from its constants (its first Constant3Vector), and whether it
