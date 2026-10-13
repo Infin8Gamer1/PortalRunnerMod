@@ -5,7 +5,7 @@ enable wgpu_ray_query;
 #import bevy_pbr::lighting::D_GGX
 #import bevy_pbr::utils::{rand_f, rand_vec2f, rand_u, rand_range_u}
 #import bevy_render::maths::{PI_2, orthonormalize}
-#import bevy_solari::scene_bindings::{trace_ray, RAY_T_MIN, RAY_T_MAX, light_sources, directional_lights, LightSource, LIGHT_SOURCE_KIND_DIRECTIONAL, resolve_triangle_data_full, ResolvedRayHitFull, MIRROR_ROUGHNESS_THRESHOLD}
+#import bevy_solari::scene_bindings::{trace_ray, trace_ray_plain, portal_crossing, portals, NO_PORTAL, PORTAL_EPSILON, RAY_T_MIN, RAY_T_MAX, light_sources, directional_lights, LightSource, LIGHT_SOURCE_KIND_DIRECTIONAL, resolve_triangle_data_full, ResolvedRayHitFull, MIRROR_ROUGHNESS_THRESHOLD}
 
 fn power_heuristic(f: f32, g: f32) -> f32 {
     return balance_heuristic(f * f, g * g);
@@ -121,8 +121,19 @@ struct GenerateRandomLightSampleResult {
 fn sample_random_light(ray_origin: vec3<f32>, origin_world_normal: vec3<f32>, rng: ptr<function, u32>) -> LightContribution {
     let sample = generate_random_light_sample(rng);
     var light_contribution = calculate_resolved_light_contribution(sample.resolved_light_sample, ray_origin, origin_world_normal);
-    light_contribution.radiance *= trace_light_visibility(ray_origin, sample.resolved_light_sample.world_position);
+    light_contribution.radiance *= trace_light_visibility(ray_origin, sample.resolved_light_sample.world_position, light_sample_image(sample.light_sample));
     return light_contribution;
+}
+
+// Light through portals: a light sample can be a light's image through one, where it appears
+// from the other side of the other (`to_other` of the portal it's in front of). Which, in
+// its seed's top two bits: 0 the light itself, k its image through portal k - 1.
+const LIGHT_SAMPLE_IMAGE_SHIFT = 30u;
+// How often a light sample's an image, with portals open.
+const LIGHT_SAMPLE_IMAGE_PROBABILITY = 0.25f;
+
+fn light_sample_image(light_sample: LightSample) -> u32 {
+    return light_sample.seed >> LIGHT_SAMPLE_IMAGE_SHIFT;
 }
 
 fn random_emissive_light_pdf(hit: ResolvedRayHitFull) -> f32 {
@@ -142,16 +153,51 @@ fn generate_random_light_sample(rng: ptr<function, u32>) -> GenerateRandomLightS
         triangle_id = rand_range_u(triangle_count, rng);
     }
 
-    let seed = rand_u(rng);
+    // (The light, or now and then, with portals open, its image through one of them: most
+    // lights aren't in front of either, so their images are most often nothing.)
+    var image = 0u;
+    var image_pdf = 1.0;
+    if portals.count > 0u {
+        if rand_f(rng) < LIGHT_SAMPLE_IMAGE_PROBABILITY {
+            image = 1u + rand_range_u(portals.count, rng);
+            image_pdf = LIGHT_SAMPLE_IMAGE_PROBABILITY / f32(portals.count);
+        } else {
+            image_pdf = 1.0 - LIGHT_SAMPLE_IMAGE_PROBABILITY;
+        }
+    }
+    let seed = (rand_u(rng) >> 2u) | (image << LIGHT_SAMPLE_IMAGE_SHIFT);
     let light_sample = LightSample((light_id << 16u) | triangle_id, seed);
 
     var resolved_light_sample = resolve_light_sample(light_sample, light_source);
-    resolved_light_sample.inverse_pdf *= f32(light_count);
+    resolved_light_sample.inverse_pdf *= f32(light_count) / image_pdf;
 
     return GenerateRandomLightSampleResult(light_sample, resolved_light_sample);
 }
 
 fn resolve_light_sample(light_sample: LightSample, light_source: LightSource) -> ResolvedLightSample {
+    var resolved = resolve_light_sample_real(light_sample, light_source);
+    let image = light_sample_image(light_sample);
+    if image == 0u { return resolved; }
+    // Its image through portal `image - 1`: none if that's gone, or it's behind it.
+    if image > portals.count {
+        resolved.radiance = vec3(0.0);
+        return resolved;
+    }
+    let p = portals.portals[image - 1u];
+    if resolved.world_position.w == 1.0 {
+        if dot(resolved.world_position.xyz - p.center, p.normal) <= 0.0 {
+            resolved.radiance = vec3(0.0);
+        }
+        resolved.world_position = vec4((p.to_other * vec4(resolved.world_position.xyz, 1.0)).xyz, 1.0);
+    } else {
+        // (The sun: its direction, through it.)
+        resolved.world_position = vec4(normalize((p.to_other * vec4(resolved.world_position.xyz, 0.0)).xyz), 0.0);
+    }
+    resolved.world_normal = normalize((p.to_other * vec4(resolved.world_normal, 0.0)).xyz);
+    return resolved;
+}
+
+fn resolve_light_sample_real(light_sample: LightSample, light_source: LightSource) -> ResolvedLightSample {
     if light_source.kind == LIGHT_SOURCE_KIND_DIRECTIONAL {
         let directional_light = directional_lights[light_source.id];
 
@@ -213,7 +259,11 @@ fn resolve_and_calculate_light_contribution(light_sample: LightSample, ray_origi
     return LightContributionNoPdf(light_contribution.radiance, light_contribution.wi);
 }
 
-fn trace_light_visibility(ray_origin: vec3<f32>, light_sample_world_position: vec4<f32>) -> f32 {
+// Whether a light sample (`image`: the light, or its image through a portal) is in sight. An
+// image is only through the portal it's seen in (the partner of the one it's in front of):
+// the line to it has to go into that, and on from the other to the light. The light itself
+// isn't seen through a portal: a line to it that goes into one doesn't reach it.
+fn trace_light_visibility(ray_origin: vec3<f32>, light_sample_world_position: vec4<f32>, image: u32) -> f32 {
     var ray_direction = light_sample_world_position.xyz;
     var ray_t_max = RAY_T_MAX;
 
@@ -226,8 +276,27 @@ fn trace_light_visibility(ray_origin: vec3<f32>, light_sample_world_position: ve
 
     if ray_t_max < RAY_T_MIN { return 0.0; }
 
-    let ray_hit = trace_ray(ray_origin, ray_direction, RAY_T_MIN, ray_t_max, RAY_FLAG_TERMINATE_ON_FIRST_HIT);
-    return f32(ray_hit.kind == RAY_QUERY_INTERSECTION_NONE);
+    var expect = NO_PORTAL;
+    if image > 0u {
+        if image > portals.count { return 0.0; }
+        expect = portals.portals[image - 1u].other;
+    }
+    let crossing = portal_crossing(ray_origin, ray_direction, RAY_T_MIN, ray_t_max);
+    if crossing.index != expect { return 0.0; }
+    if expect == NO_PORTAL {
+        let ray_hit = trace_ray_plain(ray_origin, ray_direction, RAY_T_MIN, ray_t_max, RAY_FLAG_TERMINATE_ON_FIRST_HIT);
+        return f32(ray_hit.kind == RAY_QUERY_INTERSECTION_NONE);
+    }
+    // Up to the portal, and on from the other.
+    let before = trace_ray_plain(ray_origin, ray_direction, RAY_T_MIN, max(RAY_T_MIN, crossing.t - PORTAL_EPSILON), RAY_FLAG_TERMINATE_ON_FIRST_HIT);
+    if before.kind != RAY_QUERY_INTERSECTION_NONE { return 0.0; }
+    let p = portals.portals[crossing.index];
+    let origin = (p.to_other * vec4(ray_origin + ray_direction * crossing.t, 1.0)).xyz;
+    let direction = normalize((p.to_other * vec4(ray_direction, 0.0)).xyz);
+    let left = ray_t_max - crossing.t;
+    if left < PORTAL_EPSILON { return 1.0; }
+    let after = trace_ray_plain(origin, direction, PORTAL_EPSILON, left, RAY_FLAG_TERMINATE_ON_FIRST_HIT);
+    return f32(after.kind == RAY_QUERY_INTERSECTION_NONE);
 }
 
 fn trace_point_visibility(ray_origin: vec3<f32>, point: vec3<f32>) -> f32 {

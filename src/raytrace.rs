@@ -90,7 +90,7 @@ pub fn add(app: &mut App, wanted: bool) {
         .init_resource::<RtMeshes>()
         .init_resource::<ScaledEmissive>()
         .add_systems(Startup, check_support)
-        .add_systems(Update, (follow_setting, forward_overlays, switch, (cameras, emissive_materials, sky_dome).run_if(active)).chain())
+        .add_systems(Update, (follow_setting, forward_overlays, switch, (cameras, emissive_materials, sky_dome, portals_for_light).run_if(active)).chain())
         .add_systems(PostUpdate, register_meshes.after(VisibilitySystems::VisibilityPropagate).run_if(active));
 }
 
@@ -270,6 +270,26 @@ fn emissive_materials(
             m.emissive = LinearRgba::from_vec3(m.emissive.to_vec3() * scale);
             m.emissive_exposure_weight = 1.0;
         }
+    }
+}
+
+/// The linked portals, for the traced light to go through (#94): none unless both are open.
+fn portals_for_light(game: Res<Game>, portals: Option<ResMut<bevy::solari::scene::RaytracingPortals>>) {
+    let Some(mut portals) = portals else { return };
+    let mut want = Vec::new();
+    for c in [aperture::PortalColor::Blue, aperture::PortalColor::Orange] {
+        let (Some(p), Some(link)) = (game.sim.portals[c.index()], game.sim.link(c)) else {
+            want.clear();
+            break;
+        };
+        // (Its transform, from where the link takes points.)
+        let o = link.point(Vec3::ZERO);
+        let to_other = Mat4::from_cols((link.point(Vec3::X) - o).extend(0.0), (link.point(Vec3::Y) - o).extend(0.0), (link.point(Vec3::Z) - o).extend(0.0), o.extend(1.0));
+        want.push(bevy::solari::scene::RaytracingPortal { center: p.center, normal: p.normal, right: p.right(), up: p.up, half_size: p.half, to_other });
+    }
+    let same = portals.portals.len() == want.len() && portals.portals.iter().zip(&want).all(|(a, b)| a.center == b.center && a.normal == b.normal && a.half_size == b.half_size && a.to_other == b.to_other);
+    if !same {
+        portals.portals = want;
     }
 }
 

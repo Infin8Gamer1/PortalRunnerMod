@@ -508,10 +508,13 @@ pub fn setup(
             })
         },
         // Opaque and emissive, so it's in the ray-traced scene and lights the room (white-hot:
-        // it tonemaps to white, with an orange rim from the shell and the glow).
+        // it tonemaps to white, with an orange rim from the shell and the glow). As bright as
+        // it is to light the floor round the other portal as Portal with RTX's does, through
+        // one.
         pellet_core: materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.9, 0.7),
-            emissive: LinearRgba::rgb(400.0, 200.0, 60.0),
+            // (PORTAL_PELLET_GLOW: times this, to see its light plainly when testing.)
+            emissive: LinearRgba::rgb(6000.0, 3000.0, 900.0) * std::env::var("PORTAL_PELLET_GLOW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0),
             perceptual_roughness: 0.2,
             ..default()
         }),
