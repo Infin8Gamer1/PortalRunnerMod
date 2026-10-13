@@ -15,6 +15,7 @@ pub mod io;
 pub mod level;
 pub mod levels;
 pub mod me;
+pub mod me_logic;
 pub mod port;
 pub mod portal;
 pub mod rope;

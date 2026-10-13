@@ -9,6 +9,8 @@ description = "Copies what Portal Runner uses out of your own Portal / Portal 2 
 aperture = { path = "../aperture" }
 # ...and Mirror's Edge's (`--port-me`), read from its packages.
 me_assets = { path = "../me_assets" }
+# (Its movers' triggers' boxes, #109.)
+faith_move = { path = "../faith_move" }
 vtf = "0.4"
 vmdl = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }

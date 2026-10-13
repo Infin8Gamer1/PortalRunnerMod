@@ -8,6 +8,7 @@
 
 pub mod anim;
 pub mod bsp;
+pub mod kismet;
 pub mod map;
 #[cfg(feature = "prologue")]
 pub mod level;
@@ -104,6 +105,12 @@ pub struct MaterialSlot {
     pub blend: Blend,
     /// Drawn from both sides.
     pub two_sided: bool,
+    /// How many times its material repeats its colour map over the mesh's UVs (its texture
+    /// coordinates' tiling: a chain-link fence's one link, thirty times over).
+    pub uv_scale: [f32; 2],
+    /// What glows (its emissive input): a map (where, from its mesh's UVs) times a colour
+    /// (linear, as bright as the game has it: a lamp's tube, a lit sign), if it glows.
+    pub glow: Option<(Option<Rgba>, [f32; 3])>,
 }
 
 /// A material's blend mode.
@@ -305,10 +312,19 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             // The first of the textures `pick` takes that can be read. (Its big mips from its
             // package's file, where the cooked one keeps them.)
             let files = std::cell::RefCell::new(&mut *pkgs);
-            let read = |pick: &dyn Fn(&str) -> bool| {
-                textures.iter().filter(|(name, _, _)| pick(name)).find_map(|(_, tp, ti)| {
+            let diffuse_name = std::cell::RefCell::new(String::new());
+            let read_named = |pick: &dyn Fn(&str) -> bool| {
+                textures.iter().filter(|(name, _, _)| pick(name)).find_map(|(name, tp, ti)| {
                     let mut f = files.borrow_mut();
-                    texture::read_texture_from(tp, &tp.exports[*ti], max_texture, &mut |n| f.raw(n)).ok()
+                    texture::read_texture_from(tp, &tp.exports[*ti], max_texture, &mut |n| f.raw(n)).ok().map(|t| (name.clone(), t))
+                })
+            };
+            let read = |pick: &dyn Fn(&str) -> bool| read_named(pick).map(|(_, t)| t);
+            // (The colour map's name kept: how its material tiles it.)
+            let read_diffuse = |pick: &dyn Fn(&str) -> bool| {
+                read_named(pick).map(|(n, t)| {
+                    *diffuse_name.borrow_mut() = n;
+                    t
                 })
             };
             // A texture's suffix (`T_BoatLip_01_DA`: `da`).
@@ -323,22 +339,25 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
                 let t = n.rsplit(' ').next().unwrap_or(n);
                 t.rsplit_once('_').map_or(t, |(a, _)| a).to_string()
             };
-            let normal_stem = textures.iter().map(|(n, _, _)| n).find(|n| is_normal(n)).map(|n| stem(n));
             let overlay = |n: &str| ["dirt", "detail", "grime", "sand", "dust", "mask", "stain"].iter().any(|w| n.rsplit(' ').next().unwrap_or(n).contains(w));
-            let mut diffuse = normal_stem.as_ref().and_then(|ns| read(&|n| is_diffuse(n) && stem(n) == *ns));
+            // (The main layer's normal map: not a dirt layer's, if it has another.)
+            let normal_stem = textures.iter().map(|(n, _, _)| n).find(|n| is_normal(n) && !overlay(n)).or_else(|| textures.iter().map(|(n, _, _)| n).find(|n| is_normal(n))).map(|n| stem(n));
+            let mut diffuse = normal_stem.as_ref().and_then(|ns| read_diffuse(&|n| is_diffuse(n) && stem(n) == *ns));
             if diffuse.is_none() {
-                diffuse = read(&|n| is_diffuse(n) && !overlay(n));
+                diffuse = read_diffuse(&|n| is_diffuse(n) && !overlay(n));
             }
             if diffuse.is_none() {
-                diffuse = read(&is_diffuse);
+                diffuse = read_diffuse(&is_diffuse);
             }
-            let normal = read(&is_normal);
+            let normal = normal_stem.as_ref().and_then(|ns| read(&|n| is_normal(n) && stem(n) == *ns)).or_else(|| read(&is_normal));
             let specular = read(&is_spec);
             if diffuse.is_none() {
                 // Anything that isn't a normal, specular, mask or emissive map.
-                diffuse = read(&|n| !(is_normal(n) || is_spec(n) || n.contains("mask") || matches!(suffix(n).as_str(), "m" | "e" | "em")));
+                diffuse = read_diffuse(&|n| !(is_normal(n) || is_spec(n) || n.contains("mask") || matches!(suffix(n).as_str(), "m" | "e" | "em")));
             }
             drop(files);
+            let diffuse_name = diffuse_name.into_inner();
+            let uv_scale = if diffuse.is_some() { material_tiling(pkgs, pkg, m, &diffuse_name) } else { [1.0, 1.0] };
             // A cut-out's opacity where its material takes it from (another texture, or another
             // channel), into the colour map's alpha.
             let (blend, two_sided) = material_blend(pkgs, pkg, m);
@@ -360,9 +379,231 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             let variant = ["orange", "blue", "yellow", "red", "green", "white", "black", "grey", "gray"].iter().any(|c| named.contains(c));
             let tint = if variant { material_tint(pkgs, pkg, m) } else { None };
             let vectors = material_vectors(pkgs, pkg, m);
-            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, vectors, blend, two_sided }
+            let glow = material_emissive(pkgs, pkg, m, max_texture);
+            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, vectors, blend, two_sided, uv_scale, glow }
         })
         .collect()
+}
+
+/// How many times material `m` repeats texture `name` (as [`all_textures`] names it: `"param
+/// texture"` or `"texture"`) over its mesh's UVs: what its samples of that texture take their
+/// coordinates from (a TextureCoordinate's tiling, times constants or scalar parameters,
+/// through panners and rotators). The most of its samples' (a material that fades between two
+/// with distance: the near one's).
+fn material_tiling(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32, name: &str) -> [f32; 2] {
+    let (param, tex) = name.split_once(' ').unwrap_or(("", name));
+    // Its scalar parameters (an instance's own first) and its base material.
+    let mut scalars: Vec<(String, f32)> = vec![];
+    let mut next = Some((pkg.clone(), m));
+    let mut base = None;
+    for _ in 0..6 {
+        let Some((p, obj)) = next.take() else { break };
+        let Some((mp, mi)) = pkgs.resolve(&p, obj) else { break };
+        if mp.class_name(&mp.exports[mi]) == "Material" {
+            base = Some((mp, mi));
+            break;
+        }
+        let Ok(props) = props::Props::read(&mp, &mp.exports[mi]) else { break };
+        for v in props.struct_array(&mp, "ScalarParameterValues") {
+            if let (Some(n), Some(x)) = (v.name(&mp, "ParameterName"), v.f32(&mp, "ParameterValue")) {
+                if !scalars.iter().any(|(s, _)| s.eq_ignore_ascii_case(&n)) {
+                    scalars.push((n, x));
+                }
+            }
+        }
+        next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    let Some((mp, mi)) = base else { return [1.0, 1.0] };
+    let mut best: Option<[f32; 2]> = None;
+    for (k, e) in mp.exports.iter().enumerate() {
+        if e.outer != mi as i32 + 1 || !mp.class_name(e).contains("TextureSample") {
+            continue;
+        }
+        let Ok(props) = props::Props::read(&mp, e) else { continue };
+        let by_param = !param.is_empty() && props.name(&mp, "ParameterName").is_some_and(|n| n.eq_ignore_ascii_case(param));
+        let by_texture = props.object(&mp, "Texture").is_some_and(|t| mp.object_name(t).eq_ignore_ascii_case(tex));
+        if !(by_param || by_texture) {
+            continue;
+        }
+        let s = uv_of(&mp, k, "Coordinates", &scalars, 0).unwrap_or([1.0, 1.0]);
+        if best.is_none_or(|b| s[0].abs().max(s[1].abs()) > b[0].abs().max(b[1].abs())) {
+            best = Some(s);
+        }
+    }
+    let s = best.unwrap_or([1.0, 1.0]);
+    if s.iter().all(|x| x.is_finite() && x.abs() > 1e-3 && x.abs() < 1e3) { s } else { [1.0, 1.0] }
+}
+
+/// What a material's emissive input is: the texture it samples (an instance's in place of its
+/// parameter's default), if any, times a colour (its constants and colour and scalar
+/// parameters, an instance's own first). None if it doesn't glow, or glows some way this
+/// doesn't follow.
+fn material_emissive(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32, max_texture: u32) -> Option<(Option<Rgba>, [f32; 3])> {
+    let mut textures: Vec<(String, Rc<Package>, i32)> = vec![];
+    let mut scalars: Vec<(String, f32)> = vec![];
+    let mut next = Some((pkg.clone(), m));
+    let mut base = None;
+    for _ in 0..6 {
+        let (p, obj) = next.take()?;
+        let (mp, mi) = pkgs.resolve(&p, obj)?;
+        if mp.class_name(&mp.exports[mi]) == "Material" {
+            base = Some((mp, mi));
+            break;
+        }
+        for (name, tex) in material_textures(&mp, mi) {
+            if !textures.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(&name)) {
+                textures.push((name, mp.clone(), tex));
+            }
+        }
+        let props = props::Props::read(&mp, &mp.exports[mi]).ok()?;
+        for v in props.struct_array(&mp, "ScalarParameterValues") {
+            if let (Some(n), Some(x)) = (v.name(&mp, "ParameterName"), v.f32(&mp, "ParameterValue")) {
+                if !scalars.iter().any(|(s, _)| s.eq_ignore_ascii_case(&n)) {
+                    scalars.push((n, x));
+                }
+            }
+        }
+        next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    let (mp, mi) = base?;
+    let vectors = material_vectors(pkgs, pkg, m);
+    let g = Glow { p: &mp, textures: &textures, scalars: &scalars, vectors: &vectors };
+    let (tex, color) = g.of(mi, "EmissiveColor", 0)?;
+    if color.iter().all(|c| *c <= 0.01) {
+        return None;
+    }
+    let map = match tex {
+        Some((tp, t)) => {
+            let (rp, ri) = pkgs.resolve(&tp, t)?;
+            let mut f = |n: &str| pkgs.raw(n);
+            Some(texture::read_texture_from(&rp, &rp.exports[ri], max_texture, &mut f).ok()?)
+        }
+        None => None,
+    };
+    Some((map, color))
+}
+
+/// Following a material's emissive input back through its expressions.
+struct Glow<'a> {
+    p: &'a Rc<Package>,
+    textures: &'a [(String, Rc<Package>, i32)],
+    scalars: &'a [(String, f32)],
+    vectors: &'a [(String, [f32; 3])],
+}
+
+impl Glow<'_> {
+    /// What input `input` of export `e` gives: a texture sampled (its package and object),
+    /// times a colour.
+    fn of(&self, e: usize, input: &str, depth: u32) -> Option<(Option<(Rc<Package>, i32)>, [f32; 3])> {
+        if depth > 10 {
+            return None;
+        }
+        let p = self.p;
+        let x = input_of(p, e, input)?;
+        let props = props::Props::read(p, &p.exports[x]).ok()?;
+        let mul = |a: [f32; 3], b: [f32; 3]| [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
+        match p.class_name(&p.exports[x]) {
+            c if c.contains("TextureSample") => {
+                let param = props.name(p, "ParameterName");
+                let tex = param
+                    .and_then(|n| self.textures.iter().find(|(o, _, _)| o.eq_ignore_ascii_case(&n)).map(|(_, tp, t)| (tp.clone(), *t)))
+                    .or_else(|| props.object(p, "Texture").filter(|&t| t != 0).map(|t| (p.clone(), t)))?;
+                Some((Some(tex), [1.0; 3]))
+            }
+            "MaterialExpressionMultiply" => match (self.of(x, "A", depth + 1), self.of(x, "B", depth + 1)) {
+                (Some(a), Some(b)) => Some((a.0.or(b.0), mul(a.1, b.1))),
+                // (Times something this doesn't follow (a fresnel, a flicker): as it is.)
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            },
+            "MaterialExpressionAdd" => match (self.of(x, "A", depth + 1), self.of(x, "B", depth + 1)) {
+                (Some(a), Some(b)) if a.0.is_none() && b.0.is_none() => Some((None, [a.1[0] + b.1[0], a.1[1] + b.1[1], a.1[2] + b.1[2]])),
+                (Some(a), Some(b)) => Some(if a.0.is_some() { a } else { b }),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            },
+            "MaterialExpressionLinearInterpolate" => self.of(x, "B", depth + 1).or_else(|| self.of(x, "A", depth + 1)),
+            "MaterialExpressionClamp" | "MaterialExpressionConstantClamp" | "MaterialExpressionComponentMask" => self.of(x, "Input", depth + 1),
+            "MaterialExpressionConstant" => props.f32(p, "R").map(|r| (None, [r; 3])),
+            "MaterialExpressionConstant3Vector" | "MaterialExpressionConstant4Vector" => {
+                Some((None, [props.f32(p, "R").unwrap_or(0.0), props.f32(p, "G").unwrap_or(0.0), props.f32(p, "B").unwrap_or(0.0)]))
+            }
+            "MaterialExpressionVectorParameter" => {
+                let n = props.name(p, "ParameterName").unwrap_or_default().to_ascii_lowercase();
+                self.vectors.iter().find(|(v, _)| *v == n).map(|(_, c)| (None, *c))
+            }
+            "MaterialExpressionScalarParameter" => {
+                let n = props.name(p, "ParameterName").unwrap_or_default();
+                let v = self.scalars.iter().find(|(s, _)| s.eq_ignore_ascii_case(&n)).map(|(_, v)| *v).or_else(|| props.f32(p, "DefaultValue")).unwrap_or(0.0);
+                Some((None, [v; 3]))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The expression an expression's input `input` takes (an export index), if any.
+fn input_of(p: &Package, e: usize, input: &str) -> Option<usize> {
+    let props = props::Props::read(p, &p.exports[e]).ok()?;
+    let t = props.get(input)?;
+    let i = props::Props::read_list(p, t.at, t.at + t.size, "ExpressionInput").ok()?;
+    i.object(p, "Expression").filter(|&x| x > 0).map(|x| x as usize - 1)
+}
+
+/// What input `input` of expression `e` scales the mesh's UVs by, if it's the UVs (scaled):
+/// none if it's something else (a constant).
+fn uv_of(p: &Package, e: usize, input: &str, scalars: &[(String, f32)], depth: u32) -> Option<[f32; 2]> {
+    if depth > 8 {
+        return None;
+    }
+    let Some(x) = input_of(p, e, input) else {
+        // (No coordinates: the mesh's own.)
+        return (input == "Coordinates").then_some([1.0, 1.0]);
+    };
+    let props = props::Props::read(p, &p.exports[x]).ok()?;
+    match p.class_name(&p.exports[x]) {
+        "MaterialExpressionTextureCoordinate" => Some([props.f32(p, "UTiling").unwrap_or(1.0), props.f32(p, "VTiling").unwrap_or(1.0)]),
+        "MaterialExpressionMultiply" => {
+            let (a, b) = (uv_of(p, x, "A", scalars, depth + 1), uv_of(p, x, "B", scalars, depth + 1));
+            match (a, b) {
+                (Some(u), None) => constant_of(p, x, "B", scalars, depth + 1).map(|c| [u[0] * c[0], u[1] * c[1]]),
+                (None, Some(u)) => constant_of(p, x, "A", scalars, depth + 1).map(|c| [u[0] * c[0], u[1] * c[1]]),
+                _ => None,
+            }
+        }
+        "MaterialExpressionDivide" => {
+            let u = uv_of(p, x, "A", scalars, depth + 1)?;
+            let c = constant_of(p, x, "B", scalars, depth + 1)?;
+            Some([u[0] / c[0], u[1] / c[1]])
+        }
+        // (Moved or turned, not scaled; an offset added.)
+        "MaterialExpressionPanner" | "MaterialExpressionRotator" => uv_of(p, x, "Coordinate", scalars, depth + 1),
+        "MaterialExpressionAdd" | "MaterialExpressionSubtract" => uv_of(p, x, "A", scalars, depth + 1).or_else(|| uv_of(p, x, "B", scalars, depth + 1)),
+        _ => None,
+    }
+}
+
+/// A constant input's value (a scalar both ways round, or two).
+fn constant_of(p: &Package, e: usize, input: &str, scalars: &[(String, f32)], depth: u32) -> Option<[f32; 2]> {
+    if depth > 8 {
+        return None;
+    }
+    let x = input_of(p, e, input)?;
+    let props = props::Props::read(p, &p.exports[x]).ok()?;
+    match p.class_name(&p.exports[x]) {
+        "MaterialExpressionConstant" => props.f32(p, "R").or(Some(0.0)).map(|r| [r, r]),
+        "MaterialExpressionConstant2Vector" => Some([props.f32(p, "R").unwrap_or(0.0), props.f32(p, "G").unwrap_or(0.0)]),
+        "MaterialExpressionScalarParameter" => {
+            let n = props.name(p, "ParameterName").unwrap_or_default();
+            let v = scalars.iter().find(|(s, _)| s.eq_ignore_ascii_case(&n)).map(|(_, v)| *v).or_else(|| props.f32(p, "DefaultValue")).unwrap_or(0.0);
+            Some([v, v])
+        }
+        "MaterialExpressionMultiply" => {
+            let (a, b) = (constant_of(p, x, "A", scalars, depth + 1)?, constant_of(p, x, "B", scalars, depth + 1)?);
+            Some([a[0] * b[0], a[1] * b[1]])
+        }
+        _ => None,
+    }
 }
 
 /// Where a cut-out material's opacity comes from, when it's a texture: that texture (an
@@ -593,13 +834,26 @@ pub fn all_textures(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> Vec<(Stri
     out
 }
 
+/// The biggest a mesh's textures need be: a small prop's are seen small (under 3 m: half
+/// `max`; under 80 cm: a quarter).
+fn texture_for(mesh: &StaticMesh, max: u32) -> u32 {
+    let size = mesh.extent.iter().fold(0.0f32, |m, e| m.max(*e)) * 2.0;
+    if size < 80.0 {
+        (max / 4).max(128)
+    } else if size < 300.0 {
+        (max / 2).max(128)
+    } else {
+        max
+    }
+}
+
 /// One of Mirror's Edge's static meshes (`name` in package `package`) and its materials'
 /// textures, read from the install.
 pub fn load_static_mesh(pkgs: &mut Packages, package: &str, name: &str, max_texture: u32) -> Result<(StaticMesh, Vec<MaterialSlot>)> {
     let pkg = pkgs.get(package)?;
     let mesh = StaticMesh::read(&pkg, name)?;
     let mats: Vec<i32> = mesh.sections.iter().map(|s| s.material).collect();
-    let slots = slots_for(pkgs, &pkg, &mats, max_texture);
+    let slots = slots_for(pkgs, &pkg, &mats, texture_for(&mesh, max_texture));
     Ok((mesh, slots))
 }
 
@@ -621,7 +875,7 @@ pub fn load_static_mesh_with(pkgs: &mut Packages, package: &str, name: &str, ove
                 .map_or(s.material, |i| i as i32 + 1)
         })
         .collect();
-    let slots = slots_for(pkgs, &pkg, &mats, max_texture);
+    let slots = slots_for(pkgs, &pkg, &mats, texture_for(&mesh, max_texture));
     Ok((mesh, slots))
 }
 

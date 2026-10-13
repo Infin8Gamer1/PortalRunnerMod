@@ -4819,6 +4819,7 @@ version = "0.1.0"
 dependencies = [
  "aperture",
  "bytemuck",
+ "faith_move",
  "gdeflate-sys",
  "glam",
  "half",

@@ -49,7 +49,7 @@
         // Painted metal: machinery, ducts, pipes, catwalks, cranes, doors, signs.
         (match: ["ventilation", "acrooftop", "acsystem", "acunit", "airduct", "vent", "fan", "pipe", "catwalk", "crane", "railing", "ladder", "swingpole", "door", "billboard", "signad", "sign", "metal", "container", "cablebox", "antenna", "satellite", "tank", "cistern", "generator", "elevator"], surface: Some("painted_metal")),
         // Concrete built on the roofs (their structures, plinths, plugs).
-        (match: ["rooftopstructure", "concrete", "plinth", "curb"], surface: Some("concrete")),
+        (match: ["rooftopstructure", "concrete", "plinth", "curb", "pillar"], surface: Some("concrete")),
         // What she runs on: roofs, walkways, pavements.
         (match: ["rooftop", "roof", "floor", "walkway", "sidewalk", "road", "street", "pavement", "asphalt", "ground"], surface: Some("roof")),
         // The buildings' walls: painted render.

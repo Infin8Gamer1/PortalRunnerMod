@@ -152,6 +152,10 @@ fn is_zero(v: &Vec3) -> bool {
     *v == Vec3::ZERO
 }
 
+fn one_f() -> f32 {
+    1.0
+}
+
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -274,6 +278,28 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         materials: Vec<String>,
     },
+    /// A Mirror's Edge mover (#109): what a matinee moves (the props named in `carries`),
+    /// turned about here and moved as its keys say (each a time and how far they've moved and
+    /// turned from where they stand); how long the matinee is, how fast it plays, whether it
+    /// loops. Its Kismet (`MeLogic`) plays it.
+    MeMover {
+        keys: Vec<crate::level::MoverKey>,
+        length: f32,
+        #[serde(default = "one_f")]
+        rate: f32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        looping: bool,
+        carries: Vec<String>,
+    },
+    /// One of a Mirror's Edge level's Kismet ops (#109): its class (`SeqEvent_Touch`,
+    /// `SeqAct_Interp`...) and settings (an event's region is a box of this object's size,
+    /// here; a matinee's `movers`, by name). Its outputs lead to other ops' inputs: an output's
+    /// event is its index, its input the other op's.
+    MeLogic {
+        op: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        params: Vec<(String, String)>,
+    },
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
     Model { path: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
@@ -395,6 +421,8 @@ impl Kind {
             Kind::SoftPad { .. } => "Soft landing".into(),
             Kind::Ladder { pipe, .. } => if *pipe { "Drainpipe" } else { "Ladder" }.into(),
             Kind::MeProp { mesh, .. } => mesh.clone(),
+            Kind::MeMover { carries, .. } => format!("Mover ({} carried)", carries.len()),
+            Kind::MeLogic { op, .. } => op.trim_start_matches("Seq").to_string(),
             Kind::Hull { mat, .. } => format!("{mat:?} hull"),
             Kind::Model { path, .. } => path.rsplit('/').next().unwrap_or(path).trim_end_matches(".glb").to_string(),
             Kind::Brush(b) => {
@@ -824,11 +852,22 @@ impl LevelDoc {
             Kind::MeProp { package, mesh, solid: true, own_shape: true, .. } => crate::me::shape(package, mesh),
             _ => None,
         };
+        // (What Mirror's Edge's movers carry collides as they move: theirs, not the world's.)
+        let carried: std::collections::HashSet<&str> = self.objects.iter().flat_map(|o| match &o.kind {
+            Kind::MeMover { carries, .. } => carries.iter().map(|c| c.as_str()).collect(),
+            _ => Vec::new(),
+        }).collect();
+        let mut carried_solids: HashMap<&str, Vec<Solid>> = HashMap::new();
         for o in &self.objects {
             match &o.kind {
                 Kind::MeProp { package, mesh, scale, .. } => {
                     if let Some(shape) = shape_of(o) {
-                        crate::me::place_kept(&format!("{package}.{mesh}"), &shape, o.at, o.rotation(), *scale, Mat::Wall, &mut l.solids, &mut l.slopes);
+                        if carried.contains(o.name.as_str()) {
+                            let mut slopes = Vec::new();
+                            shape.place(o.at, o.rotation(), *scale, Mat::Wall, carried_solids.entry(o.name.as_str()).or_default(), &mut slopes);
+                        } else {
+                            crate::me::place_kept(&format!("{package}.{mesh}"), &shape, o.at, o.rotation(), *scale, Mat::Wall, &mut l.solids, &mut l.slopes);
+                        }
                     }
                 }
                 _ => {}
@@ -870,6 +909,7 @@ impl LevelDoc {
             }
         }
         let mut spawn = None;
+        let mut prop_index: HashMap<&str, usize> = HashMap::new();
         for o in &self.objects {
             let at = o.at;
             let dir = o.dir().to_array();
@@ -978,7 +1018,12 @@ impl LevelDoc {
                 Kind::Ladder { height, pipe, exit } => {
                     l.fixtures.push(Fixture::Ladder(Ladder { base: at, top: at.y + *height, normal: o.dir(), pipe: *pipe, exit: *exit }));
                 }
+                // (Made once the props they name are: below.)
+                Kind::MeMover { .. } | Kind::MeLogic { .. } => {}
                 Kind::MeProp { package, mesh, scale, bounds, solid, materials, .. } => {
+                    if !o.name.is_empty() {
+                        prop_index.insert(o.name.as_str(), l.me_props.len());
+                    }
                     let shaped = shape_of(o).is_some();
                     let stand_in = (bounds.is_some() && *solid && !shaped).then(|| o.bounds());
                     let materials = materials.iter().map(|m| leak(m)).collect();
@@ -992,6 +1037,7 @@ impl LevelDoc {
                 Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => {}
             }
         }
+        self.build_me_logic(&mut l, &prop_index, &mut carried_solids);
         match spawn {
             // A start of its own, in a map: instead of the map's.
             Some((at, yaw)) if map && !l.checkpoints.is_empty() => {
@@ -1111,6 +1157,62 @@ impl LevelDoc {
         l.bodies = crate::art::bodies(&art);
         l.art = Some(Arc::new(art));
         l
+    }
+
+    /// Its Mirror's Edge movers and the Kismet that drives them (#109), into the level: each
+    /// mover a sim mover (the solids of what it carries), each op with its outputs, regions and
+    /// movers found by name.
+    fn build_me_logic(&self, l: &mut Level, prop_index: &HashMap<&str, usize>, carried_solids: &mut HashMap<&str, Vec<Solid>>) {
+        let mut mover_index: HashMap<&str, usize> = HashMap::new();
+        // (Movers that carry the same thing (a door's matinees, one for each way it swings) are
+        // one body: one sim mover.)
+        let mut body_of: HashMap<&str, usize> = HashMap::new();
+        for o in &self.objects {
+            let Kind::MeMover { keys, length, rate, looping, carries } = &o.kind else { continue };
+            let props: Vec<usize> = carries.iter().filter_map(|c| prop_index.get(c.as_str()).copied()).collect();
+            let sim = match carries.first().and_then(|c| body_of.get(c.as_str())) {
+                Some(&b) => b,
+                None => {
+                    let boxes: Vec<Solid> = carries.iter().flat_map(|c| carried_solids.remove(c.as_str()).unwrap_or_default()).collect();
+                    // (Its sim mover: what it carries collides where the logic puts it.)
+                    let sim = l.items.iter().filter(|i| matches!(i, Item::Mover(_))).count();
+                    l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO], speed: 0.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None, crush: 0.0 }));
+                    for c in carries {
+                        body_of.insert(c.as_str(), sim);
+                    }
+                    sim
+                }
+            };
+            if !o.name.is_empty() {
+                mover_index.insert(o.name.as_str(), l.me_movers.len());
+            }
+            l.me_movers.push(crate::level::MeMover { name: o.name.clone(), pivot: o.at, keys: keys.clone(), length: *length, rate: *rate, looping: *looping, carries: props, sim });
+        }
+        let ops: Vec<&Object> = self.objects.iter().filter(|o| matches!(o.kind, Kind::MeLogic { .. })).collect();
+        let op_index: HashMap<&str, usize> = ops.iter().enumerate().filter(|(_, o)| !o.name.is_empty()).map(|(k, o)| (o.name.as_str(), k)).collect();
+        for o in ops {
+            let Kind::MeLogic { op, params } = &o.kind else { continue };
+            let outputs = o
+                .outputs
+                .iter()
+                .filter_map(|out| Some((out.event.parse().ok()?, *op_index.get(out.target.as_str())?, out.input.parse().unwrap_or(0), out.delay)))
+                .collect();
+            // (Its region: its box, if it has one; and any more it names.)
+            let mut regions: Vec<Aabb> = Vec::new();
+            if o.size != Vec3::ZERO {
+                regions.push(Aabb::from_center_size(o.at, o.size));
+            }
+            for (k, v) in params {
+                if k == "region" {
+                    let f: Vec<f32> = v.split(' ').filter_map(|x| x.parse().ok()).collect();
+                    if f.len() == 6 {
+                        regions.push(Aabb::new(Vec3::new(f[0], f[1], f[2]), Vec3::new(f[3], f[4], f[5])));
+                    }
+                }
+            }
+            let movers = params.iter().filter(|(k, _)| k == "mover").filter_map(|(_, v)| mover_index.get(v.as_str()).copied()).collect();
+            l.me_logic.push(crate::level::LogicOp { name: o.name.clone(), op: op.clone(), params: params.clone(), outputs, regions, movers });
+        }
     }
 
     /// A built level as objects, and how many of its things have no object to be (Mirror's

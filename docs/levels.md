@@ -139,6 +139,19 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
 - Its **BSP** (the rooms, floors and walls built from brushes: much of the indoors) is one more
   prop in each sublevel, mesh `BSP`: drawn with its surfaces' materials and texture
   coordinates, and colliding with its solid faces, both read from the install.
+- Its **movers** (#109) are **Mirror's Edge movers**: each matinee's move of an actor (a door
+  swinging, traffic, a turning camera) as keys (when, how far moved and turned from where it
+  stands, about its pivot), carrying the props it moves (named `package.actor`; and what's
+  attached to them). The Kismet that plays them is **Kismet ops** (`MeLogic`: an event, a
+  delay, a gate, a switch, a matinee...), each with its outputs leading to the others' inputs
+  and, for an event, the region that sets it off (a trigger's volume, a door's box): only the
+  ops that lead to a mover are kept, remote events and sub-sequences joined up. In play, an op
+  runs as the game's does: the level loading, her walking into a trigger or standing on a
+  mover, running into a door (a kick) set events off; delays wait, gates and switches choose; a
+  matinee plays, reverses, stops; anything else passes its input on. What a mover carries is
+  drawn and collides where it is (she rides it; turned, it isn't solid, as a door swung open).
+  Movers carrying the same thing (a door's matinee for each way it swings) are one body.
+- Meshes from other packages (a prefab's) are read from those packages.
 - Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
@@ -157,6 +170,15 @@ size, a roughness and a metalness, and mipmaps; whites are kept under real white
 placed mesh's own materials (an orange catwalk, the adverts) replace its mesh's, colour variants
 are tinted as the game has them, and the game's normal maps are read the right way up (theirs
 are DirectX's: the `normaltest` capture, with `PORTAL_NORMAL_TEST=1`, shows how Bevy reads one).
+A material's colour map is tiled as its texture coordinates are (a chain-link fence's one link,
+thirty times over); a layered material's main layer is the one its own normal map belongs to,
+not a dirt layer's. A lamp's or a sign's material glows as the game's emissive input has it
+(its emissive map times its colour), so it lights the room in the traced light. What the game
+blends over its picture rather than draws as a surface (light shafts, glows, fake bloom, fog
+cones, sky domes) is left out. A light the game put inside its lamp is moved just out of it
+(the lamp would shut its light in). Indoors, the eye opens up by up to 3 stops (Portal's levels
+keep theirs). `portal_extract -- --audit-me <level>` lists a level's materials by how much
+of it they cover, and what was found for each (to find what's drawn wrong).
 Textures are read at up to 1024 square, their big mips from the packages they come from (a
 cooked map keeps only their small ones), and block-compressed for the GPU (BC1/BC3/BC5); backlit
 adverts glow in their colour. Materials are drawn as the game has them: cut out where its

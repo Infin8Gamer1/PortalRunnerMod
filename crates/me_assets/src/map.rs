@@ -27,6 +27,11 @@ pub struct Placed {
     pub hidden: bool,
     /// The component's materials, replacing the mesh's own (0: the mesh's).
     pub materials: Vec<i32>,
+    /// The actor's export (0-based).
+    pub export: usize,
+    /// A mesh from another package (an import): that package's name (then `mesh` is
+    /// `usize::MAX`, and `mesh_name` its name there).
+    pub import: Option<String>,
 }
 
 /// A volume (`BlockingVolume`, `TdLadderVolume`, ...): its brush's polygons, placed.
@@ -199,11 +204,28 @@ pub fn read(pkg: &Package) -> Map {
         if MESH_ACTORS.contains(&class.as_str()) || a.has("StaticMeshComponent") {
             let Some(comp) = a.object("StaticMeshComponent").filter(|&c| c > 0) else { continue };
             let c = Chain::new(pkg, comp as usize - 1);
-            let Some(mesh) = c.object("StaticMesh").filter(|&m| m > 0) else { continue };
-            let mesh = mesh as usize - 1;
-            if pkg.class_name(&pkg.exports[mesh]) != "StaticMesh" {
-                continue;
-            }
+            let Some(mesh) = c.object("StaticMesh").filter(|&m| m != 0) else { continue };
+            // (One from another package: which, and its name there.)
+            let (mesh, import, mesh_name) = if mesh < 0 {
+                let Some(imp) = pkg.imports.get((-mesh) as usize - 1) else { continue };
+                if imp.class != "StaticMesh" {
+                    continue;
+                }
+                let mut top = imp.outer;
+                let mut top_name = String::new();
+                while top < 0 {
+                    let Some(o) = pkg.imports.get((-top) as usize - 1) else { break };
+                    top_name = o.name.clone();
+                    top = o.outer;
+                }
+                (usize::MAX, Some(top_name), imp.name.clone())
+            } else {
+                let mesh = mesh as usize - 1;
+                if pkg.class_name(&pkg.exports[mesh]) != "StaticMesh" {
+                    continue;
+                }
+                (mesh, None, pkg.exports[mesh].name.clone())
+            };
             let cs = c.f32("Scale").unwrap_or(1.0);
             let c3 = c.vec3("Scale3D").unwrap_or([1.0; 3]);
             // Unreal's defaults: a static mesh actor blocks, its component collides with and
@@ -218,13 +240,15 @@ pub fn read(pkg: &Package) -> Map {
                 class,
                 name: e.name.clone(),
                 mesh,
-                mesh_name: pkg.exports[mesh].name.clone(),
+                mesh_name,
                 location,
                 rotation,
                 scale: [scale[0] * cs * c3[0], scale[1] * cs * c3[1], scale[2] * cs * c3[2]],
                 blocks,
                 hidden,
                 materials: c.objects("Materials"),
+                export: i,
+                import,
             });
         } else if class.ends_with("Volume") || class == "Brush" {
             // (Its brush is a model inside it, the polygons inside that.)

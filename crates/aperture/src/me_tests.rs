@@ -201,6 +201,15 @@ fn every_level_starts_her_on_her_feet() {
     let mut problems = vec![];
     for (_, file, _) in crate::me::MAPS {
         let Some(l) = level(file) else { continue };
+        // (Its ladders are ladders: a volume whose path was never set made one millions of
+        // metres tall.)
+        for f in &l.fixtures {
+            if let Fixture::Ladder(x) = f {
+                if !(0.5..60.0).contains(&(x.top - x.base.y)) {
+                    problems.push(format!("{file}: a ladder at {} {} m tall", x.base, x.top - x.base.y));
+                }
+            }
+        }
         let cp = l.checkpoints[0].clone();
         let props = l.me_props.len();
         let mut r = Run::new(l, cp.spawn, cp.yaw);
@@ -213,3 +222,59 @@ fn every_level_starts_her_on_her_feet() {
     }
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+/// Movers (#109): their Kismet plays them. What the level sets going as it loads (Edge's
+/// traffic below) moves as she stands there.
+#[test]
+fn movers_play_as_their_kismet_says() {
+    for file in ["edge", "escape"] {
+        let Some(l) = level(file) else { continue };
+        let movers = l.me_movers.len();
+        let cp = l.checkpoints[0].clone();
+        let mut r = Run::new(l, cp.spawn, cp.yaw);
+        let at0: Vec<(Vec3, glam::Quat)> = r.sim.me.as_ref().map(|m| m.poses.clone()).unwrap_or_default();
+        let t = std::time::Instant::now();
+        r.run(3.0, |_| Input::default());
+        let per_step = t.elapsed().as_secs_f32() / 180.0 * 1000.0;
+        let poses = r.sim.me.as_ref().map(|m| m.poses.clone()).unwrap_or_default();
+        let moved = poses.iter().zip(&at0).filter(|(a, b)| a.0.distance(b.0) > 0.05 || a.1.angle_between(b.1) > 0.01).count();
+        eprintln!("{file}: {movers} movers, {moved} moved in 3 s ({per_step:.2} ms a step)");
+        // (Fast enough to run every frame.)
+        assert!(per_step < 4.0, "{file}: {per_step} ms a step");
+        assert!(movers > 0, "{file}: no movers");
+        assert!(moved > 0, "{file}: none moved");
+        assert_eq!(r.deaths, 0);
+    }
+}
+
+/// A door kicked open (#109): running into one of Escape's doors sets off its Kismet, and
+/// its matinee swings it.
+#[test]
+fn running_into_a_door_kicks_it_open() {
+    let Some(l) = level("escape") else { return };
+    let door = l.me_logic.iter().find(|o| o.name == "Escape_Off_Spt.SeqEvent_TakeDamage_2").expect("the door's event").regions[0];
+    // (From whichever side has a floor to run on.)
+    let mut opened = false;
+    for side in [1.0f32, -1.0] {
+        let n = Vec3::new(0.0, 0.0, side);
+        let start = Vec3::new(door.center().x, door.min.y + 0.05, door.center().z) + n * 4.0;
+        let mut r = Run::new(l.clone(), start, yaw_to(-n));
+        let before = r.sim.me.as_ref().unwrap().poses.clone();
+        r.run(0.5, |_| Input::default());
+        if (r.c.feet.y - start.y).abs() > 0.3 {
+            continue;
+        }
+        r.run(2.5, |_| forward());
+        let after = r.sim.me.as_ref().unwrap().poses.clone();
+        // (The door's own: its movers by it.)
+        let near: Vec<usize> = r.sim.level.me_movers.iter().enumerate().filter(|(_, m)| m.pivot.distance(door.center()) < 2.5).map(|(k, _)| k).collect();
+        let moved = near.iter().filter(|&&k| after[k].0.distance(before[k].0) > 0.05 || after[k].1.angle_between(before[k].1) > 0.05).count();
+        eprintln!("side {side}: ended {:?}, {moved} of the {} movers by the door moved", r.c.feet, near.len());
+        // (And she runs on through it.)
+        let through = (r.c.feet - door.center()).dot(n) < -0.5;
+        opened |= moved > 0 && through;
+    }
+    assert!(opened, "the door didn't open, or she didn't get through it");
+}
+
+

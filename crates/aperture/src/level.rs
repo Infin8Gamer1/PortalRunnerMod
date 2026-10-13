@@ -389,6 +389,9 @@ pub struct Level {
     /// Walking into any checkpoint makes it the respawn point, in whatever order (a story
     /// level's, where they aren't in a line): else only one further on counts.
     pub free_checkpoints: bool,
+    /// A Mirror's Edge level's movers and the Kismet that drives them (#109).
+    pub me_movers: Vec<MeMover>,
+    pub me_logic: Vec<LogicOp>,
     /// Messages shown while you stand in a region.
     pub hints: Vec<(Aabb, &'static str)>,
     /// Falling below this kills you.
@@ -525,6 +528,99 @@ pub struct MeProp {
     pub materials: Vec<&'static str>,
 }
 
+/// A key of a Mirror's Edge mover's move (#109): when (seconds), how far what it carries has
+/// moved (metres) and turned (degrees: yaw, pitch, roll, about the mover's pivot) from where
+/// it stands, and whether it goes on to the next in a straight line (else eased).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MoverKey {
+    pub t: f32,
+    pub offset: Vec3,
+    #[serde(default, skip_serializing_if = "is_zero3")]
+    pub turn: Vec3,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub linear: bool,
+}
+
+fn is_zero3(v: &Vec3) -> bool {
+    *v == Vec3::ZERO
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl MoverKey {
+    pub fn rotation(&self) -> glam::Quat {
+        glam::Quat::from_euler(glam::EulerRot::YXZ, self.turn.x.to_radians(), self.turn.y.to_radians(), self.turn.z.to_radians())
+    }
+}
+
+/// A Mirror's Edge mover as built (#109): the props it carries (indices in `me_props`),
+/// turned about `pivot` and moved as its keys say; how long its matinee is, how fast it plays
+/// and whether it loops.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeMover {
+    pub name: String,
+    pub pivot: Vec3,
+    pub keys: Vec<MoverKey>,
+    pub length: f32,
+    pub rate: f32,
+    pub looping: bool,
+    pub carries: Vec<usize>,
+    /// Its sim mover (what it carries collides as that moves).
+    pub sim: usize,
+}
+
+impl MeMover {
+    /// How far what it carries has moved and turned (about the pivot) at time `t`.
+    pub fn at(&self, t: f32) -> (Vec3, glam::Quat) {
+        let Some(first) = self.keys.first() else { return (Vec3::ZERO, glam::Quat::IDENTITY) };
+        if t <= first.t || self.keys.len() == 1 {
+            return (first.offset, first.rotation());
+        }
+        for w in self.keys.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if t <= b.t {
+                let f = if b.t > a.t { (t - a.t) / (b.t - a.t) } else { 1.0 };
+                // (Eased: slow out of one key and into the next, as the game's curves are.)
+                let f = if a.linear { f } else { f * f * (3.0 - 2.0 * f) };
+                return (a.offset.lerp(b.offset, f), a.rotation().slerp(b.rotation(), f));
+            }
+        }
+        let last = self.keys[self.keys.len() - 1];
+        (last.offset, last.rotation())
+    }
+
+    /// A point of what it carries (where it stands in the level) where it is at time `t`.
+    pub fn moved(&self, t: f32, p: Vec3) -> Vec3 {
+        let (d, q) = self.at(t);
+        self.pivot + d + q * (p - self.pivot)
+    }
+}
+
+/// One of a Mirror's Edge level's Kismet ops as built (#109): its class and settings, where
+/// each output leads (another op, which of its inputs, after how long), the regions that set
+/// it off (an event's: a trigger's volume, a door's box) and the movers it drives (a matinee's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogicOp {
+    pub name: String,
+    pub op: String,
+    pub params: Vec<(String, String)>,
+    pub outputs: Vec<(usize, usize, usize, f32)>,
+    pub regions: Vec<Aabb>,
+    pub movers: Vec<usize>,
+}
+
+impl LogicOp {
+    pub fn param(&self, k: &str) -> Option<&str> {
+        self.params.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+    }
+
+    pub fn num(&self, k: &str, default: f32) -> f32 {
+        self.param(k).and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+}
+
 /// A light placed in the level: a point light, or a spot light pointing `dir`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlacedLight {
@@ -577,6 +673,8 @@ impl Level {
             exit: None,
             course: false,
             free_checkpoints: false,
+            me_movers: Vec::new(),
+            me_logic: Vec::new(),
             hints: Vec::new(),
             kill_y: -30.0,
             gravity: None,

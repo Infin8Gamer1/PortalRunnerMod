@@ -41,7 +41,7 @@ fn main() {
     println!("normals: {agree} agree, {against} opposite, of {}", mesh.indices.len() / 3);
     for (s, slot) in mesh.sections.iter().zip(&slots) {
         let size = |t: &Option<me_assets::Rgba>| t.as_ref().map(|t| format!("{}x{}", t.width, t.height));
-        println!("  {} tris: {} diffuse {:?} normal {:?} spec {:?}", s.triangles, slot.material, size(&slot.diffuse), size(&slot.normal), size(&slot.specular));
+        println!("  {} tris: {} diffuse {:?} normal {:?} spec {:?} uv x{:?}", s.triangles, slot.material, size(&slot.diffuse), size(&slot.normal), size(&slot.specular), slot.uv_scale);
         if let Some(t) = &slot.diffuse {
             let mut ppm = format!("P6 {} {} 255\n", t.width, t.height).into_bytes();
             ppm.extend(t.pixels.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]));

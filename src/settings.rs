@@ -64,6 +64,9 @@ pub struct Settings {
     /// The view's exposure follows how bright it is, within the range Portal's maps allow
     /// (as the eye adjusts): 1 on, 0 off.
     pub auto_exposure: f32,
+    /// How detailed Mirror's Edge's textures are (0 low, 1 medium, 2 high: at most 256, 512 or
+    /// 1024 square): lower takes less of the GPU's memory.
+    pub texture_detail: f32,
     /// NVIDIA DLSS (`graphics::DLSS_MODES`; 0 off). Only in builds with the `dlss` feature (the
     /// default), on a GPU that has it; elsewhere the anti-aliasing setting applies.
     pub dlss: f32,
@@ -133,6 +136,7 @@ impl Default for Settings {
             bloom: 0.3,
             ssao: 1.0,
             auto_exposure: 1.0,
+            texture_detail: 2.0,
             // Quality, where there's DLSS.
             dlss: 2.0,
         }
@@ -245,7 +249,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 29] = [
+const ROWS: [Row; 30] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -405,6 +409,17 @@ const ROWS: [Row; 29] = [
     },
     Row { key: "ssao", page: Page::Graphics, label: "Ambient occlusion", min: 0.0, max: 1.0, step: 1.0, get: |s| s.ssao, put: |s, v| s.ssao = v, show: on_off },
     Row { key: "auto_exposure", page: Page::Graphics, label: "Auto exposure", min: 0.0, max: 1.0, step: 1.0, get: |s| s.auto_exposure, put: |s, v| s.auto_exposure = v, show: on_off },
+    Row {
+        key: "texture_detail",
+        page: Page::Graphics,
+        label: "Texture detail",
+        min: 0.0,
+        max: 2.0,
+        step: 1.0,
+        get: |s| s.texture_detail,
+        put: |s, v| s.texture_detail = v,
+        show: |v| ["Low", "Medium", "High"][(v.round() as usize).min(2)].to_string(),
+    },
     Row { key: "fov_kick", page: Page::Display, label: "Speed FOV increase", min: 0.0, max: 1.5, step: 0.25, get: |s| s.fov_kick, put: |s, v| s.fov_kick = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
     Row { key: "speed_lines", page: Page::Display, label: "Speed lines", min: 0.0, max: 1.0, step: 1.0, get: |s| s.speed_lines, put: |s, v| s.speed_lines = v, show: on_off },
     Row {
@@ -481,6 +496,7 @@ mod tests {
             bloom: 0.8,
             ssao: 0.0,
             auto_exposure: 0.0,
+            texture_detail: 1.0,
             dlss: 3.0,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);

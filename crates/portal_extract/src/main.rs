@@ -15,6 +15,7 @@ mod anim;
 mod bsp;
 mod glb;
 mod maps;
+mod me_kismet;
 mod me_port;
 mod remix;
 mod scenes;
@@ -424,6 +425,15 @@ fn main() {
         };
         let only = args.get(i + 1).filter(|a| !a.starts_with("--"));
         me_port::port_all(&cooked, only.map(|s| s.as_str()));
+        return;
+    }
+    // `--audit-me <level file>`: what a Mirror's Edge level's materials found.
+    if let Some(i) = args.iter().position(|a| a == "--audit-me") {
+        let Some(cooked) = me_port::find_cooked(arg(&args, "--me"), &steam_dirs()) else {
+            eprintln!("Mirror's Edge not found (pass --me <dir>, or set FAITH_ME_DIR)");
+            std::process::exit(1);
+        };
+        me_port::audit(&cooked, args.get(i + 1).map_or("tutorial", |s| s.as_str()));
         return;
     }
     let find = |flag: &str, folder: &str| -> Option<PathBuf> {
