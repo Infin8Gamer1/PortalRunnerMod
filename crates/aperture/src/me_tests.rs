@@ -279,3 +279,30 @@ fn running_into_a_door_kicks_it_open() {
 
 
 
+/// Collision switched by Kismet (#111): kicking Edge's door also turns its collision off (its
+/// `SeqAct_ChangeCollision`), and she runs through where it was.
+#[test]
+fn a_kicked_door_s_kismet_turns_its_collision_off() {
+    let Some(l) = level("edge") else { return };
+    let door = l.me_logic.iter().find(|o| o.name == "Edge_Pt2_Spt.SeqEvent_TakeDamage_1").expect("the door's event").regions[0];
+    let switch = l.me_logic.iter().find(|o| o.op == "SeqAct_ChangeCollision" && o.param("blocks") == Some("false") && !o.bodies.is_empty()).expect("a collision switch");
+    let bodies = switch.bodies.clone();
+    let start = Vec3::new(door.center().x, door.min.y + 0.05, door.center().z) + Vec3::Z * 3.0;
+    let mut r = Run::new(l, start, yaw_to(Vec3::NEG_Z));
+    r.run(0.5, |_| Input::default());
+    assert!(bodies.iter().all(|&b| r.sim.movers[b].present), "solid before");
+    r.run(2.5, |_| forward());
+    let passable = bodies.iter().filter(|&&b| !r.sim.movers[b].present).count();
+    eprintln!("{passable} of {} switched off; she's at {:?}", bodies.len(), r.c.feet);
+    assert!(passable > 0, "its collision wasn't switched off");
+    assert!(r.c.feet.z < door.min.z - 0.5, "she didn't get through: {:?}", r.c.feet);
+}
+
+/// Hidden blockers (#113): the game's invisible meshes that collide are kept (not drawn).
+#[test]
+fn hidden_blockers_are_kept() {
+    let Some(l) = level("escape") else { return };
+    let hidden = l.me_props.iter().filter(|p| p.hidden).count();
+    eprintln!("escape: {hidden} hidden props");
+    assert!(hidden > 0);
+}

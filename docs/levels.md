@@ -151,6 +151,13 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
   matinee plays, reverses, stops; anything else passes its input on. What a mover carries is
   drawn and collides where it is (she rides it; turned, it isn't solid, as a door swung open).
   Movers carrying the same thing (a door's matinee for each way it swings) are one body.
+  Kismet switches things too: `ChangeCollision` makes a body passable or solid again (and a
+  trigger volume touchable or not), `ToggleHidden` hides and shows props; a use event fires when
+  she presses use looking at it in reach; a door is kicked open by running into it or kicking it
+  (melee); a mover event fires as she gets on and off, and "Open Finished" once its matinee's
+  done and its stay-open time has passed (a lift that goes back down).
+- Meshes the game hides but that collide (invisible blockers), and hidden ones its Kismet moves
+  or shows, are kept as hidden props: not drawn, colliding as their shapes.
 - Meshes from other packages (a prefab's) are read from those packages.
 - Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are

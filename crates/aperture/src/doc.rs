@@ -277,6 +277,10 @@ pub enum Kind {
         /// as a level's placed mesh can have (an orange catwalk, an advert).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         materials: Vec<String>,
+        /// Not drawn (the game hides it: an invisible blocker), though it collides (#113); its
+        /// Kismet can show it.
+        #[serde(default, skip_serializing_if = "is_false")]
+        hidden: bool,
     },
     /// A Mirror's Edge mover (#109): what a matinee moves (the props named in `carries`),
     /// turned about here and moved as its keys say (each a time and how far they've moved and
@@ -1020,14 +1024,14 @@ impl LevelDoc {
                 }
                 // (Made once the props they name are: below.)
                 Kind::MeMover { .. } | Kind::MeLogic { .. } => {}
-                Kind::MeProp { package, mesh, scale, bounds, solid, materials, .. } => {
+                Kind::MeProp { package, mesh, scale, bounds, solid, materials, hidden, .. } => {
                     if !o.name.is_empty() {
                         prop_index.insert(o.name.as_str(), l.me_props.len());
                     }
                     let shaped = shape_of(o).is_some();
                     let stand_in = (bounds.is_some() && *solid && !shaped).then(|| o.bounds());
                     let materials = materials.iter().map(|m| leak(m)).collect();
-                    l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in, materials });
+                    l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in, materials, hidden: *hidden });
                 }
                 Kind::Model { path, scale, bounds, solid } => {
                     let solid = (bounds.is_some() && *solid).then(|| o.bounds());
@@ -1211,7 +1215,10 @@ impl LevelDoc {
                 }
             }
             let movers = params.iter().filter(|(k, _)| k == "mover").filter_map(|(_, v)| mover_index.get(v.as_str()).copied()).collect();
-            l.me_logic.push(crate::level::LogicOp { name: o.name.clone(), op: op.clone(), params: params.clone(), outputs, regions, movers });
+            let targets: Vec<&str> = params.iter().filter(|(k, _)| k == "target").map(|(_, v)| v.as_str()).collect();
+            let bodies = targets.iter().filter_map(|t| body_of.get(t).copied()).collect();
+            let props = targets.iter().filter_map(|t| prop_index.get(t).copied()).collect();
+            l.me_logic.push(crate::level::LogicOp { name: o.name.clone(), op: op.clone(), params: params.clone(), outputs, regions, movers, bodies, props });
         }
     }
 
@@ -1338,13 +1345,13 @@ impl LevelDoc {
         }
         for p in &l.me_props {
             // A prop that stands in a box of its own: that box is the prop's, not a block.
-            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false, own_shape: false, materials: p.materials.iter().map(|m| m.to_string()).collect() }, p.at);
+            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false, own_shape: false, materials: p.materials.iter().map(|m| m.to_string()).collect(), hidden: p.hidden }, p.at);
             o.set_rotation(p.turn);
             if let Some(b) = p.stand_in {
                 if let Some(i) = d.objects.iter().position(|o| o.kind == Kind::Block { mat: Mat::Prop } && (o.bounds().min - b.min).length() < 1e-4 && (o.bounds().max - b.max).length() < 1e-4) {
                     d.objects.remove(i);
                 }
-                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true, own_shape: false, materials: p.materials.iter().map(|m| m.to_string()).collect() };
+                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true, own_shape: false, materials: p.materials.iter().map(|m| m.to_string()).collect(), hidden: p.hidden };
             }
             push(&mut d, o);
         }

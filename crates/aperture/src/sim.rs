@@ -687,8 +687,10 @@ pub struct Sim {
     pub io_signals: Vec<bool>,
     /// The map's logic (Portal's maps).
     pub io: Option<crate::io::Io>,
-    /// A Mirror's Edge level's Kismet and its movers (#109).
+    /// A Mirror's Edge level's Kismet and its movers (#109), and where she last pressed use
+    /// from, for its use events (#112).
     pub me: Option<crate::me_logic::MeLogic>,
+    pub me_use: Option<Aim>,
     /// The prop Faith is carrying (index into `props`).
     pub held: Option<usize>,
     /// The turret she's carrying.
@@ -773,6 +775,7 @@ impl Sim {
             io_signals: vec![false; level.signal_count()],
             io: level.io.clone(),
             me: (!level.me_movers.is_empty()).then(|| crate::me_logic::MeLogic::new(&level)),
+            me_use: None,
             held: None,
             held_turret: None,
             held_through: None,
@@ -1877,6 +1880,10 @@ impl Sim {
     /// Use (E): drop what she's carrying, or pick up the cube she's looking at, or press the
     /// button in front of her.
     pub fn use_key(&mut self, aim: Aim) {
+        // (A Mirror's Edge level's use events: a button, a valve, in reach where she looks.)
+        if self.me.is_some() {
+            self.me_use = Some(aim);
+        }
         if let Some(h) = self.held.take() {
             self.events.push(SimEvent::Drop { id: self.props[h].id });
             return;
@@ -2001,7 +2008,7 @@ impl Sim {
         let player_box = ctrl.body().aabb(ctrl.feet);
 
         if let Some(me) = self.me.as_mut() {
-            me.step(&self.level, &mut self.movers, ctrl, dt);
+            me.step(&self.level, &mut self.movers, ctrl, self.me_use.take(), dt);
         }
         self.update_movers(dt, ctrl);
         self.fizzle_portals_on_movers();
