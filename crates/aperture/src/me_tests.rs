@@ -122,8 +122,10 @@ fn props_named(l: &crate::Level, part: &str) -> Vec<faith_move::Aabb> {
 #[test]
 fn training_zipline_runs_between_its_anchors() {
     let Some(l) = level("tutorial") else { return };
-    let (a, b) = l.fixtures.iter().find_map(|f| if let Fixture::ZipLine { a, b } = f { Some((*a, *b)) } else { None }).expect("a zipline");
+    let (a, b, sag) = l.fixtures.iter().find_map(|f| if let Fixture::ZipLine { a, b, sag } = f { Some((*a, *b, *sag)) } else { None }).expect("a zipline");
     assert!(a.y > b.y && a.distance(b) > 50.0, "{a} -> {b}");
+    // Its cable sags as the game's does (#103).
+    assert!((0.5..2.0).contains(&sag), "sag {sag}");
     // Its anchors are the level's (ZipLineBase), at both ends.
     let bases = props_named(&l, "ZipLineBase");
     for end in [a, b] {

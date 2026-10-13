@@ -54,13 +54,95 @@ impl Aabb {
     }
 }
 
+/// A zipline's cable: from its high end `a` to its low end `b`, its middle hanging `sag` below
+/// the straight line between them, as a cable under its own weight does (a parabola: near
+/// enough). Distances along it (`s`) are along the curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cable {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub sag: f32,
+}
+
+/// How many straight pieces a cable is measured in.
+const CABLE_PIECES: usize = 48;
+
+impl Cable {
+    pub fn new(a: Vec3, b: Vec3, sag: f32) -> Cable {
+        Cable { a, b, sag }
+    }
+
+    /// The point `t` (0..1) of the way from `a` to `b`.
+    pub fn at(&self, t: f32) -> Vec3 {
+        self.a.lerp(self.b, t) - Vec3::Y * (4.0 * self.sag * t * (1.0 - t))
+    }
+
+    /// The way it runs at `t` (unit, towards `b`).
+    pub fn dir(&self, t: f32) -> Vec3 {
+        ((self.b - self.a) - Vec3::Y * (4.0 * self.sag * (1.0 - 2.0 * t))).normalize_or(Vec3::NEG_Z)
+    }
+
+    /// Points along it, `n` pieces.
+    pub fn points(&self, n: usize) -> Vec<Vec3> {
+        (0..=n).map(|k| self.at(k as f32 / n as f32)).collect()
+    }
+
+    /// Its length.
+    pub fn length(&self) -> f32 {
+        self.points(CABLE_PIECES).windows(2).map(|w| w[0].distance(w[1])).sum()
+    }
+
+    /// How far along it (0..1) the point `s` metres along it is.
+    pub fn t_at(&self, s: f32) -> f32 {
+        if self.sag == 0.0 {
+            return (s / self.a.distance(self.b).max(1e-6)).clamp(0.0, 1.0);
+        }
+        let pts = self.points(CABLE_PIECES);
+        let mut gone = 0.0;
+        for (k, w) in pts.windows(2).enumerate() {
+            let d = w[0].distance(w[1]);
+            if gone + d >= s {
+                let f = if d > 1e-6 { (s - gone) / d } else { 0.0 };
+                return ((k as f32 + f) / CABLE_PIECES as f32).clamp(0.0, 1.0);
+            }
+            gone += d;
+        }
+        1.0
+    }
+
+    /// The point `s` metres along it.
+    pub fn along(&self, s: f32) -> Vec3 {
+        self.at(self.t_at(s))
+    }
+
+    /// Its nearest point to `p`, and how far along it that is (metres).
+    pub fn closest(&self, p: Vec3) -> (Vec3, f32) {
+        let pts = self.points(CABLE_PIECES);
+        let (mut best, mut best_s, mut best_d) = (self.a, 0.0, f32::MAX);
+        let mut gone = 0.0;
+        for w in pts.windows(2) {
+            let seg = w[1] - w[0];
+            let len = seg.length();
+            let f = if len > 1e-6 { ((p - w[0]).dot(seg) / (len * len)).clamp(0.0, 1.0) } else { 0.0 };
+            let q = w[0] + seg * f;
+            let d = q.distance_squared(p);
+            if d < best_d {
+                (best, best_s, best_d) = (q, gone + len * f, d);
+            }
+            gone += len;
+        }
+        (best, best_s)
+    }
+}
+
 /// Things you grab, ride or balance on that aren't plain boxes
 /// (Mirror's Edge places these as TdZipLine, TdSwingVolume and
 /// TdBalanceWalkVolume actors).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fixture {
-    /// Zipline cable from `a` (the high end) down to `b`.
-    ZipLine { a: Vec3, b: Vec3 },
+    /// Zipline cable from `a` (the high end) down to `b`, its middle hanging `sag` below the
+    /// straight line between them ([`Cable`]).
+    ZipLine { a: Vec3, b: Vec3, sag: f32 },
     /// Horizontal swing bar from `a` to `b`.
     SwingPole { a: Vec3, b: Vec3 },
     /// Balance beam: the centre line of its top, `a` to `b`. The beam itself

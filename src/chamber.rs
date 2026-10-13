@@ -778,13 +778,16 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
     // Mirror's Edge's fixtures.
     for (i, f) in l.fixtures.iter().enumerate() {
         match *f {
-            Fixture::ZipLine { a, b } | Fixture::SwingPole { a, b } => {
+            Fixture::ZipLine { .. } | Fixture::SwingPole { .. } => {
                 let thick = if matches!(f, Fixture::ZipLine { .. }) { 0.025 } else { 0.06 };
-                let len = a.distance(b);
-                let rot = Quat::from_rotation_arc(Vec3::Z, (b - a) / len);
-                let e = geom(commands, meshes.add(Cuboid::new(thick, thick, len)), m.metal.clone(), Transform::from_translation((a + b) * 0.5).with_rotation(rot));
-                // Hidden when Mirror's Edge's steel is drawn instead.
-                commands.entity(e).insert(crate::me_props::StandIn(crate::me_props::LINES));
+                // (A zipline's cable along its curve, a piece at a time.)
+                for (a, b) in crate::me_props::pieces(f) {
+                    let len = a.distance(b);
+                    let rot = Quat::from_rotation_arc(Vec3::Z, (b - a) / len);
+                    let e = geom(commands, meshes.add(Cuboid::new(thick, thick, len)), m.metal.clone(), Transform::from_translation((a + b) * 0.5).with_rotation(rot));
+                    // Hidden when Mirror's Edge's steel is drawn instead.
+                    commands.entity(e).insert(crate::me_props::StandIn(crate::me_props::LINES));
+                }
             }
             Fixture::Ladder(lad) => {
                 for (a, b, thick) in lad.rods() {

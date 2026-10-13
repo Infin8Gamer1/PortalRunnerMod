@@ -34,6 +34,19 @@ pub const LINES: usize = usize::MAX - 1;
 #[derive(Component)]
 pub struct StandIn(pub usize);
 
+/// A zipline's cable or a swing pole as straight pieces to draw: a cable that sags, along its
+/// curve.
+pub fn pieces(f: &Fixture) -> Vec<(Vec3, Vec3)> {
+    match *f {
+        Fixture::ZipLine { a, b, sag } if sag != 0.0 => {
+            let pts = faith_move::Cable::new(a, b, sag).points(24);
+            pts.windows(2).map(|w| (w[0], w[1])).collect()
+        }
+        Fixture::ZipLine { a, b, .. } | Fixture::SwingPole { a, b } => vec![(a, b)],
+        _ => vec![],
+    }
+}
+
 /// The game's packages (not thread-safe: they share what they've opened).
 pub struct MePackages(Packages);
 
@@ -267,10 +280,10 @@ pub fn spawn_for_level(
         let lines: Vec<(Vec3, Vec3, f32)> = level
             .fixtures
             .iter()
-            .filter_map(|f| match *f {
-                Fixture::ZipLine { a, b } => Some((a, b, CABLE_RADIUS)),
-                Fixture::SwingPole { a, b } if !level.me_art => Some((a, b, PIPE_RADIUS)),
-                _ => None,
+            .flat_map(|f| match *f {
+                Fixture::ZipLine { .. } => pieces(f).into_iter().map(|(a, b)| (a, b, CABLE_RADIUS)).collect(),
+                Fixture::SwingPole { a, b } if !level.me_art => vec![(a, b, PIPE_RADIUS)],
+                _ => vec![],
             })
             .collect();
         if !lines.is_empty() {

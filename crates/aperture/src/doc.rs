@@ -216,7 +216,12 @@ pub enum Kind {
     /// Indicator lights from here along `points` (from here), lit with `sig`.
     Wire { sig: Sig, points: Vec<Vec3> },
     /// A zipline from here (its high end) down to here + `to`.
-    ZipLine { to: Vec3 },
+    ZipLine {
+        to: Vec3,
+        /// How far its middle hangs below the straight line to its end (m).
+        #[serde(default, skip_serializing_if = "is_zero_f")]
+        sag: f32,
+    },
     /// A swing bar from here to here + `to`.
     SwingPole { to: Vec3 },
     /// A balance beam along the centre of its top, from here to here + `to`; with `solid`, the
@@ -701,7 +706,11 @@ impl Object {
                 }
                 b
             }
-            Kind::ZipLine { to } | Kind::SwingPole { to } => {
+            Kind::ZipLine { to, sag } => {
+                let (a, b) = (self.at, self.at + *to);
+                Aabb::new(a.min(b) - 0.1 - Vec3::Y * sag.max(0.0), a.max(b) + 0.1)
+            }
+            Kind::SwingPole { to } => {
                 let (a, b) = (self.at, self.at + *to);
                 Aabb::new(a.min(b) - 0.1, a.max(b) + 0.1)
             }
@@ -946,7 +955,7 @@ impl LevelDoc {
                 Kind::Sun { color, illuminance } => {
                     l.sun.get_or_insert(SunLight { dir: o.dir(), color: *color, illuminance: *illuminance });
                 }
-                Kind::ZipLine { to } => l.fixtures.push(Fixture::ZipLine { a: at, b: at + *to }),
+                Kind::ZipLine { to, sag } => l.fixtures.push(Fixture::ZipLine { a: at, b: at + *to, sag: *sag }),
                 Kind::SwingPole { to } => l.fixtures.push(Fixture::SwingPole { a: at, b: at + *to }),
                 Kind::Beam { to, .. } => l.fixtures.push(Fixture::Beam { a: at, b: at + *to }),
                 Kind::BargeDoor => l.fixtures.push(Fixture::Door { b: o.bounds(), n: -o.dir() }),
@@ -1126,7 +1135,7 @@ impl LevelDoc {
         }
         for f in &l.fixtures {
             let o = match f {
-                Fixture::ZipLine { a, b } => Object::new(Kind::ZipLine { to: *b - *a }, *a),
+                Fixture::ZipLine { a, b, sag } => Object::new(Kind::ZipLine { to: *b - *a, sag: *sag }, *a),
                 Fixture::SwingPole { a, b } => Object::new(Kind::SwingPole { to: *b - *a }, *a),
                 // (Its beam is one of the level's blocks already.)
                 Fixture::Beam { a, b } => Object::new(Kind::Beam { to: *b - *a, solid: false }, *a),

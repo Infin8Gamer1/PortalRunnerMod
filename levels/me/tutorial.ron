@@ -994,7 +994,7 @@
         (kind: Ladder(height: 8.0, pipe: true, exit: false), at: (-31.38, 42.24, 78.9), yaw: 90.0, name: "TdLadderVolume_5"),
         (kind: SwingPole(to: (-1.92, -0.0002, -0.0002)), at: (-14.04, 35.8001, 25.1301), name: "TdSwingVolume_0"),
         (kind: SwingPole(to: (-0.0002, 0.0, 2.56)), at: (-38.1699, 49.11, 77.28), name: "TdSwingVolume_2"),
-        (kind: ZipLine(to: (32.81, -15.2076, -90.1206)), at: (-53.28, 65.2576, 90.6556), name: "TdZiplineVolume_0"),
+        (kind: ZipLine(to: (32.81, -15.2076, -90.1206), sag: 0.81), at: (-53.28, 65.2576, 90.6556), name: "TdZiplineVolume_0"),
         (kind: MeProp(package: "Tutorial_Bac", mesh: "S_BD_Crane_01_Top", scale: (1.0, 1.0, 1.0), bounds: Some(((-25.8773, 29.2616, -3.48), (5.1049, 56.7659, 3.48))), solid: false, own_shape: true), at: (430.1001, 257.9733, -209.8426), yaw: 28.12, name: "InterpActor_0"),
         (kind: MeProp(package: "Tutorial_Bac", mesh: "S_BD_Crane_01_Top", scale: (1.0, 1.0, 1.0), bounds: Some(((-25.8773, 29.2616, -3.48), (5.1049, 56.7659, 3.48))), solid: false, own_shape: true), at: (433.1349, 261.3299, -147.0575), yaw: -78.756, name: "InterpActor_1"),
         (kind: MeProp(package: "Tutorial_Bac", mesh: "S_BD_Crane_01_Top", scale: (1.0, 1.0, 1.0), bounds: Some(((-25.8773, 29.2616, -3.48), (5.1049, 56.7659, 3.48))), solid: false, own_shape: true), at: (-149.3843, 80.8759, -119.5067), yaw: -129.375, name: "InterpActor_2"),

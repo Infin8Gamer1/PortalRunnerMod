@@ -996,7 +996,7 @@
         (kind: Ladder(height: 8.0, pipe: true, exit: false), at: (-31.38, 42.24, 78.9), yaw: 90.0, name: "TdLadderVolume_5"),
         (kind: SwingPole(to: (-1.92, -0.0002, -0.0002)), at: (-14.04, 35.8001, 25.1301), name: "TdSwingVolume_0"),
         (kind: SwingPole(to: (-0.0002, 0.0, 2.56)), at: (-38.1699, 49.11, 77.28), name: "TdSwingVolume_2"),
-        (kind: ZipLine(to: (32.81, -15.2076, -90.1206)), at: (-53.28, 65.2576, 90.6556), name: "TdZiplineVolume_0"),
+        (kind: ZipLine(to: (32.81, -15.2076, -90.1206), sag: 0.81), at: (-53.28, 65.2576, 90.6556), name: "TdZiplineVolume_0"),
         (kind: MeProp(package: "Tutorial_Art", mesh: "S_CityEyeC_Rot_01", scale: (3.0, 3.0, 3.0), bounds: Some(((-0.337, 0.0, -2.2796), (0.337, 7.9809, 2.3566))), solid: false, own_shape: true), at: (-75.84, 164.64, 146.24), yaw: -90.005, name: "InterpActor_0"),
         (kind: MeProp(package: "Tutorial_Art", mesh: "S_ACFan_666", scale: (0.35, 0.25, 0.35), bounds: Some(((-0.4822, -0.0, -0.4586), (0.4824, 0.0866, 0.493))), solid: false, own_shape: true), at: (-38.9171, 40.2183, 23.06), yaw: 90.0, pitch: -84.375, roll: -90.044, name: "InterpActor_2"),
         (kind: MeProp(package: "Tutorial_Art", mesh: "S_ACFan_666", scale: (0.35, 0.25, 0.35), bounds: Some(((-0.4822, -0.0, -0.4586), (0.4824, 0.0866, 0.493))), solid: false, own_shape: true), at: (-38.9171, 40.6262, 23.06), yaw: -90.0, roll: 90.0, name: "InterpActor_3"),

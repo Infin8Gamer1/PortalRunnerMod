@@ -220,9 +220,17 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                             o.face(wall);
                             o
                         }
+                        // Its cable sags: its spline's middle point hangs below the straight line
+                        // (at its way along it, as a parabola's would).
                         "TdZiplineVolume" => {
                             let (hi, lo) = if start.y >= end.y { (start, end) } else { (end, start) };
-                            Object::new(Kind::ZipLine { to: tidy(lo - hi) }, tidy(hi))
+                            let flat = Vec3::new(lo.x - hi.x, 0.0, lo.z - hi.z);
+                            let sag = a.vec3("Middle").map(ue).map_or(0.0, |m| {
+                                let t = (Vec3::new(m.x - hi.x, 0.0, m.z - hi.z).dot(flat) / flat.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                                let below = hi.y + (lo.y - hi.y) * t - m.y;
+                                if (0.1..0.9).contains(&t) { (below / (4.0 * t * (1.0 - t))).max(0.0) } else { 0.0 }
+                            });
+                            Object::new(Kind::ZipLine { to: tidy(lo - hi), sag: round(sag, 1e3) }, tidy(hi))
                         }
                         // A swing pole: across the volume (its own Y), at its height.
                         "TdSwingVolume" => {

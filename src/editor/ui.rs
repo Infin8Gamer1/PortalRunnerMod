@@ -1554,7 +1554,15 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             ui.add(egui::DragValue::new(illuminance).speed(speed).range(0.0..=200_000.0).suffix(" lux")).on_hover_text("Indoors the game's is 2,500; outdoors, 11,000. It's the level's only sun: where it's placed doesn't matter, which way it faces does");
             ui.end_row();
         }
-        Kind::ZipLine { to } | Kind::SwingPole { to } => {
+        Kind::ZipLine { to, sag } => {
+            ui.label("To (from here)");
+            vec3(ui, to, 0.05);
+            ui.end_row();
+            ui.label("Sag");
+            ui.add(egui::DragValue::new(sag).speed(0.02).range(0.0..=20.0).suffix(" m")).on_hover_text("How far the cable's middle hangs below the straight line between its ends");
+            ui.end_row();
+        }
+        Kind::SwingPole { to } => {
             ui.label("To (from here)");
             vec3(ui, to, 0.05);
             ui.end_row();
