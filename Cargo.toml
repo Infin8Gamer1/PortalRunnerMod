@@ -28,7 +28,7 @@ serde = { version = "1", features = ["derive"] }
 ron = "0.12"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # ...and their maps compressed for the GPU (BC1/BC3/BC5): five times smaller than RGBA.
-texpresso = "2"
+texpresso = { version = "2", features = ["rayon"] }
 bevy_egui = { version = "0.42", default-features = false, features = ["render", "default_fonts"] }
 
 # Fast-ish dev builds: optimize dependencies, keep our code debuggable.

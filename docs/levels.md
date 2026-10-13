@@ -156,7 +156,10 @@ adverts glow in their colour. Materials are drawn as the game has them: cut out 
 opacity says (from the texture and channel its material takes it from), and the ray-traced light
 goes through the holes too (fences cast their lattice); glass see-through, a building's still
 shading what's behind it in the traced light; and two-sided where it is. A specular map's
-brightest parts (windows) are glossy.
+brightest parts (windows) are glossy. The far city's buildings pack their maps into their colour
+map's channels (`pack` in the table). Baked maps are kept in `assets/extracted/me_remaster/`
+(made again when the table or a material changes; delete it to make them all again): a level's
+first load bakes them (the Training map: about 10 s), later ones read them (2.5 s).
 
 As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 

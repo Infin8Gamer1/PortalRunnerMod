@@ -188,7 +188,7 @@ fn build(
                 let key = (slot.path.clone(), 1);
                 let mat = match remastered.get(&key) {
                     Some(m) => Some(m.clone()),
-                    None => crate::me_remaster::bake(slot, &surface, reps).map(|b| {
+                    None => crate::me_remaster::bake_kept(slot, &surface, reps).map(|b| {
                         let color = images.add(b.color);
                         // (A backlit sign glows its colour.)
                         let glows = surface.glow > 0.0;
@@ -417,12 +417,16 @@ pub fn spawn_for_level(
         cache.level = game.loads;
         let level = &game.sim.level;
         cache.drawn = vec![false; level.me_props.len()];
+        let started = std::time::Instant::now();
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get_with((p.package, p.mesh), &p.materials, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
                 place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale), &cache.occluders);
                 cache.drawn[k] = true;
             }
+        }
+        if !level.me_props.is_empty() {
+            info!("Mirror's Edge props: {} drawn in {:.1} s", level.me_props.len(), started.elapsed().as_secs_f32());
         }
         // Ziplines and swing poles: round steel, the ladder's.
         cache.lines = level.me_art;

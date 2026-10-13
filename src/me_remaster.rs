@@ -107,15 +107,31 @@ pub fn surface_of(path: &str) -> Option<Surface> {
     r.table.surfaces.get(rule.surface.as_ref()?).cloned()
 }
 
+/// sRGB to linear, by table (a million pixels a map: `powf` each was most of a level's load).
 fn srgb_to_linear(c: u8) -> f32 {
-    let c = c as f32 / 255.0;
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    static T: OnceLock<[f32; 256]> = OnceLock::new();
+    T.get_or_init(|| {
+        std::array::from_fn(|i| {
+            let c = i as f32 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        })
+    })[c as usize]
 }
 
+/// Linear to sRGB, by table (4096 steps across 0-1: finer than 8 bits even in the darks).
 fn linear_to_srgb(c: f32) -> u8 {
-    let c = c.clamp(0.0, 1.0);
-    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
-    (s * 255.0 + 0.5) as u8
+    const N: usize = 4096;
+    static T: OnceLock<Vec<u8>> = OnceLock::new();
+    let t = T.get_or_init(|| {
+        (0..=N)
+            .map(|i| {
+                let c = i as f32 / N as f32;
+                let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+                (s * 255.0 + 0.5) as u8
+            })
+            .collect()
+    });
+    t[(c.clamp(0.0, 1.0) * N as f32 + 0.5) as usize]
 }
 
 fn load_detail(root: &Path, name: &str) -> Option<Detail> {
@@ -290,6 +306,87 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
         normal: compressed(w, h, normal, Map::Normal),
         metal_rough: compressed(w, h, mr, Map::Data),
     })
+}
+
+/// The baked maps kept on disk (`assets/extracted/me_remaster/`), so a level's materials are
+/// baked once: by the material, its tiling, its surface, the table and this.
+const CACHE_VERSION: u32 = 1;
+
+fn cache_path(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let dir = crate::extracted::find_root()?.join("me_remaster");
+    let table = remaster().and_then(|r| r.lock().ok().map(|r| std::fs::read_to_string(r.root.join("me.ron")).unwrap_or_default())).unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (CACHE_VERSION, &slot.path, repeats, format!("{surface:?}"), table, slot.diffuse.as_ref().map(|d| (d.width, d.height)), slot.tint.map(|t| t.map(f32::to_bits))).hash(&mut h);
+    Some(dir.join(format!("{:016x}.bin", h.finish())))
+}
+
+fn format_code(f: TextureFormat) -> Option<u8> {
+    [TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb, TextureFormat::Bc1RgbaUnorm, TextureFormat::Bc1RgbaUnormSrgb, TextureFormat::Bc3RgbaUnormSrgb, TextureFormat::Bc5RgUnorm]
+        .iter()
+        .position(|x| *x == f)
+        .map(|i| i as u8)
+}
+
+fn format_of(code: u8) -> Option<TextureFormat> {
+    [TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb, TextureFormat::Bc1RgbaUnorm, TextureFormat::Bc1RgbaUnormSrgb, TextureFormat::Bc3RgbaUnormSrgb, TextureFormat::Bc5RgUnorm].get(code as usize).copied()
+}
+
+/// Three images (format, size, mips, data) to bytes, and back.
+fn write_baked(b: &Baked) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for img in [&b.color, &b.normal, &b.metal_rough] {
+        let d = &img.texture_descriptor;
+        out.push(format_code(d.format)?);
+        for v in [d.size.width, d.size.height, d.mip_level_count] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        let data = img.data.as_ref()?;
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+    }
+    Some(out)
+}
+
+fn read_baked(bytes: &[u8]) -> Option<Baked> {
+    let mut at = 0;
+    let u32_at = |at: &mut usize| -> Option<u32> {
+        let v = u32::from_le_bytes(bytes.get(*at..*at + 4)?.try_into().ok()?);
+        *at += 4;
+        Some(v)
+    };
+    let mut imgs = Vec::new();
+    for _ in 0..3 {
+        let format = format_of(*bytes.get(at)?)?;
+        at += 1;
+        let (w, h, levels, len) = (u32_at(&mut at)?, u32_at(&mut at)?, u32_at(&mut at)?, u32_at(&mut at)? as usize);
+        let data = bytes.get(at..at + len)?.to_vec();
+        at += len;
+        let mut img = Image::default();
+        img.data = Some(data);
+        img.texture_descriptor.size = Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        img.texture_descriptor.dimension = TextureDimension::D2;
+        img.texture_descriptor.format = format;
+        imgs.push(sampled(img, levels));
+    }
+    let metal_rough = imgs.pop()?;
+    let normal = imgs.pop()?;
+    let color = imgs.pop()?;
+    Some(Baked { color, normal, metal_rough })
+}
+
+/// [`bake`], kept on disk: read back if it's been baked before.
+pub fn bake_kept(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Baked> {
+    let path = cache_path(slot, surface, repeats);
+    if let Some(b) = path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|bytes| read_baked(&bytes)) {
+        return Some(b);
+    }
+    let b = bake(slot, surface, repeats)?;
+    if let (Some(p), Some(bytes)) = (path, write_baked(&b)) {
+        let _ = std::fs::create_dir_all(p.parent().unwrap_or(Path::new(".")));
+        let _ = std::fs::write(p, bytes);
+    }
+    Some(b)
 }
 
 /// What a map holds, for how it's compressed: a colour (sRGB), a normal (its X and Y), or data
