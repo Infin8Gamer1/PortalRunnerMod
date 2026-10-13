@@ -102,8 +102,9 @@ For example, in your shell profile:
 export DLSS_SDK=$HOME/Documents/Git/DLSS-310.9.1 VULKAN_SDK=/usr
 ```
 
-Changing `DLSS_SDK` rebuilds DLSS's bindings the next time you build. `PORTAL_RR_PRESET=D`, `E`
-or `F` picks Ray Reconstruction's model for one run (by default DLSS picks: F, from 310.9.1).
+Changing `DLSS_SDK` rebuilds DLSS's bindings the next time you build. Ray Reconstruction uses
+its preset F model; `PORTAL_RR_PRESET=D`, `E` or `default` (DLSS chooses) picks another for one
+run.
 
 On a GPU that has it, DLSS is on from the start (Quality). **Settings > Graphics > DLSS**
 offers DLAA, Quality, Balanced, Performance and Ultra performance, or off; it takes the place
