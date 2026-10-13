@@ -13,6 +13,10 @@ use crate::portal_render::color_of;
 use crate::progress::Progress;
 use crate::{settings, Game};
 
+/// The HUD's top-level nodes that `update` doesn't show and hide itself (a spectator camera
+/// hides them).
+#[derive(Component)]
+pub struct HudRoot;
 #[derive(Component)]
 pub struct HudDebug;
 #[derive(Component)]
@@ -109,6 +113,7 @@ pub fn setup(mut commands: Commands, fonts: Res<UiFonts>) {
 
     // ---- messages: just under the crosshair
     commands.spawn((
+        HudRoot,
         HudFlash,
         Text::new(""),
         fonts.bold(22.0),
@@ -120,7 +125,7 @@ pub fn setup(mut commands: Commands, fonts: Res<UiFonts>) {
 
     // ---- hints: low, on a soft dark band
     commands
-        .spawn(Node { position_type: PositionType::Absolute, bottom: percent(14.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() })
+        .spawn((HudRoot, Node { position_type: PositionType::Absolute, bottom: percent(14.0), width: percent(100.0), justify_content: JustifyContent::Center, ..default() }))
         .with_children(|r| {
             r.spawn((
                 HudHint,
@@ -134,6 +139,7 @@ pub fn setup(mut commands: Commands, fonts: Res<UiFonts>) {
     // ---- the chamber's title card
     commands
         .spawn((
+            HudRoot,
             HudTitle,
             Node { position_type: PositionType::Absolute, top: percent(14.0), width: percent(100.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, row_gap: px(6.0), ..default() },
         ))
@@ -190,7 +196,8 @@ pub fn update(
 ) {
     let c = &game.ctrl;
     let sim = &game.sim;
-    let playing = !menu.open;
+    // (A spectator camera hides the HUD, unless it's asked to show it.)
+    let playing = !menu.open && game.spectate.is_none_or(|s| s.hud);
     let speed = c.horizontal_speed();
     let name = game.levels[game.level_index].0.as_str();
 

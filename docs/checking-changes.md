@@ -39,6 +39,8 @@ The scripts are in `src/capture.rs`. Some of them:
 | `cubethrough`, `plate`, `goo`, `glass`, `pellets` | A cube held half through a portal, the faith plate, goo, observation windows, Chamber 06's pellet |
 | `lighting`, `lighting3`, `rtswitch` | Lighting still, moving and outdoors; before and after ray tracing, and a portal's view against the world it shows; switching ray tracing |
 | `p1` | Portal's chambers' starts (`PORTAL_FIRST_MAP` / `PORTAL_LAST_MAP` pick them; `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from) |
+| `views` | Map `PORTAL_FIRST_MAP` from each place in `PORTAL_TP="x,y,z,yaw,pitch;..."` (where she'd stand, and which way to look): a spectator camera there, so nothing falls or drowns. `PORTAL_HOLD` frames before each shot, `PORTAL_SHOTS` shots of each; `PORTAL_TRACK=pellet` keeps the view on the pellet; `PORTAL_PLACE=1` puts her there instead |
+| `spectate` | The spectator camera over Chamber 08's goo, following the pellet, then back to her |
 | `native`, `effects`, `rockets`, `rtx` | A few of Portal's chambers, their effects, escape_01's rocket turret, Portal with RTX's pieces |
 | `chambersmenu`, `menu` | The menus |
 | `editor`, `editormouse`, `editoreffects`, `nativeedit` | The level editor (start these with `PORTAL_EDIT=1`) |

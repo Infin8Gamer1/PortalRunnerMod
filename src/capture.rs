@@ -56,6 +56,13 @@ enum Act {
     Teleport(Vec3),
     /// Throw her at this velocity.
     Launch(Vec3),
+    /// A spectator camera, its eye here, looking this way (degrees, as `Look`): nothing
+    /// touches it, and she stands still where she is as the chamber runs on. `Look` turns it.
+    Spectate(Vec3, f32, f32),
+    /// The spectator camera keeps looking at the first live pellet.
+    TrackPellet,
+    /// Back to her view.
+    Unspectate,
     /// Put a portal here (centre, facing, up).
     Portal(PortalColor, Vec3, Vec3, Vec3),
     /// Open a menu screen.
@@ -64,6 +71,8 @@ enum Act {
     Film(&'static str, MoveInput, u32),
     /// Wait until a live pellet has reached this x, or this many frames pass.
     WaitPelletX(f32, u32),
+    /// Wait until a live pellet's within this far of a point, or this many frames pass.
+    WaitPelletNear(Vec3, f32, u32),
     /// Put the first cube here, still.
     PlaceCube(Vec3),
     /// Send a live pellet (the first) from here at this velocity.
@@ -599,18 +608,81 @@ fn script(name: &str) -> Vec<Act> {
         // Pellet pieces in Portal's maps up close, the camera held where it's put:
         // PORTAL_FIRST_MAP and PORTAL_TP ("x,y,z,yaw,pitch;...") as for `p1`, PORTAL_WAIT frames
         // into the map first (default 200).
+        // Does light go through portals, ray traced? Chamber 08's pellet runs along its west
+        // wall: orange on that wall beside it, blue across the room on the east wall, and a
+        // spectator camera looking at blue, a shot every 8 frames as the pellet passes
+        // orange. PORTAL_NOPORTALS=1: the same without them, to tell the difference.
+        "portallight" => {
+            use crate::LevelGroup::Portal as N;
+            let mut v = vec![Chamber(N, "testchmb_a_04"), Wait(90)];
+            if std::env::var_os("PORTAL_NOPORTALS").is_none() {
+                v.push(Portal(PortalColor::Orange, Vec3::new(-9.75, 1.56, -6.0), Vec3::X, Vec3::Y));
+                v.push(Portal(PortalColor::Blue, Vec3::new(3.04, 1.56, -6.0), Vec3::NEG_X, Vec3::Y));
+            }
+            v.push(Spectate(Vec3::new(-1.5, 1.8, -6.0), -90.0, 0.0));
+            for k in 0..16 {
+                v.extend([Wait(8), Shot(Box::leak(format!("light_{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
+        // Light through portals, as Portal with RTX's screenshot of Chamber 08 has it: the
+        // map's own orange on the west wall with the pellet passing in front of it, blue on the
+        // way in's west wall, and a spectator camera by the entrance elevator looking across
+        // the floor at blue. A shot with the pellet far off, then a shot every 6 frames as it
+        // passes orange. PORTAL_NOPORTALS=1: the same without the portals.
+        "portallight08" => {
+            use crate::LevelGroup::Portal as N;
+            let orange = Vec3::new(-9.648, 1.434, 1.644);
+            let mut v = vec![Chamber(N, "testchmb_a_04"), Wait(60)];
+            if std::env::var_os("PORTAL_NOPORTALS").is_none() {
+                v.push(Portal(PortalColor::Orange, orange, Vec3::X, Vec3::Y));
+                v.push(Portal(PortalColor::Blue, Vec3::new(-6.5024, 1.45, 18.5), Vec3::X, Vec3::Y));
+            }
+            v.extend([Spectate(Vec3::new(-0.5, 1.5, 19.3), 70.0, -14.0), WaitPelletNear(Vec3::new(-8.08, 1.56, 12.0), 3.0, 900), Wait(20), Shot("light08_far"), WaitPelletNear(orange, 5.0, 900)]);
+            for k in 0..10 {
+                v.extend([Wait(6), Shot(Box::leak(format!("light08_{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
+        // The spectator camera (#90): over Chamber 08's goo, where she'd drown, for as long as
+        // it likes, following the pellet as it bounces; then back to her, where she stood.
+        "spectate" => {
+            use crate::LevelGroup::Portal as N;
+            let mut v = vec![Chamber(N, "testchmb_a_04"), Wait(90), Spectate(Vec3::new(-4.0, 1.2, 2.0), 90.0, -10.0), TrackPellet];
+            for k in 0..8 {
+                v.extend([Wait(25), Shot(["spectate_0", "spectate_1", "spectate_2", "spectate_3", "spectate_4", "spectate_5", "spectate_6", "spectate_7"][k])]);
+            }
+            v.extend([Unspectate, Wait(10), Shot("spectate_back")]);
+            v
+        }
         "views" => {
+            // (Her eye's height standing.)
+            let t = faith_move::Tuning::default();
+            let eye = t.stand_height - t.eye_from_top;
             let map: usize = std::env::var("PORTAL_FIRST_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(aperture::levels::all().len());
             let wait: u32 = std::env::var("PORTAL_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
             // (PORTAL_HOLD: frames held at each view before its shot, for the traced light to
             // settle; PORTAL_SHOTS: shots of each, that many frames apart.)
             let hold: u32 = std::env::var("PORTAL_HOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
             let shots: u32 = std::env::var("PORTAL_SHOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            // (Each view from a spectator camera, its eye where hers would be standing there:
+            // nothing falls or dies. PORTAL_PLACE=1 puts her there instead. PORTAL_TRACK=pellet
+            // keeps the view on the first live pellet.)
+            let place = std::env::var_os("PORTAL_PLACE").is_some();
+            let track = std::env::var("PORTAL_TRACK").is_ok_and(|t| t == "pellet");
             let mut v = vec![Map(map), Wait(wait)];
             for (k, p) in std::env::var("PORTAL_TP").unwrap_or_default().split(';').enumerate() {
                 let f: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 if f.len() == 5 {
-                    v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Launch(Vec3::ZERO), Look(f[3], f[4])]);
+                    let at = Vec3::new(f[0], f[1], f[2]);
+                    if place {
+                        v.extend([Teleport(at), Launch(Vec3::ZERO), Look(f[3], f[4])]);
+                    } else {
+                        v.push(Spectate(at + Vec3::Y * eye, f[3], f[4]));
+                        if track {
+                            v.push(TrackPellet);
+                        }
+                    }
                     for j in 0..shots {
                         let name = if shots == 1 { format!("view_{k}") } else { format!("view_{k}_{j}") };
                         v.extend([Wait(hold), Shot(Box::leak(name.into_boxed_str()))]);
@@ -1937,6 +2009,11 @@ pub fn run(
                     cap.wait = 0;
                 }
             }
+            Some(Act::WaitPelletNear(at, d, _)) => {
+                if game.sim.pellets.iter().any(|p| p.alive && p.pos.distance(*at) <= *d) {
+                    cap.wait = 0;
+                }
+            }
             _ => {}
         }
         if cap.wait == 0 {
@@ -1968,14 +2045,24 @@ pub fn run(
             cap.wait = *n;
             return;
         }
-        Act::WaitPelletX(_, n) => {
+        Act::WaitPelletX(_, n) | Act::WaitPelletNear(_, _, n) => {
             cap.wait = *n;
             return;
         }
-        Act::Look(yaw, pitch) => {
-            game.ctrl.yaw = yaw.to_radians();
-            game.ctrl.pitch = pitch.to_radians();
+        Act::Look(yaw, pitch) => match &mut game.spectate {
+            Some(sp) => (sp.yaw, sp.pitch) = (yaw.to_radians(), pitch.to_radians()),
+            None => {
+                game.ctrl.yaw = yaw.to_radians();
+                game.ctrl.pitch = pitch.to_radians();
+            }
+        },
+        Act::Spectate(eye, yaw, pitch) => game.spectate = Some(crate::Spectator::at(*eye, yaw.to_radians(), pitch.to_radians())),
+        Act::TrackPellet => {
+            if let Some(sp) = &mut game.spectate {
+                sp.track_pellet = true;
+            }
         }
+        Act::Unspectate => game.spectate = None,
         Act::Fire(c) => game.scripted_fire = Some(*c),
         Act::Use => game.scripted_use = true,
         Act::Shot(name) => {
