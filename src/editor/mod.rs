@@ -9,6 +9,7 @@
 //! built chamber starts from a copy of it.
 
 pub mod catalog;
+mod keys_help;
 pub mod library;
 mod thumbs;
 pub mod ui;
