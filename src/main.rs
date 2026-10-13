@@ -151,7 +151,7 @@ fn main() {
         viewmodel::animate,
         me_viewmodel::animate,
         body3p::animate,
-        portal_roll.run_if(editor::idle),
+        (portal_roll.run_if(editor::idle), spectator_overlays),
         menu::title_camera,
         portal_render::update,
         gun::update,
@@ -170,8 +170,34 @@ fn main() {
 
 // ------------------------------------------------------------------ state
 
+
+/// A spectator camera: a free eye that nothing touches (no gravity, walls or triggers), for
+/// screenshots and looking about. While it's on, she stands still where she was.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spectator {
+    pub eye: Vec3,
+    /// Radians: yaw 0 looks along -Z, positive turns left; pitch positive looks up.
+    pub yaw: f32,
+    pub pitch: f32,
+    /// Her arms and gun, and the HUD, drawn as they are in play.
+    pub hands: bool,
+    pub hud: bool,
+    /// Keep looking at the first live pellet.
+    pub track_pellet: bool,
+}
+
+impl Spectator {
+    /// Where the view is now, as a spectator (her arms and the HUD hidden).
+    pub fn at(eye: Vec3, yaw: f32, pitch: f32) -> Spectator {
+        Spectator { eye, yaw, pitch, hands: false, hud: false, track_pellet: false }
+    }
+}
+
 #[derive(Resource)]
 pub struct Game {
+    /// A free camera, when it's on (F6, or a capture script): the view's its, and she waits
+    /// where she is while the chamber runs on.
+    pub spectate: Option<Spectator>,
     pub ctrl: Controller,
     pub sim: Sim,
     /// The chamber as Mirror's Edge's sounds see it (footstep surfaces, checkpoints).
@@ -288,6 +314,7 @@ fn setup_world(mut commands: Commands) {
         RenderLayers::from_layers(&[0, PLAYER_LAYER, portal_render::SURFACE_LAYER]),
     ));
     commands.insert_resource(Game {
+        spectate: None,
         ctrl,
         sim: Sim::new(level.clone()),
         level: level.greybox(),
@@ -647,6 +674,39 @@ fn play(
         game.show_debug = !game.show_debug;
     }
 
+    // ---- the spectator camera (F6): flown with the movement keys and the mouse, faster with
+    // Shift, up with Space and down with C or Ctrl; she stands still meanwhile
+    if keys.just_pressed(KeyCode::F6) && !menu.open && game.scripted.is_none() {
+        game.spectate = match game.spectate {
+            Some(_) => None,
+            None => Some(Spectator::at(game.shot.view.eye, game.ctrl.yaw, game.ctrl.pitch)),
+        };
+    }
+    if let Some(sp) = &mut game.spectate {
+        if game.scripted.is_none() && !menu.open {
+            sp.yaw += input.look.x;
+            sp.pitch = (sp.pitch + input.look.y).clamp(-1.55, 1.55);
+            let fast = if keys.pressed(KeyCode::ShiftLeft) { 4.0 } else { 1.0 };
+            let (fwd, right) = (Quat::from_rotation_y(sp.yaw) * Vec3::NEG_Z, Quat::from_rotation_y(sp.yaw) * Vec3::X);
+            let fwd = Quat::from_axis_angle(right, sp.pitch) * fwd;
+            let up = if keys.pressed(KeyCode::Space) { 1.0 } else { 0.0 } - if keys.pressed(KeyCode::KeyC) || keys.pressed(KeyCode::ControlLeft) { 1.0 } else { 0.0 };
+            sp.eye += (fwd * mv.y + right * mv.x + Vec3::Y * up) * 6.0 * fast * dt;
+        }
+        if sp.track_pellet {
+            if let Some(p) = game.sim.pellets.iter().find(|p| p.alive) {
+                let d = p.pos - sp.eye;
+                sp.yaw = (-d.x).atan2(-d.z);
+                sp.pitch = d.y.atan2(Vec2::new(d.x, d.z).length());
+            }
+        }
+        input = MoveInput::default();
+        fire_blue = false;
+        fire_orange = false;
+        use_key = false;
+        respawn = false;
+        reaction = false;
+    }
+
     // ---- checkpoints
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6];
     let mut goto = None;
@@ -682,7 +742,10 @@ fn play(
         virtual_time.set_relative_speed(speed);
 
         let g = &mut *game;
-        g.sim.step_player(&mut g.ctrl, &input, dt);
+        // (Spectating, she isn't stepped: she stands where she was, as the chamber runs on.)
+        if g.spectate.is_none() {
+            g.sim.step_player(&mut g.ctrl, &input, dt);
+        }
         // Through a portal: everything that keeps its own copy of her yaw turns with her.
         for e in &g.ctrl.events {
             if let MoveEvent::Teleport { yaw_delta } = *e {
@@ -766,7 +829,11 @@ fn play(
     }
 
     // ---- camera (the Mirror's Edge body, when loaded, places it again from its eye bone)
-    let view = game.shot.view;
+    let mut view = game.shot.view;
+    if let Some(sp) = game.spectate {
+        (view.eye, view.yaw, view.pitch, view.roll) = (sp.eye, sp.yaw, sp.pitch, 0.0);
+        view.fov_deg = settings.fov;
+    }
     if let Ok((mut tf, mut proj)) = camera.single_mut() {
         tf.translation = view.eye;
         tf.rotation = Quat::from_euler(EulerRot::YXZ, view.yaw, view.pitch.clamp(-FRAC_PI_2, FRAC_PI_2), -view.roll);
@@ -780,10 +847,30 @@ fn play(
     }
 }
 
+/// A spectator camera hides her arms and gun (their cameras) and the HUD, unless it's asked
+/// to show them.
+fn spectator_overlays(game: Res<Game>, mut cams: Query<&mut Camera, Or<(With<viewmodel::ViewmodelCamera>, With<gun::GunCamera>)>>, mut hud: Query<&mut Visibility, With<hud::HudRoot>>) {
+    let (hands, shown) = match game.spectate {
+        Some(sp) => (sp.hands, sp.hud),
+        None => (true, true),
+    };
+    for mut c in &mut cams {
+        if c.is_active != hands {
+            c.is_active = hands;
+        }
+    }
+    let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut hud {
+        if *v != want {
+            *v = want;
+        }
+    }
+}
+
 /// What's left of the roll from coming out of a portal at an angle, easing out.
 fn portal_roll(game: Res<Game>, mut camera: Query<&mut Transform, With<PlayerCamera>>) {
     let roll = game.sim.roll;
-    if roll.abs() < 1e-4 {
+    if roll.abs() < 1e-4 || game.spectate.is_some() {
         return;
     }
     if let Ok(mut tf) = camera.single_mut() {

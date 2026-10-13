@@ -344,8 +344,11 @@ pub fn animate(
     let (cam_pos, cam_rot) = (frame.cam_pos, frame.cam_rot);
 
     if let Ok((mut tf, proj)) = main_cam.single_mut() {
-        tf.translation = cam_pos;
-        tf.rotation = cam_rot;
+        // (A spectator camera has the view: the hands stay with it, drawn or not.)
+        if game.spectate.is_none() {
+            tf.translation = cam_pos;
+            tf.rotation = cam_rot;
+        }
         if let Ok((mut vt, mut vproj)) = vm_cam.single_mut() {
             *vt = *tf;
             // Mirror's Edge renders the first-person body at its own FOV,
