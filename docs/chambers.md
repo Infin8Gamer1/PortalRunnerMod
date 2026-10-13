@@ -48,7 +48,7 @@ They play as Portal's do:
   one and send its rocket into the glass, the tubes or GLaDOS.
 - **GLaDOS** speaks her lines on cue (her scenes, read from Portal's `scenes.image`).
 - **Sound and effects**: each map's sounds play where they are, with its soundscapes'
-  ambience. Fans spin, vents push you, and steam, sparks, mist and spotlights' beams show as
+  ambience. Fans spin, vents push you, and steam, sparks and spotlights' beams show as
   the logic switches them. Security cameras follow you.
 - **Physics props** (chairs, mugs, clipboards) can be knocked about and picked up. Portal
   detectors and bumpers work, and each map's colour correction and tonemapping are applied.

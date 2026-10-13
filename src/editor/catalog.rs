@@ -211,7 +211,7 @@ pub static CATALOG: &[Entry] = &[
     e("Security camera", Category::PortalLogic, Place::Wall, P, || point("npc_security_camera", &[]), [235, 235, 235], "📷"),
     e("Sound", Category::PortalEffects, Place::Out(0.5), P, || point("ambient_generic", &[("message", ""), ("health", "10"), ("radius", "1250"), ("pitch", "100"), ("spawnflags", "0")]), [120, 220, 160], "🔊"),
     e("Soundscape", Category::PortalEffects, Place::Out(1.5), P, || point("env_soundscape", &[("soundscape", "portal_testchmb.explore_space"), ("radius", "512")]), [120, 200, 220], "🎶"),
-    e("Particles", Category::PortalEffects, Place::Out(1.5), P, || point("info_particle_system", &[("effect_name", "water_mist_256"), ("start_active", "1")]), [200, 220, 255], "✨"),
+    e("Particles", Category::PortalEffects, Place::Out(1.5), P, || point("info_particle_system", &[("effect_name", "elevator_beam"), ("start_active", "1")]), [200, 220, 255], "✨"),
     e("Steam", Category::PortalEffects, Place::Wall, P, || point("env_steam", &[("InitialState", "1"), ("Speed", "120"), ("JetLength", "80"), ("StartSize", "10"), ("EndSize", "25"), ("Rate", "26"), ("rendercolor", "210 210 210"), ("renderamt", "255")]), [220, 220, 225], "♨"),
     e("Sparks", Category::PortalEffects, Place::Wall, P, || point("env_spark", &[("spawnflags", "64"), ("MaxDelay", "2"), ("Magnitude", "2"), ("TrailLength", "1")]), [255, 210, 80], "✴"),
     e("Spotlight beam", Category::PortalEffects, Place::Wall, P, || point("point_spotlight", &[("spawnflags", "3"), ("SpotlightLength", "300"), ("SpotlightWidth", "40"), ("rendercolor", "255 255 255")]), [255, 245, 220], "🔦"),
