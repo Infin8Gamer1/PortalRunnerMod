@@ -17,6 +17,7 @@ mod grill_fx;
 mod gun;
 mod hud;
 mod me_props;
+mod me_remaster;
 mod me_viewmodel;
 mod map_audio;
 mod map_fx;
@@ -184,7 +185,7 @@ fn main() {
         .chain();
     // Ray-traced lighting is chosen at startup (PORTAL_NORT=1 turns it off for this run).
     raytrace::add(&mut app, settings::Settings::load().ray_tracing > 0.5 && std::env::var_os("PORTAL_NORT").is_none());
-    app.add_systems(Update, (capture::run.run_if(resource_exists::<capture::Capture>), menu::update.run_if(editor::idle), cursor_lock.run_if(editor::idle), game, editor::systems()).chain());
+    app.add_systems(Update, ((capture::run.run_if(resource_exists::<capture::Capture>), capture::normal_test), menu::update.run_if(editor::idle), cursor_lock.run_if(editor::idle), game, editor::systems()).chain());
     app.run();
 }
 

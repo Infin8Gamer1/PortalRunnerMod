@@ -49,7 +49,8 @@ struct Material {
     perceptual_roughness: f32,
     emissive: vec3<f32>,
     metallic: f32,
-    _padding: vec3<f32>,
+    alpha_cutoff: f32, // (Portal Runner patch: a cut-out's clip value, 0 for the rest)
+    _padding: vec2<f32>,
     reflectance: f32,
 }
 
@@ -122,12 +123,30 @@ const NO_PORTAL = 0xFFFFFFFFu;
 // its wall's surface), and how far past the other it starts again.
 const PORTAL_EPSILON = 0.01f;
 
-// A ray through the scene's geometry alone.
+// Portal Runner patch: whether a candidate hit on a cut-out (non-opaque) mesh is on the solid
+// part of it: its material's base colour alpha at the hit, against its clip value.
+fn alpha_passes(hit: RayIntersection) -> bool {
+    let material = materials[material_ids[hit.instance_index]];
+    if material.alpha_cutoff <= 0.0 || material.base_color_texture_id == TEXTURE_MAP_NONE { return true; }
+    let vertices = load_vertices(geometry_ids[hit.instance_index], hit.primitive_index);
+    let barycentrics = vec3(1.0 - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics);
+    let uv = mat3x2(vertices[0].uv, vertices[1].uv, vertices[2].uv) * barycentrics;
+    let id = material.base_color_texture_id;
+    return textureSampleLevel(textures[id], samplers[id], uv, 0.0).a >= material.alpha_cutoff;
+}
+
+// A ray through the scene's geometry alone. (Portal Runner patch: through the holes of cut-out
+// meshes, whose hits come back as candidates to test.)
 fn trace_ray_plain(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> RayIntersection {
     let ray = RayDesc(ray_flag, RAY_NO_CULL, ray_t_min, ray_t_max, ray_origin, ray_direction);
     var rq: ray_query;
     rayQueryInitialize(&rq, tlas, ray);
-    rayQueryProceed(&rq);
+    while (rayQueryProceed(&rq)) {
+        let candidate = rayQueryGetCandidateIntersection(&rq);
+        if candidate.kind == RAY_QUERY_INTERSECTION_TRIANGLE && alpha_passes(candidate) {
+            rayQueryConfirmIntersection(&rq);
+        }
+    }
     return rayQueryGetCommittedIntersection(&rq);
 }
 

@@ -1541,7 +1541,7 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             });
             ui.end_row();
         }
-        Kind::MeProp { package, mesh, scale, bounds, solid, own_shape } => {
+        Kind::MeProp { package, mesh, scale, bounds, solid, own_shape, .. } => {
             ui.label("Mirror's Edge");
             ui.label(format!("{package} / {mesh}"));
             ui.end_row();

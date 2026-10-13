@@ -359,7 +359,8 @@ fn dome_mesh(to_sun: Vec3) -> Mesh {
 
 /// A forward-drawn mesh that's in the traced scene anyway, to cast its shadow and show in
 /// reflections (Faith's body: skinned on the CPU every frame, it has no motion for traced
-/// light to follow, which would leave it grainy, so it's lit the ordinary way).
+/// light to follow, which would leave it grainy, so it's lit the ordinary way); or that's
+/// see-through but blocks the traced light (a building's glass, the rooms behind it).
 #[derive(Component)]
 pub struct CastsTracedShadow;
 
@@ -430,6 +431,7 @@ fn register_meshes(
     materials: Res<Assets<StandardMaterial>>,
     mut events: MessageReader<AssetEvent<Mesh>>,
     mut rt: ResMut<RtMeshes>,
+    mut masked: Option<ResMut<bevy::solari::scene::RaytracingAlphaMasked>>,
     q: Query<(Entity, &Mesh3d, &MeshMaterial3d<StandardMaterial>, &InheritedVisibility, Option<&RenderLayers>, Option<&RaytracingMesh3d>, Has<CastsTracedShadow>)>,
 ) {
     for e in events.read() {
@@ -441,7 +443,11 @@ fn register_meshes(
     for (e, mesh, mat, visible, layers, current, occluder) in &q {
         // (Forward-drawn materials keep the ordinary lights, and stay out, unless they're to
         // cast shadows all the same.)
-        let lit = materials.get(&mat.0).is_some_and(|m| m.alpha_mode == AlphaMode::Opaque && !m.unlit && (occluder || m.opaque_render_method != OpaqueRendererMethod::Forward));
+        // (Cut-outs too: rays test their alpha, through the vendored Solari's non-opaque BLAS
+        // for them.)
+        let cut = materials.get(&mat.0).is_some_and(|m| matches!(m.alpha_mode, AlphaMode::Mask(_)));
+        // (And see-through ones set to block traced light all the same: a building's glass.)
+        let lit = materials.get(&mat.0).is_some_and(|m| (m.alpha_mode == AlphaMode::Opaque || cut || (occluder && m.alpha_mode == AlphaMode::Blend)) && !m.unlit && (occluder || m.opaque_render_method != OpaqueRendererMethod::Forward));
         let want = if visible.get() && lit && layers.is_none_or(|l| l.intersects(&world)) {
             let id = mesh.0.id();
             // Not loaded yet: next time.
@@ -453,6 +459,11 @@ fn register_meshes(
         } else {
             None
         };
+        if let (Some(h), Some(masked)) = (want.as_ref().filter(|_| cut), masked.as_mut()) {
+            if !masked.0.contains(&h.id()) {
+                masked.0.insert(h.id());
+            }
+        }
         match (want, current) {
             (Some(h), Some(c)) if c.0 == h => {}
             (Some(h), _) => {

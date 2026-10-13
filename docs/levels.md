@@ -138,9 +138,28 @@ Training map and its three time trials):
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
   of what it is).
-- Its sun is its brightest directional light; she starts at its start. A zipline sags as its
+- Its sun is the directional light its lightmaps were baked with (the level's shadows'), as
+  bright as ours; she starts at its start. A zipline sags as its
   spline does. A time trial's timer checkpoints are a course (in the order they lead on to each
   other), the last its finish.
+
+Their materials are remastered for ray tracing (`assets/remaster/`, #101): each keeps the
+game's own art and gets, from what it's made of (plaster, concrete, roof, painted or bare metal,
+wood, fabric...: `assets/remaster/me.ron`), a CC0 physically based detail layer at its real
+size, a roughness and a metalness, and mipmaps; whites are kept under real white paint's. A
+placed mesh's own materials (an orange catwalk, the adverts) replace its mesh's, colour variants
+are tinted as the game has them, and the game's normal maps are read the right way up (theirs
+are DirectX's: the `normaltest` capture, with `PORTAL_NORMAL_TEST=1`, shows how Bevy reads one).
+Textures are read at up to 1024 square, their big mips from the packages they come from (a
+cooked map keeps only their small ones), and block-compressed for the GPU (BC1/BC3/BC5); backlit
+adverts glow in their colour. Materials are drawn as the game has them: cut out where its
+opacity says (from the texture and channel its material takes it from), and the ray-traced light
+goes through the holes too (fences cast their lattice); glass see-through, a building's still
+shading what's behind it in the traced light; and two-sided where it is. A specular map's
+brightest parts (windows) are glossy. The far city's buildings pack their maps into their colour
+map's channels (`pack` in the table). Baked maps are kept in `assets/extracted/me_remaster/`
+(made again when the table or a material changes; delete it to make them all again): a level's
+first load bakes them (the Training map: about 10 s), later ones read them (2.5 s).
 
 As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 

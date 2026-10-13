@@ -22,7 +22,17 @@ pub fn read_texture(pkg: &Package, name: &str, max_size: u32) -> Result<Rgba> {
 
 /// Any texture export (Texture2D, LightMapTexture2D, ...), largest inline mip <= `max_size`.
 pub fn read_texture_export(pkg: &Package, e: &crate::package::Export, max_size: u32) -> Result<Rgba> {
+    read_texture_from(pkg, e, max_size, &mut |_| None)
+}
+
+/// The same, reading the mips a cooked package keeps in another file (its big ones: in the
+/// texture's own package, `external(package name)` its file's bytes, at the offset the mip
+/// gives) where it can: the largest mip <= `max_size` that can be read.
+pub fn read_texture_from(pkg: &Package, e: &crate::package::Export, max_size: u32, external: &mut dyn FnMut(&str) -> Option<std::rc::Rc<Vec<u8>>>) -> Result<Rgba> {
     let name = &e.name;
+    // (The package a texture's from: the first part of its path.)
+    let index = pkg.exports.iter().position(|x| std::ptr::eq(x, e)).map_or(0, |i| i as i32 + 1);
+    let home = pkg.path(index).split('.').next().unwrap_or("").to_string();
     let props = Props::read(pkg, e)?;
     let format = props.name(pkg, "Format").unwrap_or_else(|| "PF_A8R8G8B8".into());
     let mut c = Cursor::new(&pkg.data, props.end);
@@ -41,15 +51,24 @@ pub fn read_texture_export(pkg: &Package, e: &crate::package::Export, max_size: 
         }
         let w = c.i32()? as u32;
         let h = c.i32()? as u32;
-        if best.is_some() || !inline || w > max_size || h > max_size {
+        if best.is_some() || w > max_size || h > max_size || on_disk <= 0 {
             continue;
         }
-        let bytes = if flags & BULK_LZO != 0 {
-            decompress_chunked(&pkg.data, data_at)?
+        let bytes = if inline {
+            if flags & BULK_LZO != 0 { decompress_chunked(&pkg.data, data_at)? } else { pkg.data[data_at..data_at + count].to_vec() }
         } else {
-            pkg.data[data_at..data_at + count].to_vec()
+            // In its package's file (raw, as on disk), compressed or not.
+            let Some(raw) = external(&home) else { continue };
+            let read = if flags & BULK_LZO != 0 {
+                decompress_chunked(&raw, offset).ok()
+            } else {
+                raw.get(offset..offset + count).map(|b| b.to_vec())
+            };
+            match read {
+                Some(b) if b.len() >= count => b,
+                _ => continue,
+            }
         };
-        let _ = offset;
         best = Some((bytes, w, h));
     }
     let (bytes, w, h) = best.ok_or_else(|| Error::Missing(format!("{name}: no inline mip <= {max_size}")))?;

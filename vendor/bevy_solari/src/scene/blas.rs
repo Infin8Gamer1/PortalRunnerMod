@@ -38,6 +38,7 @@ pub fn prepare_raytracing_blas(
     mesh_allocator: Res<MeshAllocator>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    masked: Option<Res<super::RaytracingAlphaMasked>>,
 ) {
     // Delete BLAS for deleted or modified meshes
     for asset_id in extracted_meshes
@@ -61,8 +62,10 @@ pub fn prepare_raytracing_blas(
             let vertex_slice = mesh_allocator.mesh_vertex_slice(asset_id).unwrap();
             let index_slice = mesh_allocator.mesh_index_slice(asset_id).unwrap();
 
+            // (Portal Runner patch: a cut-out mesh's BLAS isn't opaque: rays test its alpha.)
+            let opaque = !masked.as_ref().is_some_and(|m| m.0.contains(asset_id));
             let (blas, blas_size) =
-                allocate_blas(&vertex_slice, &index_slice, asset_id, &render_device);
+                allocate_blas(&vertex_slice, &index_slice, asset_id, &render_device, opaque);
 
             blas_manager.blas.insert(*asset_id, blas);
             // Portal Runner patch: drop any older queue entry for this mesh first. Its BLAS was
@@ -151,13 +154,14 @@ fn allocate_blas(
     index_slice: &MeshBufferSlice,
     asset_id: &AssetId<Mesh>,
     render_device: &RenderDevice,
+    opaque: bool,
 ) -> (Blas, BlasTriangleGeometrySizeDescriptor) {
     let blas_size = BlasTriangleGeometrySizeDescriptor {
         vertex_format: Mesh::ATTRIBUTE_POSITION.format,
         vertex_count: vertex_slice.range.len() as u32,
         index_format: Some(IndexFormat::Uint32),
         index_count: Some(index_slice.range.len() as u32),
-        flags: AccelerationStructureGeometryFlags::OPAQUE,
+        flags: if opaque { AccelerationStructureGeometryFlags::OPAQUE } else { AccelerationStructureGeometryFlags::empty() },
     };
 
     let blas = render_device.wgpu_device().create_blas(
