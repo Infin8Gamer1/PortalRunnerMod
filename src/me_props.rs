@@ -200,7 +200,7 @@ pub fn parts_and_bounds(
 }
 
 fn place(commands: &mut Commands, parts: &Parts, tf: Transform) {
-    commands.spawn((ChamberGeom, tf, Visibility::default())).with_children(|c| {
+    commands.spawn((ChamberGeom, crate::chamber::PlacedAt(tf.translation), tf, Visibility::default())).with_children(|c| {
         for (m, mat) in parts {
             c.spawn((Mesh3d(m.clone()), MeshMaterial3d(mat.clone()), Transform::default()));
         }

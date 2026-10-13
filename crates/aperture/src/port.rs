@@ -228,6 +228,9 @@ fn parse_prop_lines(text: &str) -> Vec<PropLine> {
         .collect()
 }
 
+/// Portal's furniture (prop_dynamic): solid to her and to what's put on it, as its hull.
+const FURNITURE: &[&str] = &["models/props/table_reference.mdl", "models/props/bed_body_reference.mdl", "models/props/toilet_body_reference.mdl", "models/props_wasteland/controlroom_desk001b.mdl"];
+
 /// Keys the converter makes into the object's own (its class, name, point and turn).
 fn own_key(k: &str) -> bool {
     ["classname", "targetname", "origin", "angles", "hammerid"].iter().any(|o| k.eq_ignore_ascii_case(o))
@@ -318,6 +321,13 @@ pub fn convert(map: &str, title: &str, files: &MapFiles) -> LevelDoc {
                         if let Some(b) = p.extra.first() {
                             keys.push(("_bottom".into(), format!("{b}")));
                         }
+                        if let Some(h) = p.extra.get(1..7) {
+                            keys.push(("_hull".into(), h.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(" ")));
+                        }
+                    }
+                    // A solid piece of furniture (the relaxation vault's table, its bed) the logic
+                    // doesn't move: its hull, to stand things on.
+                    "dynamic" if key(e, "model").is_some_and(|m| FURNITURE.contains(&m.to_ascii_lowercase().as_str())) && key(e, "solid").is_none_or(|s| s.trim() != "0") && key(e, "parentname").is_none_or(str::is_empty) && lname.is_empty() => {
                         if let Some(h) = p.extra.get(1..7) {
                             keys.push(("_hull".into(), h.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(" ")));
                         }

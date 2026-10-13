@@ -242,6 +242,9 @@ pub struct MoverDef {
     pub faces: Vec<Slope>,
     /// A fan, spinning (func_rotating).
     pub spin: Option<Spin>,
+    /// What it does to her when she's in its way with nowhere to go (Source's `dmg`: damage
+    /// a tick, of her 100): a crusher's kills her; none, it waits for her.
+    pub crush: f32,
 }
 
 /// How a fan spins (func_rotating): about `axis` through `pivot`, up to `speed` radians a
@@ -771,7 +774,7 @@ impl Level {
     /// its inputs are on.
     pub fn platform(&mut self, a: [f32; 3], b: [f32; 3], travel: [f32; 3], speed: f32, inputs: Inputs) -> &mut Self {
         let boxes = vec![Solid { b: Aabb::new(Vec3::from(a), Vec3::from(b)), mat: Mat::Black }];
-        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None }))
+        self.item(Item::Mover(MoverDef { model: NO_MODEL, boxes, path: vec![Vec3::ZERO, Vec3::from(travel)], speed, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: Some(inputs), shuttle: true, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None, crush: 0.0 }))
     }
 
     pub fn turret(&mut self, at: [f32; 3], yaw_deg: f32) -> &mut Self {

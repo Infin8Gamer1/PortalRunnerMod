@@ -986,10 +986,10 @@ fn map_fields(ui: &mut egui::Ui, o: &mut Object, i: usize, state: &mut UiState, 
     }
 }
 
-/// A Portal entity's keys (Source's): each one's value, to change; more to add.
 /// A Portal entity's keys (and values), with a picker beside those that name something the
 /// game has: a sound (the sound browser: true when it's asked for), a soundscape, a particle
-/// effect, a colour correction table.
+/// effect, a colour correction table. Under each, what it does (where we know); under its
+/// spawnflags, a box to tick for each of its class's.
 fn entity_keys(ui: &mut egui::Ui, class: &str, keys: &mut Vec<(String, String)>, state: &UiState) -> bool {
     let mut browse = false;
     egui::CollapsingHeader::new(format!("Keys ({})", keys.len())).default_open(true).show(ui, |ui| {
@@ -1003,9 +1003,13 @@ fn entity_keys(ui: &mut egui::Ui, class: &str, keys: &mut Vec<(String, String)>,
                 _ => None,
             };
             let sound = matches!(class, "ambient_generic" | "func_rotating") && lower == "message";
+            let help = super::keys_help::describe(class, key);
             ui.push_id(k, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_sized([120.0, 18.0], egui::TextEdit::singleline(key));
+                    let name = ui.add_sized([120.0, 18.0], egui::TextEdit::singleline(key));
+                    if let Some(h) = help {
+                        name.on_hover_text(h);
+                    }
                     let extra = if sound || options.is_some() { 52.0 } else { 28.0 };
                     ui.add_sized([(ui.available_width() - extra).max(60.0), 18.0], egui::TextEdit::singleline(value));
                     if sound && ui.small_button("…").on_hover_text("Pick a sound").clicked() {
@@ -1029,6 +1033,22 @@ fn entity_keys(ui: &mut egui::Ui, class: &str, keys: &mut Vec<(String, String)>,
                         remove = Some(k);
                     }
                 });
+                if let Some(h) = help {
+                    ui.label(egui::RichText::new(h).weak().small());
+                }
+                if lower == "spawnflags" {
+                    let mut bits: u32 = value.trim().parse().unwrap_or(0);
+                    let before = bits;
+                    for &(bit, name) in super::keys_help::flags(class) {
+                        let mut on = bits & bit != 0;
+                        if ui.checkbox(&mut on, egui::RichText::new(name).small()).changed() {
+                            bits = if on { bits | bit } else { bits & !bit };
+                        }
+                    }
+                    if bits != before {
+                        *value = bits.to_string();
+                    }
+                }
             });
         }
         if let Some(k) = remove {

@@ -423,7 +423,7 @@ pub fn sync(
                 }
                 // A physics prop that's a body of the sim's: drawn where that is.
                 if let Some(&(id, origin, turn0)) = bodies.get(&pi) {
-                    commands.spawn((ChamberGeom, BodyProp { id, origin, turn0 }, WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), Visibility::default(), Transform::from_translation(at).with_rotation(turn)));
+                    commands.spawn((ChamberGeom, crate::chamber::PlacedAt(p.at), BodyProp { id, origin, turn0 }, WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), Visibility::default(), Transform::from_translation(at).with_rotation(turn)));
                     continue;
                 }
                 // A loose prop on one of the map's cubes stands on ours.
@@ -434,6 +434,7 @@ pub fn sync(
                 let at = perched.map_or(at, |q| q.at);
                 let mut spawned = commands.spawn((
                     ChamberGeom,
+                    crate::chamber::PlacedAt(p.at),
                     MapProp { base: at, turn, mover, animated, model, skin },
                     WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
                     Visibility::default(),

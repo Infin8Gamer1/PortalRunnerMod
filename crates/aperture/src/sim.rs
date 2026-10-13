@@ -118,6 +118,8 @@ const TURRET_SPOT: f32 = 0.6;
 const TURRET_DAMAGE: f32 = 0.8;
 /// ...and it wears off this fast.
 const HURT_RECOVERY: f32 = 0.35;
+/// Source's ticks a second: a crusher's damage (its `dmg`) is so much a tick.
+const SOURCE_TICKS: f32 = 66.0;
 /// A tipped turret takes this long to fall, and fires wildly this long before it gives up.
 const TURRET_FALL: f32 = 0.45;
 const TURRET_FLAIL: f32 = 2.5;
@@ -900,6 +902,18 @@ impl Sim {
         }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
         sim.statics = statics;
+        // (A body the map has resting on something, a hair into its top as that one's hull has
+        // it: up onto it.)
+        for k in 0..sim.props.len() {
+            if !sim.bodies.contains(&sim.props[k].id) {
+                continue;
+            }
+            let b = sim.props[k].aabb();
+            let top = sim.statics.iter().filter(|s| s.b.overlaps(&b) && s.b.max.y > b.min.y && s.b.max.y - b.min.y < 0.05).map(|s| s.b.max.y).reduce(f32::max);
+            if let Some(top) = top {
+                sim.props[k].pos.y += top - b.min.y + 0.002;
+            }
+        }
         for p in level.portals.clone() {
             let portal = Portal::sized(p.center, p.normal, p.up, sim.portal_half());
             sim.set_portal(p.color, Some(portal));
@@ -2651,38 +2665,65 @@ impl Sim {
             }
             let d = at - before;
             // What's standing on it moves with it, and what's in its way is pushed along, if
-            // there's room. Where there isn't, it waits (it doesn't crush her, or a cube).
+            // there's room. Where there isn't, it waits (it doesn't crush a cube, or her: though
+            // a crusher hurts her as it waits). Brushes that follow it (a piston's head) are part
+            // of it. Pushed into a portal in what's in her way, the wall round it opens for her as
+            // it does when she walks in, and she goes through.
             if d != Vec3::ZERO && self.movers[i].def.swing.is_none() {
-                let tops: Vec<Aabb> = self.movers[i].boxes().collect();
+                let whole: Vec<usize> = std::iter::once(i).chain((0..self.movers.len()).filter(|&k| self.movers[k].def.parent == Some(i) && self.movers[k].def.follows && self.movers[k].def.swing.is_none())).collect();
+                let tops: Vec<Aabb> = whole.iter().flat_map(|&k| self.movers[k].boxes().collect::<Vec<_>>()).collect();
                 let moved: Vec<Aabb> = tops.iter().map(|b| b.translated(d)).collect();
                 let on_top = |b: &Aabb| tops.iter().any(|t| (b.min.y - t.max.y).abs() < STANDING && b.max.x > t.min.x && b.min.x < t.max.x && b.max.z > t.min.z && b.min.z < t.max.z);
                 let in_way = |b: &Aabb| moved.iter().any(|m| m.overlaps(b));
-                let others: Vec<Aabb> = self.movers.iter().enumerate().filter(|(k, _)| *k != i).flat_map(|(_, m)| m.boxes().collect::<Vec<_>>()).collect();
+                let others: Vec<Aabb> = self.movers.iter().enumerate().filter(|(k, _)| !whole.contains(k)).flat_map(|(_, m)| m.boxes().collect::<Vec<_>>()).collect();
                 let room = |b: &Aabb| self.static_world.is_free(b) && !others.iter().any(|o| o.overlaps(b));
                 let me = ctrl.body().aabb(ctrl.feet);
-                let carry_me = on_top(&me) || in_way(&me);
-                let mut blocked = !on_top(&me) && in_way(&me) && !room(&me.translated(d));
+                let pushed = in_way(&me);
+                let mut carry_me = on_top(&me) || pushed;
+                // (A hair inside her: brushing a wall, she's not in its way.)
+                let to = Aabb::new(me.min + Vec3::splat(0.01), me.max - Vec3::splat(0.01)).translated(d);
+                let mut env = self.player_env;
+                let fits = !carry_me || room(&to) || {
+                    let half = Vec3::new(ctrl.body().half_width, ctrl.body().height * 0.5, ctrl.body().half_width);
+                    collide::update_env(&mut env, &self.portals, self.linked(), to.center(), half, d / dt.max(1e-4), dt);
+                    env.is_some() && self.still_for(env).is_free(&to) && !others.iter().any(|o| o.overlaps(&to))
+                };
+                // (Riding on it where it can't take her, nothing pushing her: it goes on without her,
+                // and she's left on what's in the way.)
+                if !fits && !pushed {
+                    carry_me = false;
+                }
+                let mut blocked = !fits && carry_me;
                 let mut carried = Vec::new();
                 for (k, p) in self.props.iter().enumerate() {
                     if !p.alive || Some(k) == self.held {
                         continue;
                     }
                     let b = p.aabb();
-                    if on_top(&b) {
-                        carried.push(k);
-                    } else if in_way(&b) {
+                    if on_top(&b) || in_way(&b) {
                         if room(&b.translated(d)) {
                             carried.push(k);
-                        } else {
+                        } else if in_way(&b) {
                             blocked = true;
                         }
                     }
                 }
                 if blocked {
+                    let crush = self.movers[i].def.crush;
+                    if !fits && carry_me && crush > 0.0 {
+                        self.hurt += crush / 100.0 * SOURCE_TICKS * dt;
+                        if self.hurt >= 1.0 {
+                            self.hurt = 0.0;
+                            self.player_died(ctrl, true);
+                        }
+                    }
                     continue;
                 }
                 if carry_me {
+                    let eye = ctrl.view().eye;
                     ctrl.feet += d;
+                    self.player_env = env;
+                    self.carried_through(ctrl, eye, d / dt.max(1e-4));
                 }
                 for k in carried {
                     self.props[k].pos += d;
@@ -2714,6 +2755,28 @@ impl Sim {
                 } else {
                     self.movers[i].carried = self.movers[p].offset();
                 }
+            }
+        }
+    }
+
+    /// Carried by a mover from her eye at `eye_before` (at `vel`): through a portal if that
+    /// took her eye through one, as walking does.
+    fn carried_through(&mut self, ctrl: &mut Controller, eye_before: Vec3, vel: Vec3) {
+        if !self.linked() {
+            return;
+        }
+        let eye = ctrl.view().eye;
+        for c in PortalColor::BOTH {
+            let p = self.portals[c.index()].unwrap();
+            let (a, b) = (p.signed_distance(eye_before), p.signed_distance(eye));
+            if a >= 0.0 && b < 0.0 && self.player_env == Some(c) && p.in_rect(eye_before + (eye - eye_before) * (a / (a - b)), -0.05) {
+                // (She goes as fast as it pushed her.)
+                let into = ctrl.vel.dot(vel.normalize_or_zero());
+                if into < vel.length() {
+                    ctrl.vel += vel.normalize_or_zero() * (vel.length() - into);
+                }
+                self.teleport_player(ctrl, c, eye);
+                return;
             }
         }
     }

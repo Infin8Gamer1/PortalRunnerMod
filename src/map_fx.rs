@@ -28,8 +28,9 @@ enum Look {
     Steam { speed: f32, length: f32, start: f32, end: f32, rate: f32, color: Vec3, alpha: f32 },
     /// Bursts of sparks (env_spark), at most `delay` seconds apart.
     Sparks { magnitude: f32, delay: f32 },
-    /// Slow soft mist over a region `w` wide and `h` tall (water_mist_*).
-    Mist { w: f32, h: f32 },
+    /// Slow soft mist lying on the water over a region `w` by `d` (water_mist_*: its name's
+    /// two sizes, in units, are across the water; the mist itself is a low layer on it).
+    Mist { w: f32, d: f32 },
     /// A column of light motes rising (an elevator shaft's beam; GLaDOS's chamber's beams).
     Column { radius: f32, height: f32, color: Vec3 },
     /// Flames.
@@ -47,7 +48,7 @@ impl Look {
         if let Some(rest) = e.strip_prefix("water_mist_") {
             let n: Vec<f32> = rest.split('_').filter_map(|x| x.parse().ok()).collect();
             let w = n.first().copied().unwrap_or(256.0) * 0.0254;
-            return Some(Look::Mist { w, h: n.get(1).copied().map_or(w * 0.5, |h| h * 0.0254) });
+            return Some(Look::Mist { w, d: n.get(1).copied().map_or(w, |d| d * 0.0254) });
         }
         Some(match e.as_str() {
             "elevator_beam" => Look::Column { radius: 0.7, height: 7.0, color: Vec3::new(0.75, 0.85, 1.0) },
@@ -64,7 +65,7 @@ impl Look {
         match self {
             Look::Steam { speed, length, rate, .. } => (rate.clamp(1.0, 80.0), (length / speed.max(0.1)).clamp(0.1, 6.0)),
             Look::Sparks { .. } => (0.0, 0.6),
-            Look::Mist { w, h } => ((w * h * 0.6).clamp(2.0, 30.0), 7.0),
+            Look::Mist { w, d } => ((w * d * 0.2).clamp(4.0, 60.0), 10.0),
             Look::Column { height, .. } => ((height * 3.0).clamp(4.0, 40.0), 5.0),
             Look::Fire { size } => (40.0 * size, 0.8),
             Look::Suck { .. } => (40.0, 1.2),
@@ -226,13 +227,13 @@ pub fn sync(
             // A spotlight: a light along its way, and its beam, a cone fading out to its end.
             PropKind::Spotlight { length, width, color, start_on, light } => {
                 let c = color.min(Vec3::splat(4.0));
-                let beam = beam_cone(*length, *width);
+                let beam = beam_fan(*length, *width);
                 let mat = materials.add(StandardMaterial { base_color: Color::linear_rgb(c.x * 0.35, c.y * 0.35, c.z * 0.35), alpha_mode: AlphaMode::Add, unlit: true, double_sided: true, cull_mode: None, ..default() });
                 let up = if fwd.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
                 commands
                     .spawn((ChamberGeom, Shown { ent, start_on: *start_on }, Transform::from_translation(p.at).looking_to(fwd, up), Visibility::Hidden))
                     .with_children(|ch| {
-                        ch.spawn((Mesh3d(meshes.add(beam)), MeshMaterial3d(mat), Transform::default(), NotShadowCaster));
+                        ch.spawn((FacesEye, Mesh3d(meshes.add(beam)), MeshMaterial3d(mat), Transform::default(), NotShadowCaster));
                         if !*light {
                             return;
                         }
@@ -275,25 +276,33 @@ fn floor_under(sim: &aperture::Sim, p: Vec3) -> f32 {
     sim.statics.iter().filter(|s| s.b.min.x <= p.x && s.b.max.x >= p.x && s.b.min.z <= p.z && s.b.max.z >= p.z && s.b.max.y <= p.y).map(|s| s.b.max.y).fold(p.y - 20.0, f32::max)
 }
 
-/// A spotlight's beam: a cone along -Z, `length` long, `width` across at its end, bright at
-/// its start and fading out (in its vertices' colour).
-fn beam_cone(length: f32, width: f32) -> Mesh {
-    let sides = 16;
-    let (mut pos, mut nrm, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+/// A spotlight's beam: a flat fan along -Z (lying in its X), `length` long, `width` across at
+/// its end, its brightness in its vertices' colour.
+fn beam_fan(length: f32, width: f32) -> Mesh {
+    // (Across it: bright down its middle, nothing at its sides; along it: from its lamp, a
+    // little way in to full, then fading out to its end. Turned about its line to face the eye,
+    // it's a cone of light in the air with no edge to see.)
+    const ACROSS: [f32; 7] = [-1.0, -0.66, -0.33, 0.0, 0.33, 0.66, 1.0];
+    let rows = 12;
     let start = width * 0.15;
-    for k in 0..=sides {
-        let a = k as f32 / sides as f32 * std::f32::consts::TAU;
-        let d = Vec2::new(a.cos(), a.sin());
-        pos.push([d.x * start * 0.5, d.y * start * 0.5, 0.0]);
-        pos.push([d.x * width * 0.5, d.y * width * 0.5, -length]);
-        nrm.push([d.x, d.y, 0.0]);
-        nrm.push([d.x, d.y, 0.0]);
-        col.push([1.0f32, 1.0, 1.0, 1.0]);
-        col.push([0.0f32, 0.0, 0.0, 1.0]);
+    let (mut pos, mut nrm, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for r in 0..=rows {
+        let t = r as f32 / rows as f32;
+        let half = (start + (width - start) * t) * 0.5;
+        let along = (t / 0.08).min(1.0) * (1.0 - t) * (1.0 - t);
+        for x in ACROSS {
+            let b = (1.0 - x * x) * (1.0 - x * x) * along;
+            pos.push([x * half, 0.0, -length * t]);
+            nrm.push([0.0, 1.0, 0.0]);
+            col.push([b, b, b, 1.0]);
+        }
     }
-    for k in 0..sides as u32 {
-        let (a, b) = (k * 2, k * 2 + 2);
-        idx.extend([a, a + 1, b, b, a + 1, b + 1]);
+    let n = ACROSS.len() as u32;
+    for r in 0..rows as u32 {
+        for c in 0..n - 1 {
+            let (a, b) = (r * n + c, (r + 1) * n + c);
+            idx.extend([a, b, a + 1, a + 1, b, b + 1]);
+        }
     }
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
@@ -301,6 +310,11 @@ fn beam_cone(length: f32, width: f32) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
         .with_inserted_indices(Indices::U32(idx))
 }
+
+/// A spotlight's beam (a child of the light, along its -Z): turned about its line to face the
+/// eye.
+#[derive(Component)]
+pub struct FacesEye;
 
 /// Whether the logic has something shown: its entity not hidden (or, one the logic can't
 /// name, as it starts).
@@ -317,6 +331,10 @@ struct Particle {
     size: f32,
     color: Vec4,
     streak: Option<Vec3>,
+    /// How tall it is for how wide (a wisp of mist lies flat).
+    tall: f32,
+    /// Faded out as the eye comes into it (a big soft puff, seen from inside, is a blot).
+    near_fade: bool,
 }
 
 /// A system's live particles at time `t`.
@@ -346,7 +364,7 @@ fn particles(fx: &Fx, t: f32) -> Vec<Particle> {
                 let at = fx.at + v * age + g * 0.5 * age * age;
                 let vel = v + g * age;
                 let f = 1.0 - age / life;
-                out.push(Particle { at, size: 0.025, color: Vec4::new(1.0, 0.7 + 0.3 * f, 0.3 * f, f) * 3.0, streak: Some(vel * 0.03) });
+                out.push(Particle { at, size: 0.025, color: Vec4::new(1.0, 0.7 + 0.3 * f, 0.3 * f, f) * 3.0, streak: Some(vel * 0.03), tall: 1.0, near_fade: false });
             }
         }
         return out;
@@ -366,20 +384,22 @@ fn particles(fx: &Fx, t: f32) -> Vec<Particle> {
         let p = match fx.look {
             Look::Steam { speed, start, end, color, alpha, .. } => {
                 let spread = speed * 0.25 * age;
-                Particle { at: fx.at + fwd * speed * age + (a * u + b * v) * spread, size: start + (end - start) * f, color: Vec4::new(color.x, color.y, color.z, alpha * 0.45 * fade * (1.0 - f)), streak: None }
+                Particle { at: fx.at + fwd * speed * age + (a * u + b * v) * spread, size: start + (end - start) * f, color: Vec4::new(color.x, color.y, color.z, alpha * 0.45 * fade * (1.0 - f)), streak: None, tall: 1.0, near_fade: false }
             }
-            Look::Mist { w: wd, h } => Particle { at: fx.at + Vec3::new(u * wd, w * h - h * 0.5, v * wd) + Vec3::new(0.15, 0.05, 0.1) * age, size: 1.2 + 1.2 * f, color: Vec4::new(1.0, 1.0, 1.0, 0.07 * fade), streak: None },
+            // (Wide, flat and faint, drifting just over the surface: together they're a haze
+            // lying on the water, not puffs in the air.)
+            Look::Mist { w: wd, d } => Particle { at: fx.at + Vec3::new(u * wd, 0.25 + 0.45 * w + 0.15 * f, v * d) + Vec3::new(0.12, 0.0, 0.08) * age, size: 5.0 + 3.0 * f, color: Vec4::new(0.9, 0.95, 0.9, 0.022 * fade), streak: None, tall: 0.25, near_fade: true },
             Look::Column { radius, height, color } => {
                 let ang = u * std::f32::consts::TAU + age * 0.3;
-                Particle { at: fx.at + Vec3::new(ang.cos(), 0.0, ang.sin()) * radius * (0.3 + 0.7 * w) + Vec3::Y * (v + 0.5 + f * 0.3) * height, size: 0.05, color: Vec4::new(color.x, color.y, color.z, 1.0) * 0.6 * fade, streak: None }
+                Particle { at: fx.at + Vec3::new(ang.cos(), 0.0, ang.sin()) * radius * (0.3 + 0.7 * w) + Vec3::Y * (v + 0.5 + f * 0.3) * height, size: 0.05, color: Vec4::new(color.x, color.y, color.z, 1.0) * 0.6 * fade, streak: None, tall: 1.0, near_fade: false }
             }
-            Look::Fire { size } => Particle { at: fx.at + (a * u + b * v) * size * 0.5 + Vec3::Y * size * 1.5 * f, size: size * (0.6 - 0.45 * f), color: Vec4::new(1.0, 0.55 - 0.3 * f, 0.15, 1.0) * 1.5 * fade, streak: None },
+            Look::Fire { size } => Particle { at: fx.at + (a * u + b * v) * size * 0.5 + Vec3::Y * size * 1.5 * f, size: size * (0.6 - 0.45 * f), color: Vec4::new(1.0, 0.55 - 0.3 * f, 0.15, 1.0) * 1.5 * fade, streak: None, tall: 1.0, near_fade: false },
             Look::Suck { radius } => {
                 let ang = u * std::f32::consts::TAU + f * 2.0;
                 let d = radius * (1.0 - f);
-                Particle { at: fx.at + Vec3::new(ang.cos() * d, v * radius * (1.0 - f), ang.sin() * d), size: 0.08, color: Vec4::new(0.8, 0.8, 0.75, 0.5 * fade), streak: None }
+                Particle { at: fx.at + Vec3::new(ang.cos() * d, v * radius * (1.0 - f), ang.sin() * d), size: 0.08, color: Vec4::new(0.8, 0.8, 0.75, 0.5 * fade), streak: None, tall: 1.0, near_fade: false }
             }
-            Look::Haze { radius, color } => Particle { at: fx.at + Vec3::new(u, v * 0.3, w - 0.5) * radius * 2.0 + Vec3::Y * f * 0.5, size: 2.5 + 2.0 * f, color: Vec4::new(color.x, color.y, color.z, 0.12 * fade), streak: None },
+            Look::Haze { radius, color } => Particle { at: fx.at + Vec3::new(u, v * 0.3, w - 0.5) * radius * 2.0 + Vec3::Y * f * 0.5, size: 2.5 + 2.0 * f, color: Vec4::new(color.x, color.y, color.z, 0.12 * fade), streak: None, tall: 1.0, near_fade: false },
             Look::Sparks { .. } => continue,
         };
         out.push(p);
@@ -407,13 +427,18 @@ pub fn update(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera
         let parts = particles(f, t);
         let (mut pos, mut nrm, mut uv, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let n = -cam.forward().as_vec3();
-        for p in parts {
+        let eye = cam.translation();
+        for mut p in parts {
             let base = pos.len() as u32;
             let c = p.at + shift;
+            if p.near_fade {
+                let d = c.distance(eye) / p.size.max(0.1);
+                p.color.w *= ((d - 0.3) / 0.9).clamp(0.0, 1.0);
+            }
             let (x, y) = match p.streak {
                 // (A streak along its way, thin across it.)
                 Some(s) => (s.cross(n).normalize_or(right) * p.size, s * 0.5 + s.normalize_or(up) * p.size),
-                None => (right * p.size * 0.5, up * p.size * 0.5),
+                None => (right * p.size * 0.5, up * p.size * 0.5 * p.tall),
             };
             for (k, q) in [c - x - y, c + x - y, c + x + y, c - x + y].into_iter().enumerate() {
                 pos.push(q.to_array());
@@ -442,8 +467,15 @@ pub fn update(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera
 
 /// Beams and spotlights shown as the logic says; a beam turned about its line to face the eye.
 #[allow(clippy::type_complexity)]
-pub fn beams(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera>>, mut q: Query<(&Shown, Option<&BeamBetween>, &mut Transform, &mut Visibility)>) {
+pub fn beams(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera>>, mut q: Query<(&Shown, Option<&BeamBetween>, &mut Transform, &mut Visibility), Without<FacesEye>>, mut fans: Query<(&ChildOf, &mut Transform), With<FacesEye>>, lamps: Query<&GlobalTransform, With<Shown>>) {
     let eye = camera.single().map(|c| c.translation()).unwrap_or(Vec3::ZERO);
+    for (parent, mut tf) in &mut fans {
+        let Ok(lamp) = lamps.get(parent.parent()) else { continue };
+        let e = lamp.affine().inverse().transform_point3(eye);
+        if Vec2::new(e.x, e.y).length_squared() > 1e-6 {
+            tf.rotation = Quat::from_rotation_z((-e.x).atan2(e.y));
+        }
+    }
     for (s, between, mut tf, mut vis) in &mut q {
         let want = if shown(&game, s.ent, s.start_on) { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
@@ -621,7 +653,7 @@ mod tests {
 
     #[test]
     fn effects_by_name() {
-        assert_eq!(Look::of_effect("water_mist_1024_512"), Some(Look::Mist { w: 1024.0 * 0.0254, h: 512.0 * 0.0254 }));
+        assert_eq!(Look::of_effect("water_mist_1024_512"), Some(Look::Mist { w: 1024.0 * 0.0254, d: 512.0 * 0.0254 }));
         assert!(matches!(Look::of_effect("elevator_beam"), Some(Look::Column { .. })));
         assert!(matches!(Look::of_effect("fire_large_02"), Some(Look::Fire { .. })));
         assert_eq!(Look::of_effect("finale_fx"), None);

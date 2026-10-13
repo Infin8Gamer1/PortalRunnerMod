@@ -666,7 +666,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                     mk = io::MoverKind::Rotor;
                     Spin { pivot: origin(e).unwrap_or(Vec3::ZERO), axis: to_ours(axis).normalize(), speed, ramp, on: f & 1 != 0, sound: key(e, "message").unwrap_or("").to_string() }
                 });
-                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default(), spin }));
+                l.items.push(Item::Mover(MoverDef { model: m, boxes: solids, path, speed, start, home, present, shift, inputs: None, shuttle: false, swing, parent: None, follows: false, reset, faces: model_faces.get(&m).cloned().unwrap_or_default(), spin, crush: num(e, "dmg", 0.0).max(0.0) }));
                 kind = io::Kind::Mover { index: movers, kind: mk };
                 movers += 1;
             }
@@ -788,6 +788,20 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                     armed: false,
                 }
             }
+            // Furniture (the port gave it its hull): a solid box, as the model's hull turned.
+            "prop_dynamic" | "prop_dynamic_override" if name.is_empty() && key(e, "_hull").is_some() => {
+                if let (Some(o), Some((lo, hi))) = (origin(e), key(e, "_hull").and_then(|h| crate::art::source_hull(&floats(h)))) {
+                    let (p, y, r) = angles(e, "angles");
+                    let turn = source_turn(p, y, r);
+                    let (mut a, mut z) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                    for k in 0..8 {
+                        let c = turn * Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
+                        a = a.min(c);
+                        z = z.max(c);
+                    }
+                    l.solids.push(Solid { b: Aabb::new(o + a, o + z), mat: Mat::Black });
+                }
+            }
             "prop_dynamic" | "prop_dynamic_override" if !name.is_empty() => {
                 kind = io::Kind::Animated;
                 // A cube dropper's cover: shut, it holds the next cube in the tube (a slab
@@ -795,7 +809,7 @@ pub fn level_from(name: &str, title: &'static str, boxes: &[MapBox], slopes: Vec
                 if key(e, "model").is_some_and(|m| m.eq_ignore_ascii_case("models/props/box_dropper_cover.mdl")) {
                     if let Some(o) = origin(e) {
                         let b = Aabb::new(o - Vec3::new(0.6, 0.1, 0.6), o + Vec3::new(0.6, 0.0, 0.6));
-                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None }));
+                        l.items.push(Item::Mover(MoverDef { model: NO_MODEL, boxes: vec![Solid { b, mat: Mat::Black }], path: vec![Vec3::ZERO], speed: 1.0, start: 0, home: 0, present: true, shift: Vec3::ZERO, inputs: None, shuttle: false, swing: None, parent: None, follows: false, reset: None, faces: Vec::new(), spin: None, crush: 0.0 }));
                         hatches.insert(io_ents.len(), movers);
                         movers += 1;
                     }

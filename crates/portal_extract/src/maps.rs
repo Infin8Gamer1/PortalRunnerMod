@@ -177,10 +177,10 @@ fn overlays(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) ->
 pub type UsedModel = (String, i32, Vec<String>);
 
 /// Write a map's props out (`maps/<name>.props`, a line each: `kind|model file|x y z|pitch
-/// yaw roll|parent|name`, Source space; a physics prop's line goes on `|bottom|hull`: how far
-/// its lowest point is below its origin as it's turned, so the game can stand it on what's
-/// under it, and its model's hull, unturned, `lo xyz hi xyz`, its size to collide with), and
-/// say which models they use.
+/// yaw roll|parent|name`, Source space; a physics or dynamic prop's line goes on
+/// `|bottom|hull`: how far its lowest point is below its origin as it's turned, so the game can
+/// stand it on what's under it, and its model's hull, unturned, `lo xyz hi xyz`, its size to
+/// collide with), and say which models they use.
 fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<UsedModel>, String> {
     // Props the logic puts on an attachment of the prop they're parented to (a catcher's ball
     // on `ball_attachment`): they're written where that is (#52).
@@ -240,9 +240,9 @@ fn props(bsp: &Bsp, ents: &[bsp::Entity], path: &Path, read: &dyn Fn(&str) -> Op
         if OWN_MODELS.contains(&model.as_str()) || model.contains("portal_cleanser") || !model.ends_with(".mdl") {
             return;
         }
-        // A physics prop's: how far its lowest point is below its origin, then its hull as
-        // the model has it (unturned).
-        let bottom = if kind == "physics" {
+        // A physics (or dynamic) prop's: how far its lowest point is below its origin, then its
+        // hull as the model has it (unturned).
+        let bottom = if kind == "physics" || kind == "dynamic" {
             let mdl = read(&model);
             match (mdl.as_deref().and_then(|m| hull_bottom(m, a)), mdl.as_deref().and_then(hull)) {
                 (Some(b), Some((lo, hi))) => format!("|{b}|{} {} {} {} {} {}", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z),
