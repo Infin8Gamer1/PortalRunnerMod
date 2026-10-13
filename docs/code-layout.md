@@ -18,6 +18,7 @@ crates/aperture/        portals and the puzzle pieces, engine-independent:
   source.rs               Source's entities as a level's pieces and logic
   io.rs                   their logic: Source's entity I/O
   port.rs                 Portal's maps made into level files (levels/portal/)
+  me.rs                   Mirror's Edge's levels: their meshes' collision shapes
   art.rs                  what's drawn of a Portal chamber: faces, props, overlays, cables
   tests.rs, solves.rs     the mechanics, and each chamber played through by script
 crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> GLB, with
@@ -26,7 +27,8 @@ crates/portal_extract/  copies sounds, textures (VTF -> PNG) and models (MDL -> 
                         Portal's maps (bsp.rs: brushes, entities; maps.rs), GLaDOS's scenes
                         (scenes.rs), its sounds as a library with their soundscripts and
                         soundscapes (sounds.rs), its colour correction tables, and the maps
-                        as level files (--port-maps)
+                        as level files (--port-maps); Mirror's Edge's maps as level files
+                        (me_port.rs, --port-me)
 src/main.rs             the Bevy app: input, the frame's order, level loading, lighting
 src/portal_render.rs    recursive portal views (oblique near plane), portal surfaces
 src/chamber.rs          drawing a chamber and its pieces

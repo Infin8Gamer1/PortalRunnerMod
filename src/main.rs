@@ -5,6 +5,7 @@
 //! (portals in `portal_render`, chambers in `chamber`, the gun in `gun`), sound, the HUD.
 
 mod audio;
+mod beacon;
 mod body3p;
 mod capture;
 mod chamber;
@@ -131,7 +132,7 @@ fn main() {
             editor::add_levels,
             chamber::setup,
             load_first_level,
-            hud::setup,
+            (hud::setup, beacon::setup),
             viewmodel::setup,
             me_viewmodel::setup,
             body3p::setup,
@@ -151,7 +152,7 @@ fn main() {
         play.run_if(editor::idle),
         speed_fx::update,
         (chamber::update, chamber::scroll_goo, chamber::face_glows, (map_fx::sync, map_fx::update, map_fx::beams, map_fx::tag_cameras, map_fx::cameras, map_fx::screen, map_grade::update), source_map::sync, source_map::bulbs, source_map::move_models, source_map::move_bodies, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
-        me_props::spawn_for_level,
+        (me_props::spawn_for_level, beacon::update),
         model_props::spawn_for_level,
         placed_lights::spawn_for_level,
         (
@@ -245,6 +246,8 @@ pub struct Game {
     pub pad_sens: f32,
     /// Time in this chamber, and the best per chamber.
     pub timer: f32,
+    /// A course's split times: the timer at each of its checkpoints passed.
+    pub splits: Vec<f32>,
     pub last_time: Option<f32>,
     pub flash: Option<(String, f32)>,
     /// Seconds since the chamber started (its title card).
@@ -269,6 +272,8 @@ pub enum LevelGroup {
     /// Portal's maps: the game's own copies of them (level files in `levels/portal/`), to play
     /// and to edit.
     Portal,
+    /// Mirror's Edge's maps: the game's own copies of them (level files in `levels/me/`).
+    MirrorsEdge,
     /// The game's own chambers and the level files made in the editor.
     Testing,
     /// The editor's own level (not in the menu).
@@ -276,11 +281,12 @@ pub enum LevelGroup {
 }
 
 impl LevelGroup {
-    pub const MENU: [LevelGroup; 2] = [LevelGroup::Portal, LevelGroup::Testing];
+    pub const MENU: [LevelGroup; 3] = [LevelGroup::Portal, LevelGroup::MirrorsEdge, LevelGroup::Testing];
 
     pub fn name(self) -> &'static str {
         match self {
             LevelGroup::Portal => "Portal 1 chambers",
+            LevelGroup::MirrorsEdge => "Mirror's Edge levels",
             LevelGroup::Testing => "Testing chambers",
             LevelGroup::Editor => "Editor",
         }
@@ -290,6 +296,7 @@ impl LevelGroup {
     pub fn about(self) -> &'static str {
         match self {
             LevelGroup::Portal => "Portal's chambers: open them in the editor to change them",
+            LevelGroup::MirrorsEdge => "Mirror's Edge's levels: open them in the editor to change them",
             LevelGroup::Testing => "The game's own chambers and the levels made in the editor",
             LevelGroup::Editor => "",
         }
@@ -351,6 +358,7 @@ fn setup_world(mut commands: Commands) {
         mouse_sens: 0.0022,
         pad_sens: 3.2,
         timer: 0.0,
+        splits: Vec::new(),
         last_time: None,
         flash: None,
         intro: 0.0,
@@ -580,6 +588,7 @@ fn switch_level(
     g.ctrl.respawn();
     g.ctrl.state = MoveState::Ground;
     g.timer = 0.0;
+    g.splits.clear();
     g.last_time = None;
     g.intro = 0.0;
     g.next_in = None;
@@ -739,6 +748,7 @@ fn play(
         g.sim.respawn_at(&mut g.ctrl, goto);
         if goto == Some(0) {
             g.timer = 0.0;
+            g.splits.clear();
         }
     }
 
@@ -805,7 +815,15 @@ fn play(
             }
             SimEvent::Checkpoint { index } => {
                 let name = game.sim.level.checkpoints[index].name;
-                game.flash = Some((format!("CHECKPOINT - {name}"), 0.0));
+                if game.sim.level.course {
+                    // A course's: how many of how many, and the split.
+                    let t = game.timer;
+                    game.splits.push(t);
+                    let of = game.sim.level.checkpoints.len() - 1;
+                    game.flash = Some((format!("CHECKPOINT {index} / {of}  {}", hud::fmt_time(t)), 0.0));
+                } else {
+                    game.flash = Some((format!("CHECKPOINT - {name}"), 0.0));
+                }
             }
             SimEvent::PortalsCleared => game.flash = Some(("PORTALS CLEARED".into(), 0.0)),
             SimEvent::LevelComplete => {

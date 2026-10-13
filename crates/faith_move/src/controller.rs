@@ -12,7 +12,7 @@ use crate::tuning::Tuning;
 use crate::vault::{self, Vault};
 pub use crate::climb::{ClimbStart, ClimbStep, Ladder};
 pub use crate::airbarge::AirBargePhase;
-use crate::world::{closest_on_segment, column_top, find_ledge, move_axis, slide_move, probe_wall, tops_below, trace_box, trace_wall, Aabb, Body, Fixture, Gel, WallHit, WithDoors, World};
+use crate::world::{closest_on_segment, column_top, find_ledge, move_axis, slide_move, probe_wall, tops_below, trace_box, trace_wall, Aabb, Body, Cable, Fixture, Gel, WallHit, WithDoors, World};
 
 /// One frame of player input. Buttons are "pressed this frame" edges plus
 /// "held" levels; `look` is the mouse/stick delta in radians.
@@ -140,7 +140,7 @@ pub enum State {
     /// spent at the edge (bIsInDangerMode's CounterTimer), negative when not in danger.
     Balance { a: Vec3, b: Vec3, lean: f32, danger: f32, t: f32 },
     /// Riding a zipline from `a` down to `b`; `s` is the distance along it.
-    ZipLine { a: Vec3, b: Vec3, s: f32, speed: f32 },
+    ZipLine { a: Vec3, b: Vec3, sag: f32, s: f32, speed: f32 },
     /// Hanging from a swing pole at `at`. `dir` is the horizontal swing
     /// direction, `angle` the pendulum angle from straight down (positive =
     /// swung forward) and `rate` its angular speed.
@@ -1193,7 +1193,7 @@ impl Controller {
             State::Stumble { t, forward, dir } => self.stumble(dt, t, forward, dir, world),
             State::SoftLand { t } => self.soft_land(dt, t, world),
             State::Balance { a, b, lean, danger, t } => self.balance(dt, a, b, lean, danger, t, input, world),
-            State::ZipLine { a, b, s, speed } => self.zipline(dt, a, b, s, speed, input, world),
+            State::ZipLine { a, b, sag, s, speed } => self.zipline(dt, Cable::new(a, b, sag), s, speed, input, world),
             State::Swing { a, b, at, dir, angle, rate } => self.swing(dt, a, b, at, dir, angle, rate, input, world),
             State::Takedown { t, len, target, from, to, face } => self.takedown(dt, t, len, target, from, to, face),
             State::StepUp { t, from, to, dur, saved } => self.step_up(dt, t, from, to, dur, saved),
@@ -2223,6 +2223,10 @@ impl Controller {
     }
 
     fn wallclimb(&mut self, dt: f32, n: Vec3, t: f32, input: &Input, world: &dyn World) {
+        // A ladder or drainpipe up the wall, in reach: onto it.
+        if self.try_into_climb(input, world) {
+            return;
+        }
         let tu = self.tuning.clone();
         let t = t + dt;
         let body = self.body();
@@ -2626,14 +2630,16 @@ impl Controller {
         let fwd = forward(self.yaw);
         for f in world.fixtures() {
             match *f {
-                Fixture::ZipLine { a, b } => {
+                Fixture::ZipLine { a, b, sag } => {
                     if self.vel.y < -tu.zip_max_fall {
                         continue;
                     }
-                    let len = (b - a).length();
-                    let u = (b - a) / len;
+                    let cable = Cable::new(a, b, sag);
+                    let len = cable.length();
                     let hands = root + Vec3::Y * tu.zip_hang;
-                    let (cp, s) = closest_on_segment(a, b, hands);
+                    let (cp, s) = cable.closest(hands);
+                    // (The way it runs where she takes hold of it.)
+                    let u = cable.dir(cable.t_at(s));
                     if cp.distance(hands) > tu.grab_reach || s > len - 1.0 || horiz(u).normalize_or_zero().dot(fwd) < 0.2 {
                         continue;
                     }
@@ -2656,7 +2662,7 @@ impl Controller {
                     self.feet = feet;
                     let speed = self.vel.dot(u).max(tu.zip_min_speed);
                     self.vel = u * speed;
-                    self.state = State::ZipLine { a, b, s, speed };
+                    self.state = State::ZipLine { a, b, sag, s, speed };
                     self.events.push(Event::ZipStart);
                     return true;
                 }
@@ -2703,10 +2709,10 @@ impl Controller {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn zipline(&mut self, dt: f32, a: Vec3, b: Vec3, s: f32, speed: f32, input: &Input, world: &dyn World) {
+    fn zipline(&mut self, dt: f32, cable: Cable, s: f32, speed: f32, input: &Input, world: &dyn World) {
         let tu = self.tuning.clone();
-        let len = (b - a).length();
-        let u = (b - a) / len;
+        let len = cable.length();
+        let u = cable.dir(cable.t_at(s));
         if self.jump_buffer > 0.0 {
             self.vel = u * speed;
             self.vel.y = self.vel.y.max(0.0) + tu.jump_speed;
@@ -2720,10 +2726,11 @@ impl Controller {
             self.events.push(Event::ZipEnd { hit_wall: false });
             return;
         }
-        // ME: at least MinZipAcceleration, plus gravity down the slope.
-        let speed = (speed + (tu.zip_accel + tu.gravity * (-u.y).max(0.0)) * dt).min(tu.zip_max_speed);
+        // ME: at least MinZipAcceleration, plus gravity down the slope; where a sagging cable
+        // climbs again towards its end, gravity's against her (no slower than she gets on).
+        let speed = (speed + (tu.zip_accel - tu.gravity * u.y) * dt).clamp(tu.zip_min_speed, tu.zip_max_speed);
         let ns = s + speed * dt;
-        let feet = a + u * ns - Vec3::Y * tu.zip_hang;
+        let feet = cable.along(ns) - Vec3::Y * tu.zip_hang;
         let stand = Body { half_width: tu.half_width, height: tu.stand_height };
         // The native zipline tick: a box (the cylinder, half its height) from 40 below its
         // centre along the ride, 600 units while moving (a hit braces for it:
@@ -2748,7 +2755,7 @@ impl Controller {
             self.let_go();
             self.events.push(Event::ZipEnd { hit_wall: false });
         } else {
-            self.state = State::ZipLine { a, b, s: ns, speed };
+            self.state = State::ZipLine { a: cable.a, b: cable.b, sag: cable.sag, s: ns, speed };
         }
     }
 

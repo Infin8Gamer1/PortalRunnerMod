@@ -1338,7 +1338,7 @@ fn zipline_braces_before_the_wall() {
     let mut c = ctrl_at(Vec3::ZERO);
     let u = (b - a).normalize();
     c.feet = a + u * 0.5 - Vec3::Y * c.tuning.zip_hang;
-    c.state = State::ZipLine { a, b, s: 0.5, speed: 4.0 };
+    c.state = State::ZipLine { a, b, sag: 0.0, s: 0.5, speed: 4.0 };
     let mut braced_at = None;
     let mut ev = Vec::new();
     let mut t = 0.0;
@@ -1654,6 +1654,136 @@ fn onto_a_ladder_from_the_top() {
     let ev = run(&mut c, &w, 3.0, |_, c| if matches!(c.state, State::Climb { .. }) { Input::default() } else { fwd() });
     assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { start: ClimbStart::EnterTop, .. })), "{ev:?} {:?}", c.state);
     assert!(matches!(c.state, State::Climb { .. }), "{:?} {:?}", c.state, c.feet);
+}
+
+/// A sagging cable is a curve through its ends, lowest a little past its middle.
+#[test]
+fn a_cable_sags_between_its_ends() {
+    let c = Cable::new(Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 6.0, -40.0), 1.5);
+    assert_eq!(c.at(0.0), c.a);
+    assert_eq!(c.at(1.0), c.b);
+    assert!((c.at(0.5).y - (8.0 - 1.5)).abs() < 1e-5);
+    // Longer than the straight line, and walked along by distance.
+    let len = c.length();
+    assert!(len > c.a.distance(c.b) && len < c.a.distance(c.b) * 1.01, "{len}");
+    assert!(c.along(len * 0.5).distance(c.at(0.5)) < 0.3);
+    let (p, s) = c.closest(Vec3::new(0.0, 6.0, -20.0));
+    assert!((p - c.at(0.5)).length() < 0.2 && (s - len * 0.5).abs() < 0.3, "{p} {s}");
+    // Going down, then (steeper sag) up again to its end.
+    let deep = Cable::new(Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 9.0, -40.0), 3.0);
+    assert!(deep.dir(0.1).y < 0.0 && deep.dir(0.9).y > 0.0);
+}
+
+/// Riding a sagging zipline: she follows the curve down and up again, slower climbing out of
+/// the sag, to its end (#103).
+#[test]
+fn riding_a_sagging_zipline() {
+    let mut w = floor();
+    let (a, b, sag) = (Vec3::new(0.0, 9.0, 0.0), Vec3::new(0.0, 8.0, -40.0), 4.0);
+    w.fixtures.push(Fixture::ZipLine { a, b, sag });
+    let cable = Cable::new(a, b, sag);
+    let mut c = ctrl_at(Vec3::ZERO);
+    c.feet = cable.along(0.5) - Vec3::Y * c.tuning.zip_hang;
+    c.state = State::ZipLine { a, b, sag, s: 0.5, speed: 4.0 };
+    let (mut lowest, mut fastest, mut at_end) = (f32::MAX, 0.0f32, 0.0);
+    let mut off_line = 0.0f32;
+    let ev = run(&mut c, &w, 15.0, |_, c| {
+        if let State::ZipLine { s, speed, .. } = c.state {
+            lowest = lowest.min(c.feet.y);
+            fastest = fastest.max(speed);
+            at_end = speed;
+            off_line = off_line.max((c.feet + Vec3::Y * c.tuning.zip_hang).distance(cable.along(s)));
+        }
+        Input::default()
+    });
+    assert!(has(&ev, Event::ZipEnd { hit_wall: false }), "{ev:?}");
+    assert!(off_line < 0.05, "she left the cable by {off_line}");
+    // Down into the sag: lower than the straight line goes.
+    assert!(lowest < 8.0 - c.tuning.zip_hang - 2.0, "{lowest}");
+    assert!(at_end < fastest - 0.3, "no slower climbing out: {at_end} of {fastest}");
+}
+
+/// Catching a sagging zipline halfway along, where it hangs lowest.
+#[test]
+fn catching_a_sagging_zipline_mid_span() {
+    let mut w = floor();
+    // Its middle 2.8 m over the floor (a straight one would be 4.3 up there).
+    let (a, b, sag) = (Vec3::new(0.0, 5.0, 0.0), Vec3::new(0.0, 3.6, -30.0), 1.5);
+    w.fixtures.push(Fixture::ZipLine { a, b, sag });
+    let mut c = ctrl_at(Vec3::new(0.0, 0.0, -11.0));
+    let mut jumped = false;
+    let ev = run(&mut c, &w, 3.0, |_, c| {
+        let jump = !jumped && c.feet.z < -13.5;
+        jumped |= jump;
+        if matches!(c.state, State::ZipLine { .. }) { Input::default() } else { Input { jump_pressed: jump, ..fwd() } }
+    });
+    assert!(has(&ev, Event::ZipStart), "{ev:?} {:?}", c.feet);
+}
+
+/// A wall 6 m high at z = -6 with a ladder (or drainpipe) that starts up it (#102): the lowest
+/// step her middle goes to is `lowest` up.
+fn high_ladder_wall(pipe: bool, lowest: f32) -> BoxWorld {
+    let mut w = floor();
+    w.add(Aabb::new(Vec3::new(-5.0, 0.0, -9.0), Vec3::new(5.0, 6.0, -6.0)));
+    let foot = if pipe { lowest - 0.9 + 0.05 } else { lowest - 0.9 };
+    w.fixtures.push(Fixture::Ladder(Ladder { base: Vec3::new(0.0, foot, -6.0), top: 6.0, normal: Vec3::Z, pipe, exit: true }));
+    w
+}
+
+/// Up the wall to a ladder that starts high on it, out of a jump's reach: wallclimbing, she
+/// catches hold of it and climbs on up and over the top (#102).
+#[test]
+fn wallclimb_onto_a_ladder_high_up_the_wall() {
+    for pipe in [false, true] {
+        let w = high_ladder_wall(pipe, 3.3);
+        let mut c = ctrl_at(Vec3::ZERO);
+        let mut climbed_wall = false;
+        let ev = run(&mut c, &w, 12.0, |_, c| {
+            climbed_wall |= matches!(c.state, State::WallClimb { .. });
+            if c.feet.y > 5.9 && c.state == State::Ground {
+                return Input::default();
+            }
+            Input { jump_pressed: c.feet.z < -4.6 && c.feet.z > -5.2 && c.state == State::Ground, ..fwd() }
+        });
+        assert!(climbed_wall, "pipe {pipe}: never wallclimbed: {ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { start: ClimbStart::Hang, .. })), "pipe {pipe}: didn't catch it off the wall: {ev:?} {:?} {:?}", c.feet, c.state);
+        assert!(has(&ev, Event::ClimbExit) && (c.feet.y - 6.0).abs() < 0.05 && c.state == State::Ground, "pipe {pipe}: not over the top: {:?} {:?}", c.feet, c.state);
+    }
+}
+
+/// Falling past a ladder that starts high up a wall, facing it, she catches it (#102).
+#[test]
+fn falling_onto_a_ladder() {
+    let w = high_ladder_wall(false, 2.5);
+    let mut c = ctrl_at(Vec3::new(0.0, 5.0, -5.4));
+    c.state = State::Air;
+    let ev = run(&mut c, &w, 2.0, |_, c| if matches!(c.state, State::Climb { .. }) { Input::default() } else { fwd() });
+    assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { start: ClimbStart::Hang | ClimbStart::HangHard | ClimbStart::None, .. })), "{ev:?} {:?}", c.state);
+    assert!(matches!(c.state, State::Climb { .. }), "{:?} {:?}", c.state, c.feet);
+}
+
+/// Jumping up to one a little over her head, she catches it (#102).
+#[test]
+fn jumping_onto_a_ladder_above_her() {
+    let w = high_ladder_wall(false, 2.5);
+    let mut c = ctrl_at(Vec3::new(0.0, 0.0, -4.0));
+    let mut jumped = false;
+    let ev = run(&mut c, &w, 3.0, |_, c| {
+        let jump = !jumped && c.feet.z < -4.8;
+        jumped |= jump;
+        if matches!(c.state, State::Climb { .. }) { Input::default() } else { Input { jump_pressed: jump, ..fwd() } }
+    });
+    assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { .. })), "{ev:?} {:?}", c.state);
+    assert!(matches!(c.state, State::Climb { .. }), "{:?} {:?}", c.state, c.feet);
+}
+
+/// But walking up to one, it's out of reach: she doesn't jump to it on her own.
+#[test]
+fn a_high_ladder_is_out_of_reach_from_the_floor() {
+    let w = high_ladder_wall(false, 2.5);
+    let mut c = ctrl_at(Vec3::new(0.0, 0.0, -3.0));
+    let ev = run(&mut c, &w, 3.0, |_, _| fwd());
+    assert!(!ev.iter().any(|e| matches!(e, Event::ClimbStart { .. })), "{ev:?}");
 }
 
 /// The training course's pair of swing bars: jump up to the first, swing, and across to the next.

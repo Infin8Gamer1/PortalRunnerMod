@@ -2034,3 +2034,42 @@ fn chamber_00_table_holds_whats_on_it() {
         assert!(p.pos.y > 4.6 && p.pos.distance(was) < 0.2, "fell off the table: from {was} to {}", p.pos);
     }
 }
+
+/// A course's checkpoints count only in turn, and its exit only once they all have (#104); a
+/// level that isn't a course takes them as she comes to them.
+#[test]
+fn a_course_s_checkpoints_count_in_order() {
+    use crate::doc::{Kind, LevelDoc, Object};
+    let mut doc = LevelDoc::starter("Course");
+    let cp = |name: &str, z: f32| Object::sized(Kind::Checkpoint { name: name.into(), spawn: Vec3::new(0.0, -1.0, 0.0) }, Vec3::new(0.0, 1.0, z), Vec3::new(4.0, 2.0, 2.0));
+    doc.objects.push(cp("1", -5.0));
+    doc.objects.push(cp("2", -9.0));
+    doc.objects.push(Object::sized(Kind::Exit, Vec3::new(0.0, 1.0, -13.0), Vec3::new(4.0, 2.0, 2.0)));
+    for course in [true, false] {
+        doc.course = course;
+        let mut sim = crate::Sim::new(doc.build());
+        let start = sim.level.checkpoints[0].clone();
+        let mut c = faith_move::Controller::new(crate::tuning(5.3, 15.0), start.spawn, start.yaw);
+        let mut stand = |sim: &mut crate::Sim, c: &mut faith_move::Controller, z: f32| {
+            c.feet = Vec3::new(0.0, 0.0, z);
+            c.state = faith_move::State::Ground;
+            sim.events.clear();
+            sim.step_player(c, &Input::default(), 1.0 / 60.0);
+        };
+        // Straight to the second: a course's doesn't count yet.
+        stand(&mut sim, &mut c, -9.0);
+        assert_eq!(sim.checkpoint, if course { 0 } else { 2 }, "course {course}");
+        // The exit, with the first skipped: a course isn't finished.
+        stand(&mut sim, &mut c, -13.0);
+        assert_eq!(sim.complete, !course, "course {course}");
+        if course {
+            // In turn, then the exit.
+            stand(&mut sim, &mut c, -5.0);
+            assert_eq!(sim.checkpoint, 1);
+            stand(&mut sim, &mut c, -9.0);
+            assert_eq!(sim.checkpoint, 2);
+            stand(&mut sim, &mut c, -13.0);
+            assert!(sim.complete && sim.events.contains(&crate::sim::SimEvent::LevelComplete));
+        }
+    }
+}

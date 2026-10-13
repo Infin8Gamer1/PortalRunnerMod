@@ -1670,15 +1670,18 @@ impl Sim {
             self.burn = (self.burn - dt * 0.5).max(0.0);
         }
         // Checkpoints and the exit.
+        // (A course's count only in turn: the next one.)
+        let course = self.level.course;
         for (i, cp) in self.level.checkpoints.iter().enumerate() {
-            if i > self.checkpoint && geom::contains(&cp.region, feet + Vec3::Y * 0.1) {
+            if i > self.checkpoint && (!course || i == self.checkpoint + 1) && geom::contains(&cp.region, feet + Vec3::Y * 0.1) {
                 self.checkpoint = i;
                 ctrl.spawn = cp.spawn;
                 ctrl.spawn_yaw = cp.yaw;
                 self.events.push(SimEvent::Checkpoint { index: i });
             }
         }
-        if !self.complete && self.level.exit.is_some_and(|e| e.overlaps(&me)) {
+        let all_passed = !course || self.checkpoint + 1 >= self.level.checkpoints.len();
+        if !self.complete && all_passed && self.level.exit.is_some_and(|e| e.overlaps(&me)) {
             self.complete = true;
             self.events.push(SimEvent::LevelComplete);
         }

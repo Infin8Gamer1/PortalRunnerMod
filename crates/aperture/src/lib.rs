@@ -14,6 +14,7 @@ pub mod gel;
 pub mod io;
 pub mod level;
 pub mod levels;
+pub mod me;
 pub mod port;
 pub mod portal;
 pub mod rope;
@@ -50,3 +51,5 @@ pub fn tuning(hard_land_height: f32, lethal_fall_height: f32) -> faith_move::Tun
 mod tests;
 #[cfg(test)]
 mod solves;
+#[cfg(test)]
+mod me_tests;

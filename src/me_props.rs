@@ -34,6 +34,19 @@ pub const LINES: usize = usize::MAX - 1;
 #[derive(Component)]
 pub struct StandIn(pub usize);
 
+/// A zipline's cable or a swing pole as straight pieces to draw: a cable that sags, along its
+/// curve.
+pub fn pieces(f: &Fixture) -> Vec<(Vec3, Vec3)> {
+    match *f {
+        Fixture::ZipLine { a, b, sag } if sag != 0.0 => {
+            let pts = faith_move::Cable::new(a, b, sag).points(24);
+            pts.windows(2).map(|w| (w[0], w[1])).collect()
+        }
+        Fixture::ZipLine { a, b, .. } | Fixture::SwingPole { a, b } => vec![(a, b)],
+        _ => vec![],
+    }
+}
+
 /// The game's packages (not thread-safe: they share what they've opened).
 pub struct MePackages(Packages);
 
@@ -56,6 +69,9 @@ pub struct MeLooks {
 #[derive(Resource, Default)]
 pub struct MePropCache {
     meshes: HashMap<(&'static str, &'static str), Option<Parts>>,
+    /// The same, wound the other way round, for where a level mirrors a mesh (scales it by
+    /// a negative amount an odd number of times): mirrored, its faces would face inwards.
+    mirrored: HashMap<(&'static str, &'static str), Parts>,
     /// Each mesh's box (ours, from its origin), once it's been read.
     bounds: HashMap<(&'static str, &'static str), (Vec3, Vec3)>,
     /// What each mesh's materials found (`package.mesh`), once it's been read.
@@ -70,6 +86,8 @@ pub struct MePropCache {
 pub fn setup(world: &mut World) {
     world.insert_resource(MePropCache { level: u64::MAX, ..default() });
     let Some(cooked) = world.get_resource::<crate::me_viewmodel::MeArms>().map(|a| a.cooked_pc().to_path_buf()) else { return };
+    // (Props collide with their meshes' own shapes, read from the same install.)
+    aperture::me::set_install(&cooked);
     world.insert_non_send(MePackages(Packages::new(&cooked)));
 }
 
@@ -199,6 +217,32 @@ pub fn parts_and_bounds(
     Some((parts, *cache.bounds.get(&key)?))
 }
 
+/// A mesh's parts wound the other way round (its tangents' handedness too).
+fn mirrored(key: (&'static str, &'static str), parts: &Parts, cache: &mut MePropCache, meshes: &mut Assets<Mesh>) -> Parts {
+    if let Some(p) = cache.mirrored.get(&key) {
+        return p.clone();
+    }
+    let flipped: Parts = parts
+        .iter()
+        .map(|(m, mat)| {
+            let Some(mut mesh) = meshes.get(m).cloned() else { return (m.clone(), mat.clone()) };
+            if let Some(Indices::U32(ix)) = mesh.indices_mut() {
+                for t in ix.chunks_exact_mut(3) {
+                    t.swap(1, 2);
+                }
+            }
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x4(ts)) = mesh.attribute_mut(Mesh::ATTRIBUTE_TANGENT) {
+                for t in ts.iter_mut() {
+                    t[3] = -t[3];
+                }
+            }
+            (meshes.add(mesh), mat.clone())
+        })
+        .collect();
+    cache.mirrored.insert(key, flipped.clone());
+    flipped
+}
+
 fn place(commands: &mut Commands, parts: &Parts, tf: Transform) {
     commands.spawn((ChamberGeom, crate::chamber::PlacedAt(tf.translation), tf, Visibility::default())).with_children(|c| {
         for (m, mat) in parts {
@@ -226,19 +270,20 @@ pub fn spawn_for_level(
         cache.drawn = vec![false; level.me_props.len()];
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get((p.package, p.mesh), cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
+                let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
                 place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale));
                 cache.drawn[k] = true;
             }
         }
         // Ziplines and swing poles: round steel, the ladder's.
-        cache.lines = false;
+        cache.lines = level.me_art;
         let lines: Vec<(Vec3, Vec3, f32)> = level
             .fixtures
             .iter()
-            .filter_map(|f| match *f {
-                Fixture::ZipLine { a, b } => Some((a, b, CABLE_RADIUS)),
-                Fixture::SwingPole { a, b } => Some((a, b, PIPE_RADIUS)),
-                _ => None,
+            .flat_map(|f| match *f {
+                Fixture::ZipLine { .. } => pieces(f).into_iter().map(|(a, b)| (a, b, CABLE_RADIUS)).collect(),
+                Fixture::SwingPole { a, b } if !level.me_art => vec![(a, b, PIPE_RADIUS)],
+                _ => vec![],
             })
             .collect();
         if !lines.is_empty() {
@@ -252,8 +297,9 @@ pub fn spawn_for_level(
             }
         }
         // The steel ladder, a piece at a time, up each ladder (drainpipes keep their pipe).
-        cache.ladders = false;
-        let ladders: Vec<_> = level.fixtures.iter().filter_map(|f| if let Fixture::Ladder(l) = f { Some(*l) } else { None }).filter(|l| !l.pipe).collect();
+        // (A Mirror's Edge level's ladders are its own.)
+        cache.ladders = level.me_art;
+        let ladders: Vec<_> = level.fixtures.iter().filter_map(|f| if let Fixture::Ladder(l) = f { Some(*l) } else { None }).filter(|l| !l.pipe && !level.me_art).collect();
         if !ladders.is_empty() {
             if let Some(parts) = get(LADDER, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 cache.ladders = true;

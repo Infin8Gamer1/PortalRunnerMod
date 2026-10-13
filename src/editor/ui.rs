@@ -728,6 +728,9 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mu
                 ui.label("Kill below");
                 ui.add(egui::DragValue::new(&mut ed.doc.kill_y).speed(0.25).suffix(" m"));
                 ui.end_row();
+                ui.label("Checkpoints");
+                ui.checkbox(&mut ed.doc.course, "a course").on_hover_text("Passed in order, as a time trial's: each counts only after the one before it, the exit only once they all have (the next one's beacon shows)");
+                ui.end_row();
                 ui.label("Portal gun");
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut ed.doc.blue, "blue");
@@ -843,6 +846,26 @@ fn details(ui: &mut egui::Ui, ed: &mut Editor, looks: Option<&Looks>, state: &mu
                 duplicate = ui.button("Duplicate").clicked();
                 delete = ui.button("Delete").clicked();
             });
+            // A checkpoint's place among them (a course's order).
+            if matches!(ed.doc.objects[i].kind, Kind::Checkpoint { .. }) {
+                let cps: Vec<usize> = ed.doc.objects.iter().enumerate().filter(|(_, o)| matches!(o.kind, Kind::Checkpoint { .. })).map(|(k, _)| k).collect();
+                let at = cps.iter().position(|&k| k == i).unwrap_or(0);
+                let mut swap = None;
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} {} of {}", if ed.doc.course { "In the course:" } else { "Checkpoint" }, at + 1, cps.len()));
+                    if ui.add_enabled(at > 0, egui::Button::new("Earlier")).clicked() {
+                        swap = Some(cps[at - 1]);
+                    }
+                    if ui.add_enabled(at + 1 < cps.len(), egui::Button::new("Later")).clicked() {
+                        swap = Some(cps[at + 1]);
+                    }
+                });
+                if let Some(j) = swap {
+                    ed.change(|d| d.objects.swap(i, j));
+                    ed.selected = Some(j);
+                    return;
+                }
+            }
             if let Some(s) = ed.doc.objects[i].kind.drives() {
                 let n = ed.doc.objects.iter().filter(|o| o.kind.inputs().is_some_and(|inp| inp.all.contains(&s))).count();
                 ui.weak(format!("Drives signal {s}: {n} piece(s) listen (lines in the view)."));
@@ -1389,7 +1412,7 @@ fn prop_fields(ui: &mut egui::Ui, scale: &mut Vec3, bounds: &Option<(Vec3, Vec3)
 fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
     let mut pick = false;
     match kind {
-        Kind::Block { mat } | Kind::Decor { mat } => {
+        Kind::Block { mat } | Kind::Decor { mat } | Kind::Hull { mat, .. } => {
             ui.label("Material");
             combo(ui, "mat", mat, &MATS);
             ui.end_row();
@@ -1518,11 +1541,16 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             });
             ui.end_row();
         }
-        Kind::MeProp { package, mesh, scale, bounds, solid } => {
+        Kind::MeProp { package, mesh, scale, bounds, solid, own_shape } => {
             ui.label("Mirror's Edge");
             ui.label(format!("{package} / {mesh}"));
             ui.end_row();
             prop_fields(ui, scale, bounds, solid);
+            if *solid {
+                ui.label("Collision");
+                ui.checkbox(own_shape, "The mesh's own").on_hover_text("Collide with the shapes Mirror's Edge gives the mesh (read from the game with it), not its box");
+                ui.end_row();
+            }
         }
         Kind::Model { path, scale, bounds, solid } => {
             ui.label("Model");
@@ -1549,7 +1577,15 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             ui.add(egui::DragValue::new(illuminance).speed(speed).range(0.0..=200_000.0).suffix(" lux")).on_hover_text("Indoors the game's is 2,500; outdoors, 11,000. It's the level's only sun: where it's placed doesn't matter, which way it faces does");
             ui.end_row();
         }
-        Kind::ZipLine { to } | Kind::SwingPole { to } => {
+        Kind::ZipLine { to, sag } => {
+            ui.label("To (from here)");
+            vec3(ui, to, 0.05);
+            ui.end_row();
+            ui.label("Sag");
+            ui.add(egui::DragValue::new(sag).speed(0.02).range(0.0..=20.0).suffix(" m")).on_hover_text("How far the cable's middle hangs below the straight line between its ends");
+            ui.end_row();
+        }
+        Kind::SwingPole { to } => {
             ui.label("To (from here)");
             vec3(ui, to, 0.05);
             ui.end_row();

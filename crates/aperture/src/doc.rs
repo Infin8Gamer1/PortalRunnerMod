@@ -19,6 +19,7 @@ use faith_move::{Aabb, Fixture};
 use crate::art::{ArtOverlay, FaceGroup, MapArt};
 use crate::brush::{tool_material, Brush, Collision, Displacement};
 use crate::io::Output;
+use crate::me::MeShape;
 use crate::level::{CubeKind, Gun, Inputs, Item, Launch, Level, Mat, MeProp, ModelProp, MoverDef, Paint, PlacedLight, PresetPortal, Sig, Slope, Solid, SunLight, NO_MODEL};
 use crate::portal::PortalColor;
 use crate::source::{self, MapBox, Scenes};
@@ -45,6 +46,10 @@ pub struct LevelDoc {
     /// changes lead to the next map's copy, and it's played by Portal's rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map: Option<String>,
+    /// Its checkpoints are a course (a time trial's), in the order they're in the file: each
+    /// counts only after the one before it, and the exit only once they've all been passed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub course: bool,
 }
 
 /// The fill light everywhere: its colour (sRGB, 0-1) and brightness.
@@ -101,19 +106,37 @@ pub enum Turns {
 /// A prop's scale: along its own X, Y and Z (a single number scales all three alike).
 mod scale3 {
     use glam::Vec3;
-    use serde::{Deserialize, Deserializer};
+    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::Deserializer;
 
+    /// A scale: one number for all three axes (older files), or three. (Read by hand rather
+    /// than as an untagged enum: RON reads a number of unknown type by searching the rest of
+    /// the file, which made a level of thousands of props take seconds to open.)
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec3, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum S {
-            One(f32),
-            Three(Vec3),
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Vec3;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a scale, or one for each axis")
+            }
+            fn visit_f64<E: Error>(self, v: f64) -> Result<Vec3, E> {
+                Ok(Vec3::splat(v as f32))
+            }
+            fn visit_i64<E: Error>(self, v: i64) -> Result<Vec3, E> {
+                Ok(Vec3::splat(v as f32))
+            }
+            fn visit_u64<E: Error>(self, v: u64) -> Result<Vec3, E> {
+                Ok(Vec3::splat(v as f32))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Vec3, A::Error> {
+                let mut v = [0.0f32; 3];
+                for (i, x) in v.iter_mut().enumerate() {
+                    *x = a.next_element()?.ok_or_else(|| A::Error::invalid_length(i, &self))?;
+                }
+                Ok(Vec3::from(v))
+            }
         }
-        Ok(match S::deserialize(d)? {
-            S::One(s) => Vec3::splat(s),
-            S::Three(v) => v,
-        })
+        d.deserialize_any(V)
     }
 
     pub fn one() -> Vec3 {
@@ -123,6 +146,10 @@ mod scale3 {
 
 fn is_zero(v: &Vec3) -> bool {
     *v == Vec3::ZERO
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero_f(v: &f32) -> bool {
@@ -193,7 +220,12 @@ pub enum Kind {
     /// Indicator lights from here along `points` (from here), lit with `sig`.
     Wire { sig: Sig, points: Vec<Vec3> },
     /// A zipline from here (its high end) down to here + `to`.
-    ZipLine { to: Vec3 },
+    ZipLine {
+        to: Vec3,
+        /// How far its middle hangs below the straight line to its end (m).
+        #[serde(default, skip_serializing_if = "is_zero_f")]
+        sag: f32,
+    },
     /// A swing bar from here to here + `to`.
     SwingPole { to: Vec3 },
     /// A balance beam along the centre of its top, from here to here + `to`; with `solid`, the
@@ -219,11 +251,27 @@ pub enum Kind {
     Sun { color: Vec3, illuminance: f32 },
     /// A Mirror's Edge static mesh, standing here, turned `yaw`. `bounds` is its box (from here,
     /// before it's turned or scaled); with `solid`, that's a block too (turned with it a quarter
-    /// at a time), drawn instead when the game isn't installed.
-    MeProp { package: String, mesh: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    /// at a time), drawn instead when the game isn't installed. With `own_shape` as well, it
+    /// collides with its mesh's own collision instead, read from the game with the mesh (its
+    /// box when the game isn't there).
+    MeProp {
+        package: String,
+        mesh: String,
+        #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")]
+        scale: Vec3,
+        #[serde(default)]
+        bounds: Option<(Vec3, Vec3)>,
+        #[serde(default)]
+        solid: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        own_shape: bool,
+    },
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
     Model { path: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    /// A convex solid of `mat`, its faces' planes (`n·p = d` from here, facing out: `(n, d)`)
+    /// turned as it's turned: Mirror's Edge's blocking volumes (clip).
+    Hull { planes: Vec<Vec4>, mat: Mat },
     /// One of Portal's brushes: a convex solid, each face with its own material (see
     /// [`crate::brush`]), its planes from here, turned as it's turned.
     Brush(Brush),
@@ -291,7 +339,7 @@ impl Kind {
     pub fn turns(&self) -> Option<Turns> {
         match self {
             Kind::Bridge { .. } | Kind::Laser { .. } | Kind::Catcher { .. } | Kind::GelPipe { .. } | Kind::PelletLauncher { .. } | Kind::PelletCatcher { .. } | Kind::Portal { .. } | Kind::SpotLight { .. } | Kind::Sun { .. } => Some(Turns::Aim),
-            Kind::MeProp { .. } | Kind::Model { .. } | Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => Some(Turns::Free),
+            Kind::MeProp { .. } | Kind::Model { .. } | Kind::Hull { .. } | Kind::Brush(_) | Kind::Displacement(_) | Kind::Overlay { .. } | Kind::Entity { .. } => Some(Turns::Free),
             Kind::Spawn { .. } | Kind::Turret | Kind::Checkpoint { .. } | Kind::BargeDoor | Kind::Ladder { .. } => Some(Turns::Yaw),
             _ => None,
         }
@@ -339,6 +387,7 @@ impl Kind {
             Kind::SoftPad { .. } => "Soft landing".into(),
             Kind::Ladder { pipe, .. } => if *pipe { "Drainpipe" } else { "Ladder" }.into(),
             Kind::MeProp { mesh, .. } => mesh.clone(),
+            Kind::Hull { mat, .. } => format!("{mat:?} hull"),
             Kind::Model { path, .. } => path.rsplit('/').next().unwrap_or(path).trim_end_matches(".glb").to_string(),
             Kind::Brush(b) => {
                 // (Named after the material most of its drawn faces have.)
@@ -661,7 +710,11 @@ impl Object {
                 }
                 b
             }
-            Kind::ZipLine { to } | Kind::SwingPole { to } => {
+            Kind::ZipLine { to, sag } => {
+                let (a, b) = (self.at, self.at + *to);
+                Aabb::new(a.min(b) - 0.1 - Vec3::Y * sag.max(0.0), a.max(b) + 0.1)
+            }
+            Kind::SwingPole { to } => {
                 let (a, b) = (self.at, self.at + *to);
                 Aabb::new(a.min(b) - 0.1, a.max(b) + 0.1)
             }
@@ -674,6 +727,10 @@ impl Object {
             }
             Kind::MeProp { bounds: Some(b), scale, .. } | Kind::Model { bounds: Some(b), scale, .. } => self.prop_box(*b, *scale),
             Kind::MeProp { .. } | Kind::Model { .. } => up(1.0, 1.0),
+            Kind::Hull { planes, .. } => {
+                let b = crate::me::hull_brush(planes).turned(self.rotation()).bounds();
+                b.map_or_else(|| around(0.1), |b| Aabb::new(b.min + self.at, b.max + self.at))
+            }
             Kind::Brush(b) => {
                 let b = if self.turned() { b.turned(self.rotation()).bounds() } else { b.bounds() };
                 b.map_or_else(|| around(0.1), |b| Aabb::new(b.min + self.at, b.max + self.at))
@@ -699,7 +756,7 @@ impl Object {
 
 impl LevelDoc {
     pub fn new(name: &str) -> Self {
-        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None }
+        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None, course: false }
     }
 
     /// A white room to start from: floor, walls, ceiling, a lamp grid and the start.
@@ -753,10 +810,31 @@ impl LevelDoc {
         let base = if map { l.signal_count() } else { 0 };
         let sg = |s: &Sig| *s + base;
         let inp = |i: &Inputs| Inputs { all: i.all.iter().map(|s| s + base).collect(), invert: i.invert };
+        // Mirror's Edge's meshes and volumes collide as their shapes, and aren't drawn as boxes
+        // (the meshes are drawn): their solids first, as a map's own are.
+        let shape_of = |o: &Object| match &o.kind {
+            Kind::MeProp { package, mesh, solid: true, own_shape: true, .. } => crate::me::shape(package, mesh),
+            _ => None,
+        };
+        for o in &self.objects {
+            match &o.kind {
+                Kind::MeProp { package, mesh, scale, .. } => {
+                    if let Some(shape) = shape_of(o) {
+                        crate::me::place_kept(&format!("{package}.{mesh}"), &shape, o.at, o.rotation(), *scale, Mat::Wall, &mut l.solids, &mut l.slopes);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !map {
+            l.map_solids = l.solids.len();
+        }
+        l.me_art = self.objects.iter().any(|o| matches!(o.kind, Kind::MeProp { own_shape: true, .. }));
         let first = l.solids.len();
         l.intro = leak(&self.intro);
         l.indoor = self.indoor;
         l.kill_y = self.kill_y;
+        l.course = self.course;
         l.gun = Gun { blue: self.blue, orange: self.orange };
         let corners = |o: &Object| {
             let b = o.bounds();
@@ -765,8 +843,13 @@ impl LevelDoc {
         for o in &self.objects {
             match &o.kind {
                 Kind::Block { mat } => l.solids.push(Solid { b: o.bounds(), mat: *mat }),
+                Kind::MeProp { .. } if shape_of(o).is_some() => {}
                 Kind::MeProp { bounds: Some(_), solid: true, .. } | Kind::Model { bounds: Some(_), solid: true, .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
                 Kind::Beam { solid: true, .. } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Black }),
+                Kind::Hull { planes, mat } => {
+                    let shape = MeShape { hulls: vec![planes.clone()], tris: Vec::new() };
+                    shape.place(o.at, o.rotation(), Vec3::ONE, *mat, &mut l.solids, &mut l.slopes);
+                }
                 Kind::SoftPad { solid: true } => l.solids.push(Solid { b: o.bounds(), mat: Mat::Prop }),
                 _ => {}
             }
@@ -783,7 +866,7 @@ impl LevelDoc {
             let dir = o.dir().to_array();
             let (a, b) = corners(o);
             match &o.kind {
-                Kind::Block { .. } | Kind::Cut => {}
+                Kind::Block { .. } | Kind::Cut | Kind::Hull { .. } => {}
                 Kind::Decor { mat } => {
                     l.decor(*mat, a, b);
                 }
@@ -877,7 +960,7 @@ impl LevelDoc {
                 Kind::Sun { color, illuminance } => {
                     l.sun.get_or_insert(SunLight { dir: o.dir(), color: *color, illuminance: *illuminance });
                 }
-                Kind::ZipLine { to } => l.fixtures.push(Fixture::ZipLine { a: at, b: at + *to }),
+                Kind::ZipLine { to, sag } => l.fixtures.push(Fixture::ZipLine { a: at, b: at + *to, sag: *sag }),
                 Kind::SwingPole { to } => l.fixtures.push(Fixture::SwingPole { a: at, b: at + *to }),
                 Kind::Beam { to, .. } => l.fixtures.push(Fixture::Beam { a: at, b: at + *to }),
                 Kind::BargeDoor => l.fixtures.push(Fixture::Door { b: o.bounds(), n: -o.dir() }),
@@ -886,8 +969,9 @@ impl LevelDoc {
                 Kind::Ladder { height, pipe, exit } => {
                     l.fixtures.push(Fixture::Ladder(Ladder { base: at, top: at.y + *height, normal: o.dir(), pipe: *pipe, exit: *exit }));
                 }
-                Kind::MeProp { package, mesh, scale, bounds, solid } => {
-                    let stand_in = (bounds.is_some() && *solid).then(|| o.bounds());
+                Kind::MeProp { package, mesh, scale, bounds, solid, .. } => {
+                    let shaped = shape_of(o).is_some();
+                    let stand_in = (bounds.is_some() && *solid && !shaped).then(|| o.bounds());
                     l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in });
                 }
                 Kind::Model { path, scale, bounds, solid } => {
@@ -1056,7 +1140,7 @@ impl LevelDoc {
         }
         for f in &l.fixtures {
             let o = match f {
-                Fixture::ZipLine { a, b } => Object::new(Kind::ZipLine { to: *b - *a }, *a),
+                Fixture::ZipLine { a, b, sag } => Object::new(Kind::ZipLine { to: *b - *a, sag: *sag }, *a),
                 Fixture::SwingPole { a, b } => Object::new(Kind::SwingPole { to: *b - *a }, *a),
                 // (Its beam is one of the level's blocks already.)
                 Fixture::Beam { a, b } => Object::new(Kind::Beam { to: *b - *a, solid: false }, *a),
@@ -1142,13 +1226,13 @@ impl LevelDoc {
         }
         for p in &l.me_props {
             // A prop that stands in a box of its own: that box is the prop's, not a block.
-            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false }, p.at);
+            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false, own_shape: false }, p.at);
             o.set_rotation(p.turn);
             if let Some(b) = p.stand_in {
                 if let Some(i) = d.objects.iter().position(|o| o.kind == Kind::Block { mat: Mat::Prop } && (o.bounds().min - b.min).length() < 1e-4 && (o.bounds().max - b.max).length() < 1e-4) {
                     d.objects.remove(i);
                 }
-                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true };
+                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true, own_shape: false };
             }
             push(&mut d, o);
         }

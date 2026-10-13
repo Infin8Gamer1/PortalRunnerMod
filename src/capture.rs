@@ -673,6 +673,21 @@ fn script(name: &str) -> Vec<Act> {
             }
             v
         }
+        // A Mirror's Edge level (#100, PORTAL_ME_LEVEL: its file, `tutorial` unless said):
+        // where she starts, looking round, then from above.
+        "melevel" => {
+            let file: &'static str = Box::leak(std::env::var("PORTAL_ME_LEVEL").unwrap_or_else(|_| "tutorial".into()).into_boxed_str());
+            let mut v = vec![Chamber(crate::LevelGroup::MirrorsEdge, file), Wait(120)];
+            for (k, yaw) in [0.0, 90.0, 180.0, 270.0].into_iter().enumerate() {
+                v.extend([Look(yaw, -5.0), Wait(40), Shot(["me_0", "me_1", "me_2", "me_3"][k])]);
+            }
+            // (PORTAL_ME_VIEW=x,y,z,yaw,pitch: a spectator's view too.)
+            if let Some(f) = std::env::var("PORTAL_ME_VIEW").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<_>>()).filter(|f| f.len() == 5) {
+                v.extend([Spectate(Vec3::new(f[0], f[1], f[2]), f[3], f[4]), Wait(90)]);
+            }
+            v.extend([Wait(60), Shot("me_4")]);
+            v
+        }
         // Sunlight through portals (#94): on Rooftops, orange on the start roof facing the sky,
         // its top to the south so the sun going down and north into it comes out of blue going
         // down; blue low on the north face of the roof's back wall, over the floor that wall
@@ -1267,6 +1282,29 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("editorpick_01_selected"),
             ]
         }
+        // A Mirror's Edge level in the editor (#100): opened, a prop in front of the camera
+        // lifted a metre, then played.
+        "meedit" => vec![
+            Chamber(crate::LevelGroup::MirrorsEdge, "tutorial"),
+            Wait(90),
+            Edit(|_, menu| menu.edit = Some(false)),
+            Wait(150),
+            Shot("meedit_01_opened"),
+            Edit(|ed, _| {
+                let (pos, look) = (ed.cam.pos, Quat::from_euler(EulerRot::YXZ, ed.cam.yaw, ed.cam.pitch, 0.0) * Vec3::NEG_Z);
+                let i = ed.doc.objects.iter().enumerate().filter(|(_, o)| matches!(&o.kind, aperture::doc::Kind::MeProp { solid: true, .. }) && o.bounds().size().max_element() < 4.0 && (o.at - pos).normalize_or_zero().dot(look) > 0.7).min_by(|a, b| a.1.at.distance(pos).total_cmp(&b.1.at.distance(pos))).map(|(i, _)| i);
+                println!("capture: lifting {:?}", i.map(|i| ed.doc.objects[i].kind.label()));
+                if let Some(i) = i {
+                    ed.selected = Some(i);
+                    ed.change(|d| d.objects[i].at.y += 1.0);
+                }
+            }),
+            Wait(90),
+            Shot("meedit_02_moved"),
+            Edit(|ed, menu| ed.play(menu)),
+            Wait(120),
+            Shot("meedit_03_playing"),
+        ],
         "nativeedit" => {
             use crate::LevelGroup::Portal as N;
             vec![
@@ -1629,7 +1667,7 @@ fn script(name: &str) -> Vec<Act> {
                 if let Kind::Model { scale, .. } = &mut big.kind {
                     *scale = Vec3::new(3.0, 1.5, 2.0);
                 }
-                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false }, Vec3::new(0.0, 0.0, -11.0));
+                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false, own_shape: false }, Vec3::new(0.0, 0.0, -11.0));
                 ed.doc.objects.extend([radio, big, cistern]);
                 ed.selected = Some(ed.doc.objects.len() - 2);
                 ed.rebuild_now();

@@ -9,3 +9,5 @@ glam = { version = "0.32", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
 faith_move = { path = "../faith_move" }
+# Mirror's Edge's meshes' collision, read from the player's install (`me`).
+me_assets = { path = "../me_assets" }

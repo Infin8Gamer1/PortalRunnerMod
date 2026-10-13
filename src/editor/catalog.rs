@@ -170,7 +170,7 @@ pub static CATALOG: &[Entry] = &[
     e("Blue portal", Category::Gameplay, Place::Wall, P, || Kind::Portal { color: PortalColor::Blue }, [40, 140, 255], "⚪"),
     e("Orange portal", Category::Gameplay, Place::Wall, P, || Kind::Portal { color: PortalColor::Orange }, [255, 140, 30], "⚪"),
     e("Indicator wire", Category::Gameplay, Place::Out(0.01), P, || Kind::Wire { sig: 0, points: vec![Vec3::new(0.0, 0.0, -3.0)] }, [90, 160, 255], "⚡"),
-    e("Zipline", Category::Parkour, Place::Out(3.0), P, || Kind::ZipLine { to: Vec3::ZERO }, [230, 170, 60], "↘"),
+    e("Zipline", Category::Parkour, Place::Out(3.0), P, || Kind::ZipLine { to: Vec3::ZERO, sag: 0.0 }, [230, 170, 60], "↘"),
     e("Swing pole", Category::Parkour, Place::Out(2.4), P, || Kind::SwingPole { to: Vec3::ZERO }, [200, 200, 210], "➖"),
     e("Balance beam", Category::Parkour, Place::Out(0.3), P, || Kind::Beam { to: Vec3::ZERO, solid: true }, [60, 60, 66], "➖"),
     e("Ladder", Category::Parkour, Place::Wall, P, || Kind::Ladder { height: 4.0, pipe: false, exit: true }, [200, 60, 50], "⬆"),
@@ -330,7 +330,7 @@ pub fn place(entry: &Entry, doc: &LevelDoc, p: Vec3, n: Vec3, look: Vec3, grid: 
     let flat = Vec3::new(look.x, 0.0, look.z).normalize_or(Vec3::NEG_Z);
     let across = Vec3::Y.cross(flat);
     match &mut o.kind {
-        Kind::ZipLine { to } => *to = flat * 10.0 - Vec3::Y * 2.5,
+        Kind::ZipLine { to, .. } => *to = flat * 10.0 - Vec3::Y * 2.5,
         Kind::SwingPole { to } => {
             *to = across * 3.0;
             o.at -= across * 1.5;

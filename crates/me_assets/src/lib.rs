@@ -7,6 +7,7 @@
 //! - `Animations/AS_C1P_Unarmed.upk`: every unarmed first-person animation.
 
 pub mod anim;
+pub mod map;
 #[cfg(feature = "prologue")]
 pub mod level;
 #[cfg(feature = "prologue")]
@@ -262,7 +263,23 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             let suffix = |n: &str| n.rsplit(' ').next().unwrap_or(n).rsplit('_').next().unwrap_or("").to_string();
             let is_normal = |n: &str| n.contains("normal") || suffix(n) == "n";
             let is_spec = |n: &str| (n.contains("spec") || suffix(n) == "s") && !n.contains("tile");
-            let mut diffuse = read(&|n| n.contains("diffuse") || matches!(suffix(n).as_str(), "d" | "da" | "dm" | "ds" | "c" | "col" | "diff" | "albedo") || n.contains("_d_"));
+            let is_diffuse = |n: &str| n.contains("diffuse") || matches!(suffix(n).as_str(), "d" | "da" | "dm" | "ds" | "c" | "col" | "diff" | "albedo") || n.contains("_d_");
+            // A layered material (a roof with dirt blended over it by a mask): its main layer
+            // is the one its normal map belongs to (`T_Roof_02_N`: `T_Roof_02_D`), else one
+            // that isn't the dirt or a detail layer.
+            let stem = |n: &str| {
+                let t = n.rsplit(' ').next().unwrap_or(n);
+                t.rsplit_once('_').map_or(t, |(a, _)| a).to_string()
+            };
+            let normal_stem = textures.iter().map(|(n, _, _)| n).find(|n| is_normal(n)).map(|n| stem(n));
+            let overlay = |n: &str| ["dirt", "detail", "grime", "sand", "dust", "mask", "stain"].iter().any(|w| n.rsplit(' ').next().unwrap_or(n).contains(w));
+            let mut diffuse = normal_stem.as_ref().and_then(|ns| read(&|n| is_diffuse(n) && stem(n) == *ns));
+            if diffuse.is_none() {
+                diffuse = read(&|n| is_diffuse(n) && !overlay(n));
+            }
+            if diffuse.is_none() {
+                diffuse = read(&is_diffuse);
+            }
             let normal = read(&is_normal);
             let specular = read(&is_spec);
             if diffuse.is_none() {
@@ -313,7 +330,7 @@ fn constant_color(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> (Option<[f3
 }
 
 /// A material's textures: (name, lowercased with its parameter name, package, export).
-fn all_textures(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> Vec<(String, Rc<Package>, usize)> {
+pub fn all_textures(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> Vec<(String, Rc<Package>, usize)> {
     let mut out = vec![];
     let mut next = Some((pkg.clone(), m));
     for _ in 0..4 {

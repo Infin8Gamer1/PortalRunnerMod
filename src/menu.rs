@@ -186,7 +186,7 @@ fn items(menu: &Menu, game: &Game, progress: &Progress) -> Vec<Item> {
         }
         Screen::Folder(g) => {
             // (Their own names, without the folder's.)
-            let short = |name: &str| name.strip_prefix("Portal: ").unwrap_or(name).to_string();
+            let short = |name: &str| name.strip_prefix("Portal: ").or_else(|| name.strip_prefix("Mirror's Edge: ")).unwrap_or(name).to_string();
             let mut v: Vec<Item> = game.levels.iter().enumerate().filter(|(i, _)| game.groups[*i] == g).map(|(i, (name, _))| Item::Chamber(i, short(name), progress.best_for(name))).collect();
             v.push(a("Back", Action::Back));
             v

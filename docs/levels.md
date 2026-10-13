@@ -35,6 +35,13 @@ one: a white room with lamps and a start.
   arrows to move that end along an axis, or its ring to move it about. Lines show what the
   selection is wired to; outlines show what the game doesn't draw
   (the start, checkpoints, the exit, hints, cuts, a faith plate's arc when it's selected).
+  A zipline's **Sag** hangs its cable's middle below the straight line between its ends: she
+  rides the curve, slower climbing out of a deep one.
+- **A course**: with **Checkpoints: a course** in the level's settings (nothing selected), its
+  checkpoints are passed in order, as a time trial's: only the next one counts (a red beacon
+  stands over it, then over the exit), and the exit only finishes it once they all have. The
+  timer shows how many of how many, and each checkpoint's split. A checkpoint's details move it
+  **Earlier** or **Later** in the order (their order in the file).
 - **Lights**: a point light shines all round, a spot light in a cone the way it faces (turn it
   with the gizmo); each has a colour, an intensity in lumens (the ceiling lamps are 900,000), a
   range, a size (bigger is softer) and shadows on or off. A sun replaces the level's (its
@@ -110,6 +117,32 @@ to keep the change). `--port-maps` remakes them from the extracted maps (when th
 converter's improved) but keeps one that's been changed (`levels/portal/written.txt` knows each
 as it was written); delete it to have it made again. A chamber's level change leads to the next
 map's.
+
+### Mirror's Edge's levels
+
+`portal_extract -- --port-me` makes Mirror's Edge's maps into level files (`levels/me/`), read
+from your install: the map and the sublevels it streams in. They're in the Chambers menu's
+**Mirror's Edge levels** folder, and open in the editor as any level file does (so far the
+Training map and its three time trials):
+
+- Its meshes are **Mirror's Edge props**, standing, turned and scaled as the map has them (one
+  mirrored is drawn wound the other way round), drawn from the install.
+- Each prop collides with its mesh's own collision (**Collision: the mesh's own**), read from
+  the game with the mesh: its convex hulls, or for a mesh that has none, its triangles, placed
+  wherever the prop is moved (and not drawn as boxes). Nothing of it is in the file; without
+  the game a prop collides as its box. Meshes that only have triangles (the city's buildings)
+  are solid only within 40 m of where she can go; the sky, the sun's flare and the effects'
+  meshes (light shafts) are left out. Mirror's Edge props added from the browser collide the
+  same way.
+- Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
+  them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
+  ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
+  of what it is).
+- Its sun is its brightest directional light; she starts at its start. A zipline sags as its
+  spline does. A time trial's timer checkpoints are a course (in the order they lead on to each
+  other), the last its finish.
+
+As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 
 What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits
 on what it's dropped on, a default size, and the object it makes. Adding a kind of thing the

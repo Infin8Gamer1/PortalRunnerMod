@@ -61,7 +61,7 @@ fn zipline(world: &MeshWorld, c: &Candidate) -> Option<Fixture> {
     if start.y - floor < 1.0 {
         return None;
     }
-    Some(Fixture::ZipLine { a: hi, b: lo })
+    Some(Fixture::ZipLine { a: hi, b: lo, sag: 0.0 })
 }
 
 fn level(c: &Candidate) -> Option<(Vec3, f32)> {
@@ -162,7 +162,7 @@ pub fn classify(world: &MeshWorld, candidates: &[Candidate]) -> Vec<Fixture> {
         let Some(f) = f else { continue };
         // The same thing twice (overlapping shapes): keep one.
         let key = |f: &Fixture| match *f {
-            Fixture::ZipLine { a, b } | Fixture::SwingPole { a, b } | Fixture::Beam { a, b } => (a + b) * 0.5,
+            Fixture::ZipLine { a, b, .. } | Fixture::SwingPole { a, b } | Fixture::Beam { a, b } => (a + b) * 0.5,
             Fixture::Ladder(l) => l.base,
             _ => Vec3::ZERO,
         };

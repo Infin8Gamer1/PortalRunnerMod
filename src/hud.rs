@@ -227,14 +227,24 @@ pub fn update(
         }
     }
 
-    let timer_on = settings.show_timer > 0.5 && playing;
+    // (A course is timed whatever the setting: it's a time trial.)
+    let course = sim.level.course;
+    let timer_on = (settings.show_timer > 0.5 || course) && playing;
     if let Ok(mut v) = vis.p3().single_mut() {
         *v = if timer_on { Visibility::Inherited } else { Visibility::Hidden };
     }
     if timer_on {
         if let Ok(mut t) = texts.p5().single_mut() {
             let best = progress.best_for(name).map(|b| format!("\nBest {}", fmt_time(b))).unwrap_or_default();
-            t.0 = format!("{}{}", fmt_time(game.timer), best);
+            // A course's checkpoints passed of how many, and the last split.
+            let count = if course {
+                let of = sim.level.checkpoints.len().saturating_sub(1);
+                let split = game.splits.last().map(|s| format!("  ({})", fmt_time(*s))).unwrap_or_default();
+                format!("\nCheckpoint {} / {of}{split}", sim.checkpoint)
+            } else {
+                String::new()
+            };
+            t.0 = format!("{}{count}{}", fmt_time(game.timer), best);
         }
     }
 

@@ -47,7 +47,7 @@ pub fn arena() -> Level {
     l.checkpoint("Platform", [-24.0, 6.0, -24.0], [-10.0, 9.0, -14.0], [-14.0, 6.0, -16.0], 180.0);
     l.hint([-18.0, 0.0, -8.0], [-10.0, 3.0, 0.0], "Step onto the Aerial Faith Plate.");
     // A zipline down from it.
-    l.fixtures.push(Fixture::ZipLine { a: Vec3::new(-11.0, 8.2, -15.0), b: Vec3::new(-2.0, 3.0, 2.0) });
+    l.fixtures.push(Fixture::ZipLine { a: Vec3::new(-11.0, 8.2, -15.0), b: Vec3::new(-2.0, 3.0, 2.0), sag: 0.0 });
 
     // ---- Gel pipes in the ceiling (middle, back), each switched by a pedestal button.
     l.gel_pipe(Paint::Bounce, [-5.0, 11.6, -12.0], [0.0, -1.0, 0.0], Inputs::on(4));

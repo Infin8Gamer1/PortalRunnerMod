@@ -102,7 +102,7 @@ pub fn moves() -> Level {
     // ---- M4: zipline start ----------------------------------------------
     building(&mut l, -6.0, 6.0, z::M4_START, z::M4_END, M4_Y);
     sides(&mut l, -6.0, 6.0, z::M4_START, z::M4_END, M4_Y);
-    l.fixtures.push(Fixture::ZipLine { a: ZIP_A, b: ZIP_B });
+    l.fixtures.push(Fixture::ZipLine { a: ZIP_A, b: ZIP_B, sag: 0.0 });
     // Masts the cable hangs from (off to the side, with an arm over the line).
     l.add(Prop, [0.7, M4_Y, z::ZIP_START - 0.15], [1.0, ZIP_A.y + 0.5, z::ZIP_START + 0.15]);
     l.paint(Prop, [-0.1, ZIP_A.y + 0.3, z::ZIP_START - 0.08], [1.0, ZIP_A.y + 0.45, z::ZIP_START + 0.08]);

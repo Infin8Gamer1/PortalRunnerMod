@@ -565,6 +565,13 @@ pub fn add_levels(mut game: ResMut<Game>, mut ed: ResMut<Editor>) {
         game.source_names.push(Some(map));
         game.groups.push(crate::LevelGroup::Portal);
     }
+    for (path, file) in crate::source_map::me_files() {
+        let name = doc_name(&path);
+        ed.files.push((game.levels.len(), path.clone()));
+        game.levels.push((name, file_level(path)));
+        game.source_names.push(Some(file));
+        game.groups.push(crate::LevelGroup::MirrorsEdge);
+    }
     for path in level_files() {
         let name = doc_name(&path);
         info!("Level {}: {} ({})", game.levels.len(), name, path.display());
@@ -934,7 +941,7 @@ fn surface(doc: &LevelDoc, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
 /// plate lands, where a platform travels to.
 fn end_of(o: &Object) -> Option<Vec3> {
     match &o.kind {
-        Kind::ZipLine { to } | Kind::SwingPole { to } | Kind::Beam { to, .. } => Some(o.at + *to),
+        Kind::ZipLine { to, .. } | Kind::SwingPole { to } | Kind::Beam { to, .. } => Some(o.at + *to),
         Kind::FaithPlate { target, .. } => Some(*target),
         Kind::Platform { travel, .. } => Some(o.at + *travel),
         _ => None,
@@ -944,7 +951,7 @@ fn end_of(o: &Object) -> Option<Vec3> {
 fn set_end(o: &mut Object, e: Vec3) {
     let at = o.at;
     match &mut o.kind {
-        Kind::ZipLine { to } | Kind::SwingPole { to } | Kind::Beam { to, .. } => *to = e - at,
+        Kind::ZipLine { to, .. } | Kind::SwingPole { to } | Kind::Beam { to, .. } => *to = e - at,
         Kind::FaithPlate { target, .. } => *target = e,
         Kind::Platform { travel, .. } => *travel = e - at,
         _ => {}
@@ -1367,7 +1374,7 @@ fn overlays(ed: Res<Editor>, game: Res<Game>, mut gizmos: Gizmos<EditorLines>, m
                 let pts: Vec<Vec3> = std::iter::once(o.at).chain(points.iter().map(|p| o.at + *p)).collect();
                 gizmos.linestrip(pts, Color::srgba(0.4, 0.6, 1.0, 0.8));
             }
-            Kind::ZipLine { to } => gizmos.line(o.at, o.at + *to, Color::srgb(0.95, 0.65, 0.2)),
+            Kind::ZipLine { to, sag } => gizmos.linestrip(faith_move::Cable::new(o.at, o.at + *to, *sag).points(24), Color::srgb(0.95, 0.65, 0.2)),
             Kind::SwingPole { to } | Kind::Beam { to, .. } => gizmos.line(o.at, o.at + *to, Color::srgba(0.9, 0.9, 0.95, 0.7)),
             Kind::Ladder { height, .. } => {
                 let side = Vec3::Y.cross(o.dir()) * 0.25;
@@ -1798,7 +1805,7 @@ mod tests {
         let (o, d) = at(1.6);
         let moved = end_moved(&cam, 0, end, grab, o, d, 0.25).unwrap();
         assert!((moved - Vec3::new(1.25, 2.0, -5.0)).length() < 1e-4, "{moved}");
-        let mut zip = Object::new(Kind::ZipLine { to: Vec3::new(0.0, -2.0, -10.0) }, Vec3::new(0.0, 4.0, 5.0));
+        let mut zip = Object::new(Kind::ZipLine { to: Vec3::new(0.0, -2.0, -10.0), sag: 0.0 }, Vec3::new(0.0, 4.0, 5.0));
         set_end(&mut zip, moved);
         assert_eq!(end_of(&zip), Some(moved));
         assert_eq!(zip.at, Vec3::new(0.0, 4.0, 5.0), "the start stays");
