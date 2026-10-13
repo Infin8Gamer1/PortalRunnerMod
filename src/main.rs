@@ -61,6 +61,18 @@ fn main() {
             unsafe { std::env::set_var("DLSS_SDK", sdk) };
         }
     }
+    // Ray Reconstruction's model (#96): PORTAL_RR_PRESET=D, E or F (DLSS SDK 310.9.1 and
+    // later); else whichever DLSS thinks best.
+    #[cfg(feature = "dlss")]
+    if let Ok(p) = std::env::var("PORTAL_RR_PRESET") {
+        let preset = match p.trim().to_ascii_uppercase().as_str() {
+            "D" => 4,
+            "E" => 5,
+            "F" => 6,
+            _ => 0,
+        };
+        dlss_wgpu::ray_reconstruction::RAY_RECONSTRUCTION_PRESET.store(preset, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut app = App::new();
     // DLSS asks for an application id before the renderer starts (any fixed UUID).
     #[cfg(feature = "dlss")]
