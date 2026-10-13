@@ -1218,9 +1218,6 @@ fn script(name: &str) -> Vec<Act> {
                 ViewArt("steam", 0, 3.0),
                 Wait(40),
                 Shot("fx_steam"),
-                ViewArt("water_mist_512", 0, 6.0),
-                Wait(60),
-                Shot("fx_mist"),
             ]
         }
         // The chambers menu's folders.

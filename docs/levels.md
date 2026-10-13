@@ -91,7 +91,7 @@ opened under them).
 
 **Portal sound & effects** has the rest: sounds (`ambient_generic`: looping or once, heard from
 where it is or everywhere, started and stopped by the logic), soundscapes (an area's ambience,
-the nearest in sight), particles (mist, the elevator shafts' beams, fire, neurotoxin), steam,
+the nearest in sight), particles (the elevator shafts' beams, fire, neurotoxin), steam,
 sparks, spotlights' beams, beams between two named targets, screen shakes and fades, colour
 correction (one of Portal's tables, weighed in near it or everywhere, faded in and out by the
 logic), tonemap controllers (the logic sets the auto exposure's range and rate, and the bloom)

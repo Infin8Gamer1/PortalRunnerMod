@@ -413,12 +413,9 @@ pub fn sync(
                             MapProp { base: at, turn, mover, animated: animated.clone(), model: model.clone(), skin },
                             Visibility::default(),
                             Transform::from_translation(at).with_scale(Vec3::splat(aperture::sim::PELLET_RADIUS)),
-                            PointLight { intensity: 40_000.0, range: 7.0, radius: 0.15, color: Color::srgb(1.0, 0.42, 0.05), shadow_maps_enabled: false, ..default() },
+                            PointLight { intensity: crate::chamber::PELLET_LIGHT, range: 9.0, radius: 0.1, color: Color::srgb(1.0, 0.5, 0.15), shadow_maps_enabled: false, ..default() },
                         ))
-                        .with_children(|c| {
-                            c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet.clone()), Transform::default(), NotShadowCaster));
-                            c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.42)), NotShadowCaster));
-                        });
+                        .with_children(|c| crate::chamber::pellet_ball(c, &m));
                     continue;
                 }
                 // A physics prop that's a body of the sim's: drawn where that is.

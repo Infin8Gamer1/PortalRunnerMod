@@ -59,6 +59,8 @@ pub struct GelVis(Paint);
 
 /// How fast a turret's shots fly (m/s), how long a streak each is (m), how long the flash at
 /// the gun and the spark where a stray shot lands show (s).
+/// A pellet's light (lumens: the ordinary path's; ray traced, its core lights the room).
+pub const PELLET_LIGHT: f32 = 250_000.0;
 const BULLET_SPEED: f32 = 120.0;
 const BULLET_STREAK: f32 = 1.2;
 const FLASH_TIME: f32 = 0.04;
@@ -127,14 +129,19 @@ pub struct ChamberMats {
     /// The same, for gel in flight: drawn forward, with the ordinary lights (too small and
     /// fast for traced light to settle on).
     pub blob_paint: [Handle<StandardMaterial>; 3],
-    /// A high energy pellet: the shell, glowing orange, and the hotter core.
+    /// A high energy pellet (as Portal with RTX has it): a clear bubble, and in it a white-hot
+    /// core (what lights the room, ray traced) in ragged orange flames, glowing.
     pub pellet: Handle<StandardMaterial>,
     pub pellet_core: Handle<StandardMaterial>,
+    pub pellet_glow: Handle<StandardMaterial>,
+    pub pellet_glow_hot: Handle<StandardMaterial>,
+    pub pellet_bubble: Handle<StandardMaterial>,
     /// A rocket turret's sight, and a rocket's fireball (emissive, so they glow and light the
     /// room when ray traced, where an unlit colour shows grey).
     pub sight: Handle<StandardMaterial>,
     pub blast: Handle<StandardMaterial>,
     pub pellet_mesh: Handle<Mesh>,
+    pub glow_quad: Handle<Mesh>,
     /// A short-lived scorch where a pellet bounced.
     pub scorch_mesh: Handle<Mesh>,
     /// A turret's shot.
@@ -381,6 +388,7 @@ pub fn setup(
         StandardMaterial { base_color: Color::srgb(1.0, 0.42, 0.04), emissive: LinearRgba::rgb(0.3, 0.08, 0.0), perceptual_roughness: 0.12, ..default() },
         StandardMaterial { base_color: Color::srgb(0.97, 0.97, 0.97), perceptual_roughness: 0.25, ..default() },
     ];
+    let pellet_glow_tex = Some(images.add(pellet_glow()));
     let mats = ChamberMats {
         white: materials.add(pbr(&mut images, "white_ceiling", tiled(std(Color::srgb(1.08, 1.08, 1.1), Some(white_tex), 0.7, 0.0)))),
         black: materials.add(pbr(&mut images, "black_panel", tiled(std(Color::srgb(0.75, 0.75, 0.78), Some(black_tex), 0.45, 0.4)))),
@@ -475,16 +483,16 @@ pub fn setup(
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
         paint: paint.clone().map(|p| materials.add(p)),
         tracer: materials.add(glow(LinearRgba::rgb(4.0, 2.6, 0.8), 0.7)),
+        // (Added over what's behind it, unlit: ragged, so no edge shows.)
         pellet: {
-            let plasma = images.add(plasma());
+            let flames = images.add(pellet_flames());
             materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 0.32, 0.04),
-                base_color_texture: Some(plasma.clone()),
-                // Kept modest: ray tracing multiplies every emissive by EMISSIVE_SCALE, and a
-                // larger factor tonemaps the ball to a flat white.
-                emissive: LinearRgba::rgb(0.85, 0.18, 0.02),
-                emissive_texture: Some(plasma),
-                perceptual_roughness: 0.35,
+                base_color: Color::linear_rgb(4.5, 1.2, 0.1),
+                base_color_texture: Some(flames),
+                alpha_mode: AlphaMode::Add,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
                 ..default()
             })
         },
@@ -499,12 +507,44 @@ pub fn setup(
                 ..default()
             })
         },
+        // Opaque and emissive, so it's in the ray-traced scene and lights the room (white-hot:
+        // it tonemaps to white, with an orange rim from the shell and the glow).
         pellet_core: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.85, 0.55),
-            emissive: LinearRgba::rgb(2.4, 0.85, 0.12),
+            base_color: Color::srgb(1.0, 0.9, 0.7),
+            emissive: LinearRgba::rgb(400.0, 200.0, 60.0),
             perceptual_roughness: 0.2,
             ..default()
         }),
+        pellet_bubble: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(1.9, 1.9, 2.0),
+            base_color_texture: Some(images.add(bubble_rim())),
+            alpha_mode: AlphaMode::Add,
+            unlit: true,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
+        pellet_glow_hot: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(3.5, 1.3, 0.2),
+            base_color_texture: pellet_glow_tex.clone(),
+            alpha_mode: AlphaMode::Add,
+            unlit: true,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
+        pellet_glow: {
+            let glow = pellet_glow_tex.clone().unwrap();
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(0.35, 0.06, 0.004),
+                base_color_texture: Some(glow),
+                alpha_mode: AlphaMode::Add,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })
+        },
         blob_paint: paint.map(|p| materials.add(StandardMaterial { opaque_render_method: bevy::material::OpaqueRendererMethod::Forward, ..p })),
         // Opaque and glossy, so it's in the ray-traced scene and the chamber shows in it.
         goo: materials.add(match extracted.texture("goo") {
@@ -528,6 +568,7 @@ pub fn setup(
         glow: meshes.add(Cylinder::new(0.08, 1.0)),
         blob: meshes.add(Sphere::new(1.0).mesh().ico(1).unwrap()),
         pellet_mesh: meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap()),
+        glow_quad: meshes.add(Rectangle::new(1.0, 1.0)),
         scorch_mesh: meshes.add(Cylinder::new(0.22, 0.016).mesh().resolution(20)),
     };
     commands.insert_resource(mats);
@@ -538,6 +579,106 @@ pub fn setup(
 /// Swirling orange for the energy pellet's shell. It spins with the ball. The bands are broad
 /// and run through the red channel too: a texture that only varies green still tonemaps to a
 /// flat disc once the shell is bright enough to read as a pellet.
+/// A pellet's glow: hot in the middle, orange out to nothing at its edge, with a few faint
+/// rays (the flare round Portal with RTX's).
+fn pellet_glow() -> Image {
+    const N: u32 = 128;
+    let mut data = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / N as f32 * 2.0 - Vec2::ONE;
+            let d = p.length();
+            let soft = (1.0 - d).clamp(0.0, 1.0).powf(2.2);
+            let rays = (p.y.atan2(p.x) * 3.0).cos().abs().powf(24.0) * (1.0 - d).clamp(0.0, 1.0).powf(1.5) * 0.35;
+            let a = (soft + rays).min(1.0);
+            // (Whiter in the middle.)
+            let hot = (1.0 - d * 2.5).clamp(0.0, 1.0);
+            data.extend([255, (150.0 + 105.0 * hot) as u8, (60.0 + 195.0 * hot) as u8, (a * 255.0) as u8]);
+        }
+    }
+    image(N, data, false)
+}
+
+/// A pellet's bubble, seen edge on: clear in the middle (a faint film), a glassy rim, brightest
+/// and bluest up to one side as if catching the light, warmer down the other where the core
+/// lights it, with a little colour running round it as a soap film has.
+fn bubble_rim() -> Image {
+    const N: u32 = 256;
+    let mut data = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / N as f32 * 2.0 - Vec2::ONE;
+            let d = p.length();
+            // (The bubble's edge at 0.92 of the card: a thin bright rim, a softer one inside it.)
+            let rim = (-((d - 0.92) / 0.018).powi(2)).exp() + 0.12 * (-((d - 0.87) / 0.05).powi(2)).exp();
+            let film = if d < 0.92 { 0.012 + 0.08 * (d / 0.92).powi(8) } else { 0.0 };
+            // Up and to the left (the image's y runs down): where it catches the light.
+            let ang = (-p.y).atan2(p.x);
+            let lit = (ang - std::f32::consts::FRAC_PI_4 * 3.0).cos() * 0.5 + 0.5;
+            let a = (rim * (0.3 + 0.7 * lit) + film).min(1.0);
+            // Bluish white where it's lit, a film's colours running round, warm low down.
+            let hue = ang * 2.0;
+            let tint = Vec3::new(0.85 + 0.15 * hue.cos(), 0.9 + 0.1 * (hue + 2.1).cos(), 1.0);
+            let warm = Vec3::new(1.0, 0.62, 0.35);
+            let c = tint.lerp(warm, (1.0 - lit) * 0.6) * 255.0;
+            data.extend([c.x as u8, c.y as u8, c.z as u8, (a * 255.0) as u8]);
+        }
+    }
+    image(N, data, false)
+}
+
+/// A pellet's flames: wisps out from the middle, ragged, hottest in the middle.
+fn pellet_flames() -> Image {
+    const N: u32 = 128;
+    let mut data = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / N as f32 * 2.0 - Vec2::ONE;
+            let (d, a) = (p.length(), p.y.atan2(p.x));
+            // (How far out the flames reach, round about: tongues of different lengths.)
+            let reach = 0.45 + 0.18 * (a * 3.0 + 0.7).sin() + 0.12 * (a * 7.0 + 2.1).sin() + 0.08 * (a * 13.0).sin();
+            let body = (1.0 - d / reach.max(0.2)).clamp(0.0, 1.0).powf(1.8);
+            // (Streaks along them.)
+            let streaks = 0.45 + 0.55 * (a * 23.0 + d * 9.0).sin().max(0.0);
+            let alpha = (body * streaks).min(1.0);
+            let hot = (1.0 - d * 2.2).clamp(0.0, 1.0);
+            data.extend([255, (120.0 + 135.0 * hot) as u8, (30.0 + 160.0 * hot) as u8, (alpha * 255.0) as u8]);
+        }
+    }
+    image(N, data, false)
+}
+
+/// A pellet's ball (on an entity scaled to its radius): its bubble, the flames in it (turning
+/// slowly, either way), its core, and its glow: cards turned to the eye each frame
+/// ([`face_glows`]).
+pub fn pellet_ball(c: &mut ChildSpawnerCommands, m: &ChamberMats) {
+    c.spawn((PelletGlow(0.0), Mesh3d(m.glow_quad.clone()), MeshMaterial3d(m.pellet_bubble.clone()), Transform::from_scale(Vec3::splat(2.0 / 0.92)), NotShadowCaster));
+    c.spawn((PelletGlow(1.1), Mesh3d(m.glow_quad.clone()), MeshMaterial3d(m.pellet.clone()), Transform::from_scale(Vec3::splat(1.3)), NotShadowCaster));
+    c.spawn((PelletGlow(-1.7), Mesh3d(m.glow_quad.clone()), MeshMaterial3d(m.pellet.clone()), Transform::from_scale(Vec3::splat(0.95)), NotShadowCaster));
+    c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.16)), NotShadowCaster));
+    // (A small hot glow over the core's edge, and the wide orange one.)
+    c.spawn((PelletGlow(0.0), Mesh3d(m.glow_quad.clone()), MeshMaterial3d(m.pellet_glow_hot.clone()), Transform::from_scale(Vec3::splat(1.3)), NotShadowCaster));
+    c.spawn((PelletGlow(0.0), Mesh3d(m.glow_quad.clone()), MeshMaterial3d(m.pellet_glow.clone()), Transform::from_scale(Vec3::splat(2.6)), NotShadowCaster));
+}
+
+/// A pellet's card (its glow, bubble or flames), and how fast it turns as it faces the eye
+/// (radians a second).
+#[derive(Component)]
+pub struct PelletGlow(pub f32);
+
+/// Pellets' glows turned to face the eye.
+pub fn face_glows(game: Res<crate::Game>, camera: Query<&GlobalTransform, With<crate::PlayerCamera>>, balls: Query<&GlobalTransform, Without<PelletGlow>>, mut glows: Query<(&PelletGlow, &ChildOf, &mut Transform)>) {
+    let Ok(cam) = camera.single() else { return };
+    let eye = cam.translation();
+    for (card, parent, mut tf) in &mut glows {
+        let Ok(ball) = balls.get(parent.parent()) else { continue };
+        let (_, turn, at) = ball.to_scale_rotation_translation();
+        let to_eye = (eye - at).normalize_or(Vec3::Z);
+        let face = Transform::default().looking_to(-to_eye, cam.up()).rotation;
+        tf.rotation = turn.inverse() * face * Quat::from_rotation_z(card.0 * game.sim.time);
+    }
+}
+
 fn plasma() -> Image {
     const N: u32 = 128;
     let mut data = Vec::with_capacity((N * N * 4) as usize);
@@ -1104,11 +1245,9 @@ pub fn update(
             Vis::Pool,
             Transform::default(),
             Visibility::Hidden,
-            PointLight { intensity: 40_000.0, range: 7.0, radius: 0.15, color: Color::srgb(1.0, 0.42, 0.05), shadow_maps_enabled: false, ..default() },
+            PointLight { intensity: PELLET_LIGHT, range: 9.0, radius: 0.1, color: Color::srgb(1.0, 0.5, 0.15), shadow_maps_enabled: false, ..default() },
         )).id();
-        let shell = c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet.clone()), Transform::default(), NotShadowCaster)).id();
-        let core = c.spawn((Mesh3d(m.pellet_mesh.clone()), MeshMaterial3d(m.pellet_core.clone()), Transform::from_scale(Vec3::splat(0.42)), NotShadowCaster)).id();
-        c.entity(e).add_children(&[shell, core]);
+        c.entity(e).with_children(|b| pellet_ball(b, &*m));
         e
     });
 

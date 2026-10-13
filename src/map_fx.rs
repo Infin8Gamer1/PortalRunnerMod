@@ -1,5 +1,5 @@
 //! What's drawn of Portal's maps besides their faces and props (`source_map`): steam, sparks,
-//! particle systems other than the grills' (mist, the elevator shafts' beams, fire, dust drawn
+//! particle systems other than the grills' (the elevator shafts' beams, fire, dust drawn
 //! into a broken tube, neurotoxin), spotlights' beams, beams between two points, security
 //! cameras that turn to watch her (and fall when a portal's opened under them), and the logic's
 //! shakes and fades of the view.
@@ -28,9 +28,6 @@ enum Look {
     Steam { speed: f32, length: f32, start: f32, end: f32, rate: f32, color: Vec3, alpha: f32 },
     /// Bursts of sparks (env_spark), at most `delay` seconds apart.
     Sparks { magnitude: f32, delay: f32 },
-    /// Slow soft mist lying on the water over a region `w` by `d` (water_mist_*: its name's
-    /// two sizes, in units, are across the water; the mist itself is a low layer on it).
-    Mist { w: f32, d: f32 },
     /// A column of light motes rising (an elevator shaft's beam; GLaDOS's chamber's beams).
     Column { radius: f32, height: f32, color: Vec3 },
     /// Flames.
@@ -45,11 +42,6 @@ impl Look {
     /// The look of a particle system by its effect's name, if it's one that's drawn.
     fn of_effect(effect: &str) -> Option<Look> {
         let e = effect.to_ascii_lowercase();
-        if let Some(rest) = e.strip_prefix("water_mist_") {
-            let n: Vec<f32> = rest.split('_').filter_map(|x| x.parse().ok()).collect();
-            let w = n.first().copied().unwrap_or(256.0) * 0.0254;
-            return Some(Look::Mist { w, d: n.get(1).copied().map_or(w, |d| d * 0.0254) });
-        }
         Some(match e.as_str() {
             "elevator_beam" => Look::Column { radius: 0.7, height: 7.0, color: Vec3::new(0.75, 0.85, 1.0) },
             "glados_beam" => Look::Column { radius: 0.25, height: 12.0, color: Vec3::new(1.0, 0.9, 0.7) },
@@ -65,7 +57,6 @@ impl Look {
         match self {
             Look::Steam { speed, length, rate, .. } => (rate.clamp(1.0, 80.0), (length / speed.max(0.1)).clamp(0.1, 6.0)),
             Look::Sparks { .. } => (0.0, 0.6),
-            Look::Mist { w, d } => ((w * d * 0.2).clamp(4.0, 60.0), 10.0),
             Look::Column { height, .. } => ((height * 3.0).clamp(4.0, 40.0), 5.0),
             Look::Fire { size } => (40.0 * size, 0.8),
             Look::Suck { .. } => (40.0, 1.2),
@@ -73,15 +64,15 @@ impl Look {
         }
     }
 
-    /// Blended over what's behind (smoke, mist), else adding light (sparks, fire, motes).
+    /// Blended over what's behind (smoke, steam), else adding light (sparks, fire, motes).
     fn blended(self) -> bool {
-        matches!(self, Look::Steam { .. } | Look::Mist { .. } | Look::Suck { .. } | Look::Haze { .. })
+        matches!(self, Look::Steam { .. } | Look::Suck { .. } | Look::Haze { .. })
     }
 }
 
 /// The particle effects drawn (`info_particle_system`'s effect_name: the editor offers these;
 /// a grill's are drawn as the grill).
-pub const EFFECTS: [&str; 12] = ["water_mist_256", "water_mist_512", "water_mist_384_128", "water_mist_512_128", "water_mist_1024_512", "elevator_beam", "glados_beam", "broken_tube_suck", "fire_large_02", "fire_incinerator_door", "neurotoxins_step1", "neurotoxins_step3"];
+pub const EFFECTS: [&str; 7] = ["elevator_beam", "glados_beam", "broken_tube_suck", "fire_large_02", "fire_incinerator_door", "neurotoxins_step1", "neurotoxins_step3"];
 
 /// A particle system where the map has it.
 #[derive(Component)]
@@ -331,10 +322,6 @@ struct Particle {
     size: f32,
     color: Vec4,
     streak: Option<Vec3>,
-    /// How tall it is for how wide (a wisp of mist lies flat).
-    tall: f32,
-    /// Faded out as the eye comes into it (a big soft puff, seen from inside, is a blot).
-    near_fade: bool,
 }
 
 /// A system's live particles at time `t`.
@@ -364,7 +351,7 @@ fn particles(fx: &Fx, t: f32) -> Vec<Particle> {
                 let at = fx.at + v * age + g * 0.5 * age * age;
                 let vel = v + g * age;
                 let f = 1.0 - age / life;
-                out.push(Particle { at, size: 0.025, color: Vec4::new(1.0, 0.7 + 0.3 * f, 0.3 * f, f) * 3.0, streak: Some(vel * 0.03), tall: 1.0, near_fade: false });
+                out.push(Particle { at, size: 0.025, color: Vec4::new(1.0, 0.7 + 0.3 * f, 0.3 * f, f) * 3.0, streak: Some(vel * 0.03) });
             }
         }
         return out;
@@ -384,22 +371,19 @@ fn particles(fx: &Fx, t: f32) -> Vec<Particle> {
         let p = match fx.look {
             Look::Steam { speed, start, end, color, alpha, .. } => {
                 let spread = speed * 0.25 * age;
-                Particle { at: fx.at + fwd * speed * age + (a * u + b * v) * spread, size: start + (end - start) * f, color: Vec4::new(color.x, color.y, color.z, alpha * 0.45 * fade * (1.0 - f)), streak: None, tall: 1.0, near_fade: false }
+                Particle { at: fx.at + fwd * speed * age + (a * u + b * v) * spread, size: start + (end - start) * f, color: Vec4::new(color.x, color.y, color.z, alpha * 0.45 * fade * (1.0 - f)), streak: None }
             }
-            // (Wide, flat and faint, drifting just over the surface: together they're a haze
-            // lying on the water, not puffs in the air.)
-            Look::Mist { w: wd, d } => Particle { at: fx.at + Vec3::new(u * wd, 0.25 + 0.45 * w + 0.15 * f, v * d) + Vec3::new(0.12, 0.0, 0.08) * age, size: 5.0 + 3.0 * f, color: Vec4::new(0.9, 0.95, 0.9, 0.022 * fade), streak: None, tall: 0.25, near_fade: true },
             Look::Column { radius, height, color } => {
                 let ang = u * std::f32::consts::TAU + age * 0.3;
-                Particle { at: fx.at + Vec3::new(ang.cos(), 0.0, ang.sin()) * radius * (0.3 + 0.7 * w) + Vec3::Y * (v + 0.5 + f * 0.3) * height, size: 0.05, color: Vec4::new(color.x, color.y, color.z, 1.0) * 0.6 * fade, streak: None, tall: 1.0, near_fade: false }
+                Particle { at: fx.at + Vec3::new(ang.cos(), 0.0, ang.sin()) * radius * (0.3 + 0.7 * w) + Vec3::Y * (v + 0.5 + f * 0.3) * height, size: 0.05, color: Vec4::new(color.x, color.y, color.z, 1.0) * 0.6 * fade, streak: None }
             }
-            Look::Fire { size } => Particle { at: fx.at + (a * u + b * v) * size * 0.5 + Vec3::Y * size * 1.5 * f, size: size * (0.6 - 0.45 * f), color: Vec4::new(1.0, 0.55 - 0.3 * f, 0.15, 1.0) * 1.5 * fade, streak: None, tall: 1.0, near_fade: false },
+            Look::Fire { size } => Particle { at: fx.at + (a * u + b * v) * size * 0.5 + Vec3::Y * size * 1.5 * f, size: size * (0.6 - 0.45 * f), color: Vec4::new(1.0, 0.55 - 0.3 * f, 0.15, 1.0) * 1.5 * fade, streak: None },
             Look::Suck { radius } => {
                 let ang = u * std::f32::consts::TAU + f * 2.0;
                 let d = radius * (1.0 - f);
-                Particle { at: fx.at + Vec3::new(ang.cos() * d, v * radius * (1.0 - f), ang.sin() * d), size: 0.08, color: Vec4::new(0.8, 0.8, 0.75, 0.5 * fade), streak: None, tall: 1.0, near_fade: false }
+                Particle { at: fx.at + Vec3::new(ang.cos() * d, v * radius * (1.0 - f), ang.sin() * d), size: 0.08, color: Vec4::new(0.8, 0.8, 0.75, 0.5 * fade), streak: None }
             }
-            Look::Haze { radius, color } => Particle { at: fx.at + Vec3::new(u, v * 0.3, w - 0.5) * radius * 2.0 + Vec3::Y * f * 0.5, size: 2.5 + 2.0 * f, color: Vec4::new(color.x, color.y, color.z, 0.12 * fade), streak: None, tall: 1.0, near_fade: false },
+            Look::Haze { radius, color } => Particle { at: fx.at + Vec3::new(u, v * 0.3, w - 0.5) * radius * 2.0 + Vec3::Y * f * 0.5, size: 2.5 + 2.0 * f, color: Vec4::new(color.x, color.y, color.z, 0.12 * fade), streak: None },
             Look::Sparks { .. } => continue,
         };
         out.push(p);
@@ -427,18 +411,13 @@ pub fn update(game: Res<Game>, camera: Query<&GlobalTransform, With<PlayerCamera
         let parts = particles(f, t);
         let (mut pos, mut nrm, mut uv, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let n = -cam.forward().as_vec3();
-        let eye = cam.translation();
-        for mut p in parts {
+        for p in parts {
             let base = pos.len() as u32;
             let c = p.at + shift;
-            if p.near_fade {
-                let d = c.distance(eye) / p.size.max(0.1);
-                p.color.w *= ((d - 0.3) / 0.9).clamp(0.0, 1.0);
-            }
             let (x, y) = match p.streak {
                 // (A streak along its way, thin across it.)
                 Some(s) => (s.cross(n).normalize_or(right) * p.size, s * 0.5 + s.normalize_or(up) * p.size),
-                None => (right * p.size * 0.5, up * p.size * 0.5 * p.tall),
+                None => (right * p.size * 0.5, up * p.size * 0.5),
             };
             for (k, q) in [c - x - y, c + x - y, c + x + y, c - x + y].into_iter().enumerate() {
                 pos.push(q.to_array());
@@ -653,7 +632,8 @@ mod tests {
 
     #[test]
     fn effects_by_name() {
-        assert_eq!(Look::of_effect("water_mist_1024_512"), Some(Look::Mist { w: 1024.0 * 0.0254, d: 512.0 * 0.0254 }));
+        // (Portal's water mist isn't drawn: as in Portal with RTX, the goo's clear.)
+        assert_eq!(Look::of_effect("water_mist_1024_512"), None);
         assert!(matches!(Look::of_effect("elevator_beam"), Some(Look::Column { .. })));
         assert!(matches!(Look::of_effect("fire_large_02"), Some(Look::Fire { .. })));
         assert_eq!(Look::of_effect("finale_fx"), None);
