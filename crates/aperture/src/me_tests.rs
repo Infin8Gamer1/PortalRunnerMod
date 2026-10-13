@@ -75,24 +75,28 @@ fn training_ladders_climb() {
     let ladders: Vec<_> = l.fixtures.iter().filter_map(|f| if let Fixture::Ladder(x) = f { Some(*x) } else { None }).collect();
     assert_eq!(ladders.len(), 4);
     for x in ladders {
-        // From a couple of metres out, walking at it.
-        let at = x.base + x.normal * 1.5;
+        // From a few metres out on the floor in front of it, running at it.
+        let at = x.base + x.normal * 3.0;
         let mut r = Run::new(l.clone(), at, yaw_to(-x.normal));
         r.run(1.0, |_| Input::default());
         let ground = r.c.feet.y;
-        // (A ladder that starts high up a wall, reached by climbing the wall: ours are only
-        // got onto from their foot, so far.)
-        if x.base.y - ground > 1.0 {
-            eprintln!("ladder at {}: starts {:.1} m up the wall: not tried", x.base, x.base.y - ground);
-            continue;
+        // One that starts high up a wall (#102) is reached from the air: she's dropped in front
+        // of its lowest step, as if she'd jumped to it, and catches it.
+        let high = x.base.y - ground > 1.0;
+        if high {
+            r = Run::new(l.clone(), x.base + x.normal * 0.6, yaw_to(-x.normal));
+            r.c.state = State::Air;
         }
         let mut climbed = false;
         let top = x.top;
-        r.run(4.0 + (x.top - x.base.y) * 1.2, |c| {
+        r.run(4.0 + (x.top - ground) * 1.2, |c| {
             climbed |= matches!(c.state, State::Climb { .. } | State::IntoClimb { .. });
-            if climbed && c.state == State::Ground && c.feet.y > top - 0.3 { Input::default() } else { forward() }
+            if climbed && c.state == State::Ground && c.feet.y > top - 0.3 {
+                return Input::default();
+            }
+            forward()
         });
-        assert!(climbed, "ladder at {}: not climbed (stood at {ground}, ended {:?} {:?})", x.base, r.c.feet, r.c.state);
+        assert!(climbed, "ladder at {} ({}): not climbed (stood at {ground}, ended {:?} {:?})", x.base, if high { "up the wall" } else { "on the floor" }, r.c.feet, r.c.state);
         // Up and out onto the top, where it lets her out.
         if x.exit {
             assert!(r.c.state == State::Ground && (r.c.feet.y - x.top).abs() < 0.3, "ladder at {}: not out on top ({}): {:?} {:?}", x.base, x.top, r.c.feet, r.c.state);

@@ -2223,6 +2223,10 @@ impl Controller {
     }
 
     fn wallclimb(&mut self, dt: f32, n: Vec3, t: f32, input: &Input, world: &dyn World) {
+        // A ladder or drainpipe up the wall, in reach: onto it.
+        if self.try_into_climb(input, world) {
+            return;
+        }
         let tu = self.tuning.clone();
         let t = t + dt;
         let body = self.body();

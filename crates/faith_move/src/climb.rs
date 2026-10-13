@@ -6,7 +6,10 @@
 //!   last is the one the exit clip climbs out of onto `top` (its root rises 95 uu off a ladder,
 //!   57 off a pipe, which carries on above the roof).
 //! - **Getting on** (TdLadderVolume.PawnUpdate, TdMove_IntoClimb.CanDoMove): touching it, not
-//!   pushing down, and pushing up if walking. Above the top step, a ladder (not a pipe) facing out
+//!   pushing down, and pushing up if walking. Off the ground (jumping, falling, wallrunning or
+//!   wallclimbing), it's caught once any of her is in it: a ladder that starts high up a wall
+//!   is reached by climbing the wall (or jumping) till her head's up to its lowest step, and she
+//!   catches hold (`...HangStart`) and is pulled up onto it. Above the top step, a ladder (not a pipe) facing out
 //!   from it (dot < -0.85): over the top, `LadderEnterTop` (root motion) round onto it. Otherwise
 //!   in front of it facing it (dot > -0.1): onto the closest step at max(2D distance, 30) / 0.15
 //!   uu/s, turning to it, with the start clip by how she came (PlayStartAnimation): off a wallrun
@@ -104,12 +107,27 @@ impl Ladder {
         out
     }
 
-    /// Is her cylinder (feet `feet`, radius `r`) in the volume?
+    /// Is her cylinder (feet `feet`, radius `r`) in the volume, standing (her feet above its
+    /// foot)?
     pub fn touches(&self, feet: Vec3, r: f32) -> bool {
+        self.beside(feet, r) && feet.y > self.base.y - 0.1 && feet.y < self.top + 2.0
+    }
+
+    /// Off the ground (jumping, falling, up a wall), is any of her cylinder (`height` tall) in
+    /// the volume? It starts at the lowest step: a ladder that starts high up a wall is caught
+    /// once her head's up to it (TdLadderVolume.PawnUpdate: the pawn touching the volume).
+    pub fn reaches(&self, feet: Vec3, r: f32, height: f32) -> bool {
+        let (_, z) = self.offsets();
+        let lowest = self.base.y + HALF + z;
+        self.beside(feet, r) && feet.y + height > lowest - 0.1 && feet.y < self.top + 2.0
+    }
+
+    /// Is she in front of it (or over its top), not off to the side?
+    fn beside(&self, feet: Vec3, r: f32) -> bool {
         let d = feet - self.base;
         let out = d.dot(self.normal);
         let along = d.dot(Vec3::Y.cross(self.normal));
-        out > -1.0 - r && out < uu(80.0) + r && along.abs() < uu(50.0) + r && feet.y > self.base.y - 0.1 && feet.y < self.top + 2.0
+        out > -1.0 - r && out < uu(80.0) + r && along.abs() < uu(50.0) + r
     }
 }
 
@@ -233,8 +251,9 @@ impl Controller {
             return false;
         }
         let r = self.tuning.half_width;
+        let h = self.tuning.stand_height;
         let Some(l) = world.fixtures().iter().find_map(|f| match *f {
-            crate::world::Fixture::Ladder(l) if l.touches(self.feet, r) => Some(l),
+            crate::world::Fixture::Ladder(l) if if walking { l.touches(self.feet, r) } else { l.reaches(self.feet, r, h) } => Some(l),
             _ => None,
         }) else {
             return false;
@@ -265,6 +284,8 @@ impl Controller {
             State::WallRun { normal, .. } => {
                 if normal.dot(crate::controller::right(self.yaw)) > 0.0 { ClimbStart::HangLeft } else { ClimbStart::HangRight }
             }
+            // Up a wall to it: catching hold, as from a fall.
+            State::WallClimb { .. } | State::WallClimbTurned { .. } => ClimbStart::Hang,
             _ if vy < -uu(800.0) => ClimbStart::HangHard,
             _ if vy < -uu(200.0) => ClimbStart::Hang,
             _ if l.pipe => ClimbStart::PipeStart,

@@ -1656,6 +1656,72 @@ fn onto_a_ladder_from_the_top() {
     assert!(matches!(c.state, State::Climb { .. }), "{:?} {:?}", c.state, c.feet);
 }
 
+/// A wall 6 m high at z = -6 with a ladder (or drainpipe) that starts up it (#102): the lowest
+/// step her middle goes to is `lowest` up.
+fn high_ladder_wall(pipe: bool, lowest: f32) -> BoxWorld {
+    let mut w = floor();
+    w.add(Aabb::new(Vec3::new(-5.0, 0.0, -9.0), Vec3::new(5.0, 6.0, -6.0)));
+    let foot = if pipe { lowest - 0.9 + 0.05 } else { lowest - 0.9 };
+    w.fixtures.push(Fixture::Ladder(Ladder { base: Vec3::new(0.0, foot, -6.0), top: 6.0, normal: Vec3::Z, pipe, exit: true }));
+    w
+}
+
+/// Up the wall to a ladder that starts high on it, out of a jump's reach: wallclimbing, she
+/// catches hold of it and climbs on up and over the top (#102).
+#[test]
+fn wallclimb_onto_a_ladder_high_up_the_wall() {
+    for pipe in [false, true] {
+        let w = high_ladder_wall(pipe, 3.3);
+        let mut c = ctrl_at(Vec3::ZERO);
+        let mut climbed_wall = false;
+        let ev = run(&mut c, &w, 12.0, |_, c| {
+            climbed_wall |= matches!(c.state, State::WallClimb { .. });
+            if c.feet.y > 5.9 && c.state == State::Ground {
+                return Input::default();
+            }
+            Input { jump_pressed: c.feet.z < -4.6 && c.feet.z > -5.2 && c.state == State::Ground, ..fwd() }
+        });
+        assert!(climbed_wall, "pipe {pipe}: never wallclimbed: {ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { start: ClimbStart::Hang, .. })), "pipe {pipe}: didn't catch it off the wall: {ev:?} {:?} {:?}", c.feet, c.state);
+        assert!(has(&ev, Event::ClimbExit) && (c.feet.y - 6.0).abs() < 0.05 && c.state == State::Ground, "pipe {pipe}: not over the top: {:?} {:?}", c.feet, c.state);
+    }
+}
+
+/// Falling past a ladder that starts high up a wall, facing it, she catches it (#102).
+#[test]
+fn falling_onto_a_ladder() {
+    let w = high_ladder_wall(false, 2.5);
+    let mut c = ctrl_at(Vec3::new(0.0, 5.0, -5.4));
+    c.state = State::Air;
+    let ev = run(&mut c, &w, 2.0, |_, c| if matches!(c.state, State::Climb { .. }) { Input::default() } else { fwd() });
+    assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { start: ClimbStart::Hang | ClimbStart::HangHard | ClimbStart::None, .. })), "{ev:?} {:?}", c.state);
+    assert!(matches!(c.state, State::Climb { .. }), "{:?} {:?}", c.state, c.feet);
+}
+
+/// Jumping up to one a little over her head, she catches it (#102).
+#[test]
+fn jumping_onto_a_ladder_above_her() {
+    let w = high_ladder_wall(false, 2.5);
+    let mut c = ctrl_at(Vec3::new(0.0, 0.0, -4.0));
+    let mut jumped = false;
+    let ev = run(&mut c, &w, 3.0, |_, c| {
+        let jump = !jumped && c.feet.z < -4.8;
+        jumped |= jump;
+        if matches!(c.state, State::Climb { .. }) { Input::default() } else { Input { jump_pressed: jump, ..fwd() } }
+    });
+    assert!(ev.iter().any(|e| matches!(e, Event::ClimbStart { .. })), "{ev:?} {:?}", c.state);
+    assert!(matches!(c.state, State::Climb { .. }), "{:?} {:?}", c.state, c.feet);
+}
+
+/// But walking up to one, it's out of reach: she doesn't jump to it on her own.
+#[test]
+fn a_high_ladder_is_out_of_reach_from_the_floor() {
+    let w = high_ladder_wall(false, 2.5);
+    let mut c = ctrl_at(Vec3::new(0.0, 0.0, -3.0));
+    let ev = run(&mut c, &w, 3.0, |_, _| fwd());
+    assert!(!ev.iter().any(|e| matches!(e, Event::ClimbStart { .. })), "{ev:?}");
+}
+
 /// The training course's pair of swing bars: jump up to the first, swing, and across to the next.
 #[test]
 fn training_swing_bars_carry_across() {
