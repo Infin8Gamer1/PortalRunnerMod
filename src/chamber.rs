@@ -970,7 +970,8 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             }
         }
     }
-    if let Some(x) = l.exit {
+    // (A course's finish is shown by its beacon, as its checkpoints are: no box.)
+    if let Some(x) = l.exit.filter(|_| !l.course) {
         let e = geom(commands, meshes.add(box_mesh(&x)), m.exit.clone(), Transform::default());
         commands.entity(e).insert(NotShadowCaster);
     }

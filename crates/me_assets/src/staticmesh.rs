@@ -65,6 +65,10 @@ fn half(bits: u16) -> f32 {
 
 impl StaticMesh {
     pub fn read(pkg: &Package, name: &str) -> Result<Self> {
+        // (A level's BSP is read as one of its meshes.)
+        if name == crate::bsp::BSP {
+            return crate::bsp::Bsp::read(pkg).map(|b| b.mesh(pkg));
+        }
         let e = pkg.find("StaticMesh", name).ok_or_else(|| Error::Missing(format!("StaticMesh {name}")))?;
         let props = Props::read(pkg, e)?;
         // Which UV set is the lightmap's: 0 unless the mesh says otherwise (in this version of

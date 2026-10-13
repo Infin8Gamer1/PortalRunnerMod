@@ -1283,6 +1283,36 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("editorpick_01_selected"),
             ]
         }
+        // A tour of a Mirror's Edge level (PORTAL_ME_LEVEL, a time trial's best: its course):
+        // from its start and each checkpoint, a look along the way to the next, from a little
+        // above and behind (`tour_00`, ...).
+        "metour" => {
+            let file = std::env::var("PORTAL_ME_LEVEL").unwrap_or_else(|_| "tt_tutorial_a01".into());
+            let path = crate::editor::levels_dir().join("me").join(format!("{file}.ron"));
+            let doc = std::fs::read_to_string(&path).ok().and_then(|t| aperture::doc::LevelDoc::from_ron(&t).ok());
+            let points: Vec<Vec3> = doc
+                .map(|d| {
+                    d.objects
+                        .iter()
+                        .filter_map(|o| match o.kind {
+                            aperture::doc::Kind::Spawn { .. } => Some(o.at),
+                            aperture::doc::Kind::Checkpoint { .. } | aperture::doc::Kind::Exit => Some(o.at - Vec3::Y * o.size.y * 0.5),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let file: &'static str = Box::leak(file.into_boxed_str());
+            let mut v = vec![Chamber(crate::LevelGroup::MirrorsEdge, file), Wait(120)];
+            for (k, w) in points.windows(2).enumerate() {
+                let d = Vec3::new(w[1].x - w[0].x, 0.0, w[1].z - w[0].z).normalize_or(Vec3::NEG_Z);
+                let eye = w[0] - d * 4.0 + Vec3::Y * 3.5;
+                let yaw = (-d.x).atan2(-d.z).to_degrees();
+                let name: &'static str = Box::leak(format!("tour_{k:02}").into_boxed_str());
+                v.extend([Spectate(eye, yaw, -12.0), Wait(45), Shot(name)]);
+            }
+            v
+        }
         // A Mirror's Edge level in the editor (#100): opened, a prop in front of the camera
         // lifted a metre, then played.
         "meedit" => vec![

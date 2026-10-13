@@ -12,6 +12,9 @@
 //! [`PLAYER_LAYER`] (the player camera only: through a portal she'd be a headless pair of
 //! legs), and the portal surfaces each camera may see are [`SURFACE_LAYER`] + its level.
 
+/// How far the cameras see: Mirror's Edge's skylines are kilometres off.
+pub const FAR: f32 = 40_000.0;
+
 use bevy::asset::{load_internal_asset, uuid_handle, RenderAssetUsages};
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{CameraProjection, RenderTarget, SubCameraView};
@@ -110,7 +113,7 @@ impl Default for ObliqueProjection {
 
 impl ObliqueProjection {
     fn base(&self) -> PerspectiveProjection {
-        PerspectiveProjection { fov: self.fov, aspect_ratio: self.aspect, near: self.near, far: 1000.0, ..default() }
+        PerspectiveProjection { fov: self.fov, aspect_ratio: self.aspect, near: self.near, far: FAR, ..default() }
     }
 }
 
@@ -421,7 +424,7 @@ pub fn update(
         Projection::Perspective(p) => (p.fov, p.aspect_ratio, p.near),
         _ => (1.0, 16.0 / 9.0, 0.01),
     };
-    let base = PerspectiveProjection { fov, aspect_ratio: aspect, near, far: 1000.0, ..default() };
+    let base = PerspectiveProjection { fov, aspect_ratio: aspect, near, far: FAR, ..default() };
     let clip_of = |tf: &Transform| base.get_clip_from_view() * tf.to_matrix().inverse();
     let linked = sim.linked();
     let depth = render.depth.clamp(1, MAX_DEPTH);
