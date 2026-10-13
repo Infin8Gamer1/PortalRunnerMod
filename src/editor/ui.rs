@@ -1389,7 +1389,7 @@ fn prop_fields(ui: &mut egui::Ui, scale: &mut Vec3, bounds: &Option<(Vec3, Vec3)
 fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
     let mut pick = false;
     match kind {
-        Kind::Block { mat } | Kind::Decor { mat } => {
+        Kind::Block { mat } | Kind::Decor { mat } | Kind::Hull { mat, .. } => {
             ui.label("Material");
             combo(ui, "mat", mat, &MATS);
             ui.end_row();

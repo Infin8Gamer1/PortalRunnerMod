@@ -56,6 +56,9 @@ pub struct MeLooks {
 #[derive(Resource, Default)]
 pub struct MePropCache {
     meshes: HashMap<(&'static str, &'static str), Option<Parts>>,
+    /// The same, wound the other way round, for where a level mirrors a mesh (scales it by
+    /// a negative amount an odd number of times): mirrored, its faces would face inwards.
+    mirrored: HashMap<(&'static str, &'static str), Parts>,
     /// Each mesh's box (ours, from its origin), once it's been read.
     bounds: HashMap<(&'static str, &'static str), (Vec3, Vec3)>,
     /// What each mesh's materials found (`package.mesh`), once it's been read.
@@ -199,6 +202,32 @@ pub fn parts_and_bounds(
     Some((parts, *cache.bounds.get(&key)?))
 }
 
+/// A mesh's parts wound the other way round (its tangents' handedness too).
+fn mirrored(key: (&'static str, &'static str), parts: &Parts, cache: &mut MePropCache, meshes: &mut Assets<Mesh>) -> Parts {
+    if let Some(p) = cache.mirrored.get(&key) {
+        return p.clone();
+    }
+    let flipped: Parts = parts
+        .iter()
+        .map(|(m, mat)| {
+            let Some(mut mesh) = meshes.get(m).cloned() else { return (m.clone(), mat.clone()) };
+            if let Some(Indices::U32(ix)) = mesh.indices_mut() {
+                for t in ix.chunks_exact_mut(3) {
+                    t.swap(1, 2);
+                }
+            }
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x4(ts)) = mesh.attribute_mut(Mesh::ATTRIBUTE_TANGENT) {
+                for t in ts.iter_mut() {
+                    t[3] = -t[3];
+                }
+            }
+            (meshes.add(mesh), mat.clone())
+        })
+        .collect();
+    cache.mirrored.insert(key, flipped.clone());
+    flipped
+}
+
 fn place(commands: &mut Commands, parts: &Parts, tf: Transform) {
     commands.spawn((ChamberGeom, crate::chamber::PlacedAt(tf.translation), tf, Visibility::default())).with_children(|c| {
         for (m, mat) in parts {
@@ -226,18 +255,19 @@ pub fn spawn_for_level(
         cache.drawn = vec![false; level.me_props.len()];
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get((p.package, p.mesh), cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
+                let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
                 place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale));
                 cache.drawn[k] = true;
             }
         }
         // Ziplines and swing poles: round steel, the ladder's.
-        cache.lines = false;
+        cache.lines = level.me_art;
         let lines: Vec<(Vec3, Vec3, f32)> = level
             .fixtures
             .iter()
             .filter_map(|f| match *f {
                 Fixture::ZipLine { a, b } => Some((a, b, CABLE_RADIUS)),
-                Fixture::SwingPole { a, b } => Some((a, b, PIPE_RADIUS)),
+                Fixture::SwingPole { a, b } if !level.me_art => Some((a, b, PIPE_RADIUS)),
                 _ => None,
             })
             .collect();
@@ -252,8 +282,9 @@ pub fn spawn_for_level(
             }
         }
         // The steel ladder, a piece at a time, up each ladder (drainpipes keep their pipe).
-        cache.ladders = false;
-        let ladders: Vec<_> = level.fixtures.iter().filter_map(|f| if let Fixture::Ladder(l) = f { Some(*l) } else { None }).filter(|l| !l.pipe).collect();
+        // (A Mirror's Edge level's ladders are its own.)
+        cache.ladders = level.me_art;
+        let ladders: Vec<_> = level.fixtures.iter().filter_map(|f| if let Fixture::Ladder(l) = f { Some(*l) } else { None }).filter(|l| !l.pipe && !level.me_art).collect();
         if !ladders.is_empty() {
             if let Some(parts) = get(LADDER, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 cache.ladders = true;

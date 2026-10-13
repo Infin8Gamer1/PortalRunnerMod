@@ -111,6 +111,28 @@ converter's improved) but keeps one that's been changed (`levels/portal/written.
 as it was written); delete it to have it made again. A chamber's level change leads to the next
 map's.
 
+### Mirror's Edge's levels
+
+`portal_extract -- --port-me` makes Mirror's Edge's maps into level files (`levels/me/`), read
+from your install: the map and the sublevels it streams in. They're in the Chambers menu's
+**Mirror's Edge levels** folder, and open in the editor as any level file does (so far the
+Training map and its three time trials):
+
+- Its meshes are **Mirror's Edge props**, standing, turned and scaled as the map has them (one
+  mirrored is drawn wound the other way round), drawn from the install.
+- What each mesh collides with is kept in the file, once per mesh (`me_shapes`): its convex
+  hulls, or for a mesh that has none, its triangles. A placed mesh collides with its shapes
+  wherever it's moved (and isn't drawn as boxes). Meshes that only have triangles (the city's
+  buildings) collide only within 40 m of where she can go; the sky, the sun's flare and the
+  effects' meshes (light shafts) are left out.
+- Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
+  them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
+  ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
+  of what it is).
+- Its sun is its brightest directional light; she starts at its start.
+
+As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
+
 What the browser offers is the list in `src/editor/catalog.rs`: a name, a category, how it sits
 on what it's dropped on, a default size, and the object it makes. Adding a kind of thing the
 level format doesn't have yet means a new `Kind` in `aperture::doc` (and how it builds into a

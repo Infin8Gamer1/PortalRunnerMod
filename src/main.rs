@@ -269,6 +269,8 @@ pub enum LevelGroup {
     /// Portal's maps: the game's own copies of them (level files in `levels/portal/`), to play
     /// and to edit.
     Portal,
+    /// Mirror's Edge's maps: the game's own copies of them (level files in `levels/me/`).
+    MirrorsEdge,
     /// The game's own chambers and the level files made in the editor.
     Testing,
     /// The editor's own level (not in the menu).
@@ -276,11 +278,12 @@ pub enum LevelGroup {
 }
 
 impl LevelGroup {
-    pub const MENU: [LevelGroup; 2] = [LevelGroup::Portal, LevelGroup::Testing];
+    pub const MENU: [LevelGroup; 3] = [LevelGroup::Portal, LevelGroup::MirrorsEdge, LevelGroup::Testing];
 
     pub fn name(self) -> &'static str {
         match self {
             LevelGroup::Portal => "Portal 1 chambers",
+            LevelGroup::MirrorsEdge => "Mirror's Edge levels",
             LevelGroup::Testing => "Testing chambers",
             LevelGroup::Editor => "Editor",
         }
@@ -290,6 +293,7 @@ impl LevelGroup {
     pub fn about(self) -> &'static str {
         match self {
             LevelGroup::Portal => "Portal's chambers: open them in the editor to change them",
+            LevelGroup::MirrorsEdge => "Mirror's Edge's levels: open them in the editor to change them",
             LevelGroup::Testing => "The game's own chambers and the levels made in the editor",
             LevelGroup::Editor => "",
         }

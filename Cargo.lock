@@ -4797,6 +4797,7 @@ dependencies = [
  "half",
  "image",
  "lzma-rs",
+ "me_assets",
  "openusd",
  "serde_json",
  "texture2ddecoder",

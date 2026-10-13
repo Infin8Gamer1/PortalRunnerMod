@@ -7,7 +7,7 @@
 //! sections · vertex stream (positions) · UV stream (packed tangent and normal, a colour,
 //! UV sets as floats or halves, one of them the lightmap's) · shadow-volume stream · vertex count · indices.
 
-use crate::package::{Cursor, Package};
+use crate::package::{Cursor, Export, Package};
 use crate::props::Props;
 use crate::{Error, Result};
 
@@ -179,6 +179,62 @@ impl StaticMesh {
             }
         }
         Ok(StaticMesh { name: name.to_string(), positions, normals, tangents, uvs, indices, sections, origin, extent })
+    }
+
+    /// The triangles it collides with when it has no simple shapes (its kDOP tree's), in its
+    /// own space.
+    pub fn collision_tris(pkg: &Package, e: &Export) -> Result<Vec<[[f32; 3]; 3]>> {
+        let props = Props::read(pkg, e)?;
+        let mut c = Cursor::new(&pkg.data, props.end);
+        c.skip(12 + 12 + 4 + 4)?; // bounds, body setup
+        bulk(&mut c)?; // kDOP nodes
+        let (tsize, ntri, tat) = bulk(&mut c)?;
+        if ntri == 0 {
+            return Ok(vec![]);
+        }
+        if tsize != 8 {
+            return Err(Error::Format(format!("kDOP triangle size {tsize}")));
+        }
+        let internal_version = c.i32()?;
+        if internal_version >= 17 {
+            let n = c.count(8)?;
+            c.skip(n * 8)?;
+        }
+        if c.count(1)? == 0 {
+            return Err(Error::Format("mesh has no LODs".into()));
+        }
+        let flags = c.u32()?;
+        let _count = c.i32()?;
+        let size_on_disk = c.i32()?;
+        let _offset = c.i32()?;
+        if flags & 1 == 0 && size_on_disk > 0 {
+            c.skip(size_on_disk as usize)?;
+        }
+        let nsec = c.count(36)?;
+        for _ in 0..nsec {
+            c.skip(36)?;
+            let n = c.count(8)?;
+            c.skip(n * 8)?;
+        }
+        let _vertex_size = c.i32()?;
+        let _num_verts = c.i32()?;
+        let (vsize, nverts, vat) = bulk(&mut c)?;
+        if vsize != 12 {
+            return Err(Error::Format(format!("vertex size {vsize}")));
+        }
+        let vert = |i: u16| -> Result<[f32; 3]> {
+            if i as usize >= nverts {
+                return Err(Error::Format("kDOP triangle past the vertices".into()));
+            }
+            Cursor::new(&pkg.data, vat + 12 * i as usize).vec3()
+        };
+        let u16_at = |at: usize| u16::from_le_bytes([pkg.data[at], pkg.data[at + 1]]);
+        (0..ntri)
+            .map(|i| {
+                let at = tat + 8 * i;
+                Ok([vert(u16_at(at))?, vert(u16_at(at + 2))?, vert(u16_at(at + 4))?])
+            })
+            .collect()
     }
 
     /// Every StaticMesh in a package, by name.

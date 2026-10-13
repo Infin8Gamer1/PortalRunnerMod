@@ -15,6 +15,7 @@ mod anim;
 mod bsp;
 mod glb;
 mod maps;
+mod me_port;
 mod remix;
 mod scenes;
 mod sounds;
@@ -414,6 +415,17 @@ const ANIMATIONS: &[(&str, &[(&str, &str)])] = &[
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = arg(&args, "--out").unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/extracted"));
+    // Mirror's Edge's maps as the game's own levels (`levels/me/`), and nothing else:
+    // `--port-me [map]`.
+    if let Some(i) = args.iter().position(|a| a == "--port-me") {
+        let Some(cooked) = me_port::find_cooked(arg(&args, "--me"), &steam_dirs()) else {
+            eprintln!("Mirror's Edge not found (pass --me <dir>, or set FAITH_ME_DIR)");
+            std::process::exit(1);
+        };
+        let only = args.get(i + 1).filter(|a| !a.starts_with("--"));
+        me_port::port_all(&cooked, only.map(|s| s.as_str()));
+        return;
+    }
     let find = |flag: &str, folder: &str| -> Option<PathBuf> {
         arg(&args, flag).or_else(|| steam_dirs().into_iter().map(|d| d.join(folder)).find(|p| p.is_dir()))
     };

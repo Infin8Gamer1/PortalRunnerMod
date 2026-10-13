@@ -565,6 +565,13 @@ pub fn add_levels(mut game: ResMut<Game>, mut ed: ResMut<Editor>) {
         game.source_names.push(Some(map));
         game.groups.push(crate::LevelGroup::Portal);
     }
+    for (path, file) in crate::source_map::me_files() {
+        let name = doc_name(&path);
+        ed.files.push((game.levels.len(), path.clone()));
+        game.levels.push((name, file_level(path)));
+        game.source_names.push(Some(file));
+        game.groups.push(crate::LevelGroup::MirrorsEdge);
+    }
     for path in level_files() {
         let name = doc_name(&path);
         info!("Level {}: {} ({})", game.levels.len(), name, path.display());

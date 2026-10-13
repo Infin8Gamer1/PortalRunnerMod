@@ -395,6 +395,9 @@ pub struct Level {
     pub lamps: Vec<Vec3>,
     /// Mirror's Edge's props, for dressing (drawn from the player's install when it's there).
     pub me_props: Vec<MeProp>,
+    /// One of Mirror's Edge's levels: its ladders and swing poles are its own meshes (the
+    /// game draws none of its own on them).
+    pub me_art: bool,
     /// Models from the extracted props library (the level editor's): drawn only (a block
     /// stands for its collision, if it has one).
     pub models: Vec<ModelProp>,
@@ -570,6 +573,7 @@ impl Level {
             indoor: true,
             lamps: Vec::new(),
             me_props: Vec::new(),
+            me_art: false,
             models: Vec::new(),
             placed_lights: Vec::new(),
             sun: None,

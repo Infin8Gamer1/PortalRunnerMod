@@ -35,6 +35,7 @@ they are:
 | `--check-props` | List the props library's materials that have no texture, and why |
 | `--no-sounds` / `--sounds` | Skip Portal's sound library, or write it again |
 | `--port-maps` | Make Portal's chambers (`levels/portal/`) again from the extracted maps, keeping any you've edited |
+| `--port-me [map]` | Make Mirror's Edge's levels (`levels/me/`) from its install, and nothing else (no Portal needed); `--me <dir>` says where it is |
 | `--inspect <model.mdl>...` | Describe models (parts, bones, size, animations) instead of extracting |
 
 The puzzle pieces (buttons, cube sockets, cubes, droppers, faith plates, doors, grill and
@@ -58,8 +59,9 @@ Without the DLSS SDK, add `--no-default-features`: the game is the same, without
 
 It opens on the title screen:
 - **Continue** (or **Play**) picks up at the last chamber you were in.
-- **Chambers** lists every chamber with your best times, in two folders: Portal's chambers,
-  and the testing chambers (the game's own, and the levels made in the editor).
+- **Chambers** lists every chamber with your best times, in three folders: Portal's chambers,
+  Mirror's Edge's levels (once they're made with `--port-me`), and the testing chambers (the
+  game's own, and the levels made in the editor).
 - **Settings** and **Controls** are there too.
 
 In the game, **Esc** (or Start) pauses. Progress is saved to `progress.txt`, and settings to

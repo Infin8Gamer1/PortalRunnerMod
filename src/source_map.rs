@@ -55,6 +55,13 @@ pub fn native_files() -> Vec<(PathBuf, String)> {
     MAPS.iter().map(|(name, _)| (dir.join(format!("{name}.ron")), name.to_string())).filter(|(p, _)| p.is_file()).collect()
 }
 
+/// The game's own copies of Mirror's Edge's maps (`levels/me/`, made by `portal_extract
+/// --port-me`), in the maps' order: each one's file and name (its file's).
+pub fn me_files() -> Vec<(PathBuf, String)> {
+    let dir = crate::editor::levels_dir().join("me");
+    aperture::me::MAPS.iter().map(|(_, file, _)| (dir.join(format!("{file}.ron")), file.to_string())).filter(|(p, _)| p.is_file()).collect()
+}
+
 /// A brush model's faces (one material's): they move with the sim's mover for that model.
 #[derive(Component)]
 pub struct MapModel(pub usize);
