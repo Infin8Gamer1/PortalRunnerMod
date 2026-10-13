@@ -2510,8 +2510,6 @@ dependencies = [
 [[package]]
 name = "dlss_wgpu"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75a51601d25ae0c9cc759d421fe40d3c5a031dd8c2e92970e9038a040ef178b4"
 dependencies = [
  "ash",
  "bindgen",
@@ -4781,6 +4779,7 @@ dependencies = [
  "aperture",
  "bevy",
  "bevy_egui",
+ "dlss_wgpu",
  "faith_anim",
  "faith_move",
  "half",

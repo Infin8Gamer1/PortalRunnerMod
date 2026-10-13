@@ -80,12 +80,13 @@ Ray-traced lighting** (which switches straight away), or `PORTAL_NORT=1` for one
 ## DLSS
 
 DLSS (NVIDIA RTX, Vulkan) is built in by default. Building it needs NVIDIA's DLSS SDK, which
-you download yourself under NVIDIA's licence. It must be version 310.5.3 (what Bevy 0.19's
-DLSS is built against), and its libraries are in Git LFS:
+you download yourself under NVIDIA's licence. Use version 310.9.1 or later: its Ray
+Reconstruction model (preset F) keeps up with light from things that move, where 310.5.3's
+smears it (#96). (310.5.3 still builds.) Its libraries are in Git LFS:
 
 ```
-git clone --branch v310.5.3 --depth 1 https://github.com/NVIDIA/DLSS.git
-cd DLSS && git lfs pull
+git clone --branch v310.9.1 --depth 1 https://github.com/NVIDIA/DLSS.git DLSS-310.9.1
+cd DLSS-310.9.1 && git lfs pull
 ```
 
 Then:
@@ -98,8 +99,12 @@ Then:
 For example, in your shell profile:
 
 ```
-export DLSS_SDK=$HOME/Documents/Git/DLSS VULKAN_SDK=/usr
+export DLSS_SDK=$HOME/Documents/Git/DLSS-310.9.1 VULKAN_SDK=/usr
 ```
+
+Changing `DLSS_SDK` rebuilds DLSS's bindings the next time you build. Ray Reconstruction uses
+its preset F model; `PORTAL_RR_PRESET=D`, `E` or `default` (DLSS chooses) picks another for one
+run.
 
 On a GPU that has it, DLSS is on from the start (Quality). **Settings > Graphics > DLSS**
 offers DLAA, Quality, Balanced, Performance and Ultra performance, or off; it takes the place

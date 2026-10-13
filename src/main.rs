@@ -61,6 +61,19 @@ fn main() {
             unsafe { std::env::set_var("DLSS_SDK", sdk) };
         }
     }
+    // Ray Reconstruction's model (#96): preset F, the second-generation transformer (DLSS SDK
+    // 310.9.1 and later; older SDKs' libraries take it as their default), whose light keeps up
+    // with what moves. PORTAL_RR_PRESET=D, E, F, or `default` (DLSS chooses) for one run.
+    #[cfg(feature = "dlss")]
+    {
+        let preset = match std::env::var("PORTAL_RR_PRESET").unwrap_or_default().trim().to_ascii_uppercase().as_str() {
+            "D" => 4,
+            "E" => 5,
+            "DEFAULT" => 0,
+            _ => 6,
+        };
+        dlss_wgpu::ray_reconstruction::RAY_RECONSTRUCTION_PRESET.store(preset, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut app = App::new();
     // DLSS asks for an application id before the renderer starts (any fixed UUID).
     #[cfg(feature = "dlss")]

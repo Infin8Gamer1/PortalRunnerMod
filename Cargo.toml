@@ -5,6 +5,7 @@ exclude = ["vendor"]
 # Bevy Solari with a fix for a crash compacting ray-tracing BLAS (see vendor/README.md).
 [patch.crates-io]
 bevy_solari = { path = "vendor/bevy_solari" }
+dlss_wgpu = { path = "vendor/dlss_wgpu" }
 
 [package]
 name = "portal-runner"
@@ -12,6 +13,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# (Under `dlss`: Ray Reconstruction's model preset, set before DLSS starts. Vendored, see
+# vendor/dlss_wgpu.)
+dlss_wgpu = { version = "4", optional = true }
 faith_move = { path = "crates/faith_move" }
 me_assets = { path = "crates/me_assets" }
 faith_anim = { path = "crates/faith_anim" }
@@ -26,7 +30,7 @@ bevy_egui = { version = "0.42", default-features = false, features = ["render", 
 # (DLSS_SDK=<its folder>; see https://github.com/bevyengine/dlss_wgpu). Without the SDK, build
 # with `--no-default-features`. On a GPU without DLSS the game falls back either way.
 default = ["dlss"]
-dlss = ["bevy/dlss"]
+dlss = ["bevy/dlss", "dep:dlss_wgpu"]
 # The Mirror's Edge prologue map, drawn and playable from your install (FAITH_MAP=prologue).
 # Not part of the public source.
 prologue = ["me_assets/prologue"]
