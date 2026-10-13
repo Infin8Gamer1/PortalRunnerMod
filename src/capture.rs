@@ -636,6 +636,10 @@ fn script(name: &str) -> Vec<Act> {
             let orange = Vec3::new(-9.648, 1.434, 1.644);
             // (Auto exposure off: one frame's brightness against another's is the light's.)
             let mut v = vec![Set(|s| s.auto_exposure = 0.0), Chamber(N, "testchmb_a_04"), Wait(60)];
+            // (PORTAL_NODLSS=1: without DLSS, TAA instead: to tell what its history does.)
+            if std::env::var_os("PORTAL_NODLSS").is_some() {
+                v.insert(0, Set(|s| s.dlss = 0.0));
+            }
             if std::env::var_os("PORTAL_NOPORTALS").is_none() {
                 v.push(Portal(PortalColor::Orange, orange, Vec3::X, Vec3::Y));
                 v.push(Portal(PortalColor::Blue, Vec3::new(-6.5024, 1.45, 18.5), Vec3::X, Vec3::Y));
@@ -649,6 +653,23 @@ fn script(name: &str) -> Vec<Act> {
                     v.push(SendPellet(Vec3::new(-8.08, 1.56, orange.z), Vec3::ZERO));
                 }
                 v.extend([Wait(if still { 20 } else { 6 }), Shot(Box::leak(format!("light08_{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
+        // Lamps' light through portals (#94): orange on the east wall of Chamber 08's way in
+        // (lit white by the lamps under its floor), blue where the map's own orange goes, on
+        // the goo room's west wall, and a spectator camera on blue from across the goo; shots
+        // as the light settles. PORTAL_NOPORTALS=1: the same without the portals.
+        "portallamp" => {
+            use crate::LevelGroup::Portal as N;
+            let mut v = vec![Set(|s| s.auto_exposure = 0.0), Chamber(N, "testchmb_a_04"), Wait(60)];
+            if std::env::var_os("PORTAL_NOPORTALS").is_none() {
+                v.push(Portal(PortalColor::Orange, Vec3::new(0.0, 1.45, 16.5), Vec3::NEG_X, Vec3::Y));
+                v.push(Portal(PortalColor::Blue, Vec3::new(-9.648, 1.434, 1.644), Vec3::X, Vec3::Y));
+            }
+            v.push(Spectate(Vec3::new(-4.5, 2.1, -1.0), 70.0, -5.0));
+            for k in 0..4 {
+                v.extend([Wait(60), Shot(Box::leak(format!("lamp_{k}").into_boxed_str()))]);
             }
             v
         }
