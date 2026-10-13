@@ -29,6 +29,16 @@ pub struct Surface {
     pub roughness: f32,
     pub metallic: f32,
     pub strength: f32,
+    /// The colour parameter (its name) that tints it, whatever the material's called.
+    #[serde(default)]
+    pub tint: Option<String>,
+    /// Its colour map is a mask: dark where it's black, the tint where it's white (an
+    /// advert's graphic).
+    #[serde(default)]
+    pub mask: bool,
+    /// How brightly it glows, its colour times this (backlit signs): 0, it doesn't.
+    #[serde(default)]
+    pub glow: f32,
 }
 
 #[derive(Deserialize)]
@@ -179,9 +189,22 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
     };
     let mix4 = |a: [f32; 4], b: [f32; 4], t: f32| [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t), lerp(a[3], b[3], t)];
     let mix2 = |a: [f32; 2], b: [f32; 2], t: f32| [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
-    // (Tinted as the material instance has it: an orange catwalk.)
-    let tint = slot.tint.unwrap_or([1.0; 3]);
-    let base_lin: Vec<[f32; 4]> = to_lin(base).into_iter().map(|c| [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2], c[3]]).collect();
+    // (Tinted as the material instance has it: an orange catwalk; or as the surface says, by
+    // a parameter of its own. A mask goes from near-black up to the tint.)
+    let named = surface.tint.as_ref().and_then(|n| slot.vectors.iter().find(|(v, _)| v.eq_ignore_ascii_case(n)).map(|(_, c)| *c));
+    let tint = named.or(slot.tint).unwrap_or([1.0; 3]);
+    let base_lin: Vec<[f32; 4]> = to_lin(base)
+        .into_iter()
+        .map(|c| {
+            if surface.mask {
+                let m = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                let k = |t: f32| lerp(0.02, t, m);
+                [k(tint[0]), k(tint[1]), k(tint[2]), c[3]]
+            } else {
+                [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2], c[3]]
+            }
+        })
+        .collect();
     let normal_map: Option<(Vec<[f32; 2]>, u32, u32)> = slot.normal.as_ref().map(|t| {
         (t.pixels.chunks_exact(4).map(|c| [c[0] as f32 / 127.5 - 1.0, c[1] as f32 / 127.5 - 1.0]).collect(), t.width, t.height)
     });

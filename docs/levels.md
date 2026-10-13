@@ -150,6 +150,8 @@ size, a roughness and a metalness, and mipmaps; whites are kept under real white
 placed mesh's own materials (an orange catwalk, the adverts) replace its mesh's, colour variants
 are tinted as the game has them, and the game's normal maps are read the right way up (theirs
 are DirectX's: the `normaltest` capture, with `PORTAL_NORMAL_TEST=1`, shows how Bevy reads one).
+Textures are read at up to 1024 square, their big mips from the packages they come from (a
+cooked map keeps only their small ones); backlit adverts glow in their colour.
 
 As with Portal's, `--port-me` keeps a file that's been changed (`levels/me/written.txt`).
 

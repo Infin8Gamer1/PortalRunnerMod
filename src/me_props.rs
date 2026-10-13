@@ -25,6 +25,9 @@ const LADDER_STEP: f32 = 2.56;
 const CABLE_RADIUS: f32 = 0.012;
 const PIPE_RADIUS: f32 = 0.03;
 
+/// The biggest a prop's textures are read (their mips that size, from the game's files).
+const ME_TEXTURE: u32 = 1024;
+
 /// Stands in for the ziplines and swing poles (see [`StandIn`]).
 pub const LINES: usize = usize::MAX - 1;
 
@@ -153,8 +156,13 @@ fn build(mesh: &StaticMesh, slots: &[MaterialSlot], meshes: &mut Assets<Mesh>, m
                 let mat = match remastered.get(&key) {
                     Some(m) => Some(m.clone()),
                     None => crate::me_remaster::bake(slot, &surface, reps).map(|b| {
+                        let color = images.add(b.color);
+                        // (A backlit sign glows its colour.)
+                        let glows = surface.glow > 0.0;
                         let m = materials.add(StandardMaterial {
-                            base_color_texture: Some(images.add(b.color)),
+                            emissive: if glows { LinearRgba::WHITE * surface.glow } else { LinearRgba::BLACK },
+                            emissive_texture: glows.then(|| color.clone()),
+                            base_color_texture: Some(color),
                             normal_map_texture: Some(images.add(b.normal)),
                             metallic_roughness_texture: Some(images.add(b.metal_rough)),
                             // (The map's: these scale it.)
@@ -225,7 +233,7 @@ fn get(
     images: &mut Assets<Image>,
 ) -> Option<Parts> {
     if !cache.meshes.contains_key(&key) {
-        let made = match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, 512) {
+        let made = match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, ME_TEXTURE) {
             Ok((mesh, slots)) => {
                 let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
                 for p in &mesh.positions {
@@ -285,7 +293,7 @@ fn get_with(
     let k = (key.0, key.1, overrides.to_vec());
     if !cache.overridden.contains_key(&k) {
         let names: Vec<String> = overrides.iter().map(|o| o.to_string()).collect();
-        let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, 512) {
+        let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, ME_TEXTURE) {
             Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered)),
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{} with its own materials: {e}", key.0, key.1);

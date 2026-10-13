@@ -96,6 +96,9 @@ pub struct MaterialSlot {
     /// The colour its diffuse map is multiplied by (a colour variant's `DiffuseColor`
     /// parameter: an orange catwalk, a blue rooftop box), linear, if it has one.
     pub tint: Option<[f32; 3]>,
+    /// Its colour parameters (lowercased names, linear colours): an instance's own first, then
+    /// its parents', then the defaults its material's parameters have.
+    pub vectors: Vec<(String, [f32; 3])>,
 }
 
 pub struct FaithArms {
@@ -115,6 +118,9 @@ pub struct Packages {
     cooked: PathBuf,
     files: HashMap<String, PathBuf>,
     open: HashMap<String, Rc<Package>>,
+    /// Packages' files as they are on disk (where cooked textures keep their big mips), the
+    /// last few read.
+    raw: Vec<(String, Rc<Vec<u8>>)>,
 }
 
 impl Packages {
@@ -132,7 +138,23 @@ impl Packages {
                 }
             }
         }
-        Packages { cooked: cooked.to_path_buf(), files, open: HashMap::new() }
+        Packages { cooked: cooked.to_path_buf(), files, open: HashMap::new(), raw: Vec::new() }
+    }
+
+    /// A package's file as it is on disk (kept: the last few).
+    pub fn raw(&mut self, name: &str) -> Option<Rc<Vec<u8>>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(k) = self.raw.iter().position(|(n, _)| *n == key) {
+            let r = self.raw.remove(k);
+            self.raw.push(r.clone());
+            return Some(r.1);
+        }
+        let bytes = Rc::new(std::fs::read(self.files.get(&key)?).ok()?);
+        if self.raw.len() >= 4 {
+            self.raw.remove(0);
+        }
+        self.raw.push((key, bytes.clone()));
+        Some(bytes)
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -262,8 +284,15 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             let material = pkg.object_name(m).to_string();
             // (Flat textures only: a cube map is a reflection, not a look.)
             let textures: Vec<_> = all_textures(pkgs, pkg, m).into_iter().filter(|(_, tp, ti)| tp.class_name(&tp.exports[*ti]) == "Texture2D").collect();
-            // The first of the textures `pick` takes that can be read.
-            let read = |pick: &dyn Fn(&str) -> bool| textures.iter().filter(|(name, _, _)| pick(name)).find_map(|(_, tp, ti)| texture::read_texture_export(tp, &tp.exports[*ti], max_texture).ok());
+            // The first of the textures `pick` takes that can be read. (Its big mips from its
+            // package's file, where the cooked one keeps them.)
+            let files = std::cell::RefCell::new(&mut *pkgs);
+            let read = |pick: &dyn Fn(&str) -> bool| {
+                textures.iter().filter(|(name, _, _)| pick(name)).find_map(|(_, tp, ti)| {
+                    let mut f = files.borrow_mut();
+                    texture::read_texture_from(tp, &tp.exports[*ti], max_texture, &mut |n| f.raw(n)).ok()
+                })
+            };
             // A texture's suffix (`T_BoatLip_01_DA`: `da`).
             let suffix = |n: &str| n.rsplit(' ').next().unwrap_or(n).rsplit('_').next().unwrap_or("").to_string();
             let is_normal = |n: &str| n.contains("normal") || suffix(n) == "n";
@@ -291,6 +320,7 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
                 // Anything that isn't a normal, specular, mask or emissive map.
                 diffuse = read(&|n| !(is_normal(n) || is_spec(n) || n.contains("mask") || matches!(suffix(n).as_str(), "m" | "e" | "em")));
             }
+            drop(files);
             let (color, emissive) = if diffuse.is_none() { constant_color(pkgs, pkg, m) } else { (None, false) };
             let path = material_path(pkgs, pkg, m);
             // (Only a colour variant's, named for its colour: other instances' colour
@@ -298,9 +328,56 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             let named = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
             let variant = ["orange", "blue", "yellow", "red", "green", "white", "black", "grey", "gray"].iter().any(|c| named.contains(c));
             let tint = if variant { material_tint(pkgs, pkg, m) } else { None };
-            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint }
+            let vectors = material_vectors(pkgs, pkg, m);
+            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, vectors }
         })
         .collect()
+}
+
+/// A colour parameter's value: a LinearColor, as four floats or tagged R, G, B.
+fn linear_color(pkg: &Package, t: &props::Tag) -> Option<[f32; 3]> {
+    if t.size == 16 {
+        let mut c = package::Cursor::new(&pkg.data, t.at);
+        return Some([c.f32().ok()?, c.f32().ok()?, c.f32().ok()?]);
+    }
+    let inner = props::Props::read_list(pkg, t.at, t.at + t.size, "LinearColor").ok()?;
+    Some([inner.f32(pkg, "R")?, inner.f32(pkg, "G")?, inner.f32(pkg, "B")?])
+}
+
+/// Every colour parameter a material has, by name: following an instance to its parents, and
+/// at the end the material's own parameters' defaults.
+fn material_vectors(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> Vec<(String, [f32; 3])> {
+    let mut out: Vec<(String, [f32; 3])> = vec![];
+    let add = |name: String, c: [f32; 3], out: &mut Vec<(String, [f32; 3])>| {
+        if !out.iter().any(|(n, _)| *n == name) {
+            out.push((name, c));
+        }
+    };
+    let mut next = Some((pkg.clone(), m));
+    for _ in 0..6 {
+        let Some((p, obj)) = next.take() else { break };
+        let Some((mp, mi)) = pkgs.resolve(&p, obj) else { break };
+        let Ok(props) = props::Props::read(&mp, &mp.exports[mi]) else { break };
+        for el in props.struct_array(&mp, "VectorParameterValues") {
+            let name = el.name(&mp, "ParameterName").unwrap_or_default().to_ascii_lowercase();
+            if let Some(c) = el.get("ParameterValue").and_then(|t| linear_color(&mp, t)) {
+                add(name, c, &mut out);
+            }
+        }
+        if mp.class_name(&mp.exports[mi]) == "Material" {
+            let me = mi as i32 + 1;
+            for e in mp.exports.iter().filter(|e| e.outer == me && mp.class_name(e) == "MaterialExpressionVectorParameter") {
+                let Ok(c) = props::Props::read(&mp, e) else { continue };
+                let name = c.name(&mp, "ParameterName").unwrap_or_default().to_ascii_lowercase();
+                if let Some(v) = c.get("DefaultValue").and_then(|t| linear_color(&mp, t)) {
+                    add(name, v, &mut out);
+                }
+            }
+            break;
+        }
+        next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    out
 }
 
 /// A material instance's diffuse tint: its (or the instance it inherits from's) colour
