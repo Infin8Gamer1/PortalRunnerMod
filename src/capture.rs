@@ -606,6 +606,23 @@ fn script(name: &str) -> Vec<Act> {
         // Pellet pieces in Portal's maps up close, the camera held where it's put:
         // PORTAL_FIRST_MAP and PORTAL_TP ("x,y,z,yaw,pitch;...") as for `p1`, PORTAL_WAIT frames
         // into the map first (default 200).
+        // Does light go through portals, ray traced? Chamber 08's pellet runs along its west
+        // wall: orange on that wall beside it, blue across the room on the east wall, and a
+        // spectator camera looking at blue, a shot every 8 frames as the pellet passes
+        // orange. PORTAL_NOPORTALS=1: the same without them, to tell the difference.
+        "portallight" => {
+            use crate::LevelGroup::Portal as N;
+            let mut v = vec![Chamber(N, "testchmb_a_04"), Wait(90)];
+            if std::env::var_os("PORTAL_NOPORTALS").is_none() {
+                v.push(Portal(PortalColor::Orange, Vec3::new(-9.75, 1.56, -6.0), Vec3::X, Vec3::Y));
+                v.push(Portal(PortalColor::Blue, Vec3::new(3.04, 1.56, -6.0), Vec3::NEG_X, Vec3::Y));
+            }
+            v.push(Spectate(Vec3::new(-1.5, 1.8, -6.0), -90.0, 0.0));
+            for k in 0..16 {
+                v.extend([Wait(8), Shot(Box::leak(format!("light_{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
         // The spectator camera (#90): over Chamber 08's goo, where she'd drown, for as long as
         // it likes, following the pellet as it bounces; then back to her, where she stood.
         "spectate" => {
