@@ -1719,7 +1719,7 @@ fn script(name: &str) -> Vec<Act> {
                 if let Kind::Model { scale, .. } = &mut big.kind {
                     *scale = Vec3::new(3.0, 1.5, 2.0);
                 }
-                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false, own_shape: false, materials: Vec::new() }, Vec3::new(0.0, 0.0, -11.0));
+                let cistern = Object::new(Kind::MeProp { package: "P_Rooftops".into(), mesh: "S_Cistern_07".into(), scale: Vec3::ONE, bounds: None, solid: false, own_shape: false, materials: Vec::new(), hidden: false }, Vec3::new(0.0, 0.0, -11.0));
                 ed.doc.objects.extend([radio, big, cistern]);
                 ed.selected = Some(ed.doc.objects.len() - 2);
                 ed.rebuild_now();

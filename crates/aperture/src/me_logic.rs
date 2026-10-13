@@ -32,6 +32,8 @@ pub struct MeLogic {
     started: bool,
     /// Inputs to set off: when, which op, which input.
     pending: Vec<(f32, usize, usize)>,
+    /// Events' outputs to fire: when, which op, which output (a mover's "Open Finished").
+    later: Vec<(f32, usize, usize)>,
     /// Each op's: how many times it's fired (events), when last, whether she's in its region.
     fired: Vec<u32>,
     last: Vec<f32>,
@@ -45,6 +47,12 @@ pub struct MeLogic {
     pub poses: Vec<(Vec3, Quat)>,
     /// Each body's (sim mover's): the mover that last moved it, and its pose (what's drawn).
     pub bodies: std::collections::HashMap<usize, (usize, Vec3, Quat)>,
+    /// What's been switched (#111): bodies she doesn't bump into, things (by name) whose
+    /// events don't fire, props hidden or shown (and a count of changes to them).
+    passable: std::collections::HashSet<usize>,
+    untouchable: std::collections::HashSet<String>,
+    pub hidden: std::collections::HashMap<usize, bool>,
+    pub hidden_changes: u32,
 }
 
 impl MeLogic {
@@ -63,6 +71,7 @@ impl MeLogic {
             time: 0.0,
             started: false,
             pending: Vec::new(),
+            later: Vec::new(),
             fired: vec![0; n],
             last: vec![f32::MIN; n],
             inside: vec![false; n],
@@ -71,6 +80,10 @@ impl MeLogic {
             plays: vec![Play::default(); n],
             poses: Vec::new(),
             bodies: std::collections::HashMap::new(),
+            passable: Default::default(),
+            untouchable: Default::default(),
+            hidden: Default::default(),
+            hidden_changes: 0,
         };
         me.poses = level.me_movers.iter().map(|m| m.at(0.0)).collect();
         me
@@ -107,7 +120,7 @@ impl MeLogic {
         self.fire(level, k, out);
     }
 
-    pub fn step(&mut self, level: &Level, movers: &mut [Mover], ctrl: &Controller, dt: f32) {
+    pub fn step(&mut self, level: &Level, movers: &mut [Mover], ctrl: &Controller, used: Option<crate::sim::Aim>, dt: f32) {
         self.time += dt;
         // The level's loaded (and a time trial's race has started).
         if !self.started {
@@ -118,41 +131,67 @@ impl MeLogic {
                 }
             }
         }
-        // What she's in or runs into.
+        // What she's in or runs into, kicks, or uses.
         let me = ctrl.body().aabb(ctrl.feet);
         let speed = Vec3::new(ctrl.vel.x, 0.0, ctrl.vel.z).length();
+        let kicking = ctrl.melee.is_some();
+        let facing = Vec3::new(-ctrl.yaw.sin(), 0.0, -ctrl.yaw.cos());
         for k in 0..level.me_logic.len() {
             let op = &level.me_logic[k];
             if op.regions.is_empty() {
+                continue;
+            }
+            // (Its actor switched off: nothing to touch.)
+            if op.param("originator").is_some_and(|o| self.untouchable.contains(o)) {
+                self.inside[k] = false;
                 continue;
             }
             let reach = if op.op == "SeqEvent_TakeDamage" { 0.3 } else { 0.0 };
             let inside = op.regions.iter().any(|r| r.overlaps(&faith_move::Aabb::new(me.min - Vec3::splat(reach), me.max + Vec3::splat(reach))));
             let was = std::mem::replace(&mut self.inside[k], inside);
             match op.op.as_str() {
-                "SeqEvent_Touch" | "SeqEvent_TdTouch" | "SeqEvent_TdUsed" | "SeqEvent_Used" => {
+                "SeqEvent_Touch" | "SeqEvent_TdTouch" => {
                     if inside && !was {
                         self.event(level, k, 0);
-                    } else if was && !inside && op.op.ends_with("Touch") {
+                    } else if was && !inside {
                         let out = Self::output(op, "UnTouched", 1);
                         self.event(level, k, out);
                     }
                 }
-                // (Kicked: run into at speed.)
+                // (Used: she pressed use looking at it, in reach.)
+                "SeqEvent_TdUsed" | "SeqEvent_Used" => {
+                    if let Some(aim) = used {
+                        if op.regions.iter().any(|r| crate::geom::ray_aabb(aim.eye, aim.dir, &faith_move::Aabb::new(r.min - Vec3::splat(0.15), r.max + Vec3::splat(0.15))).is_some_and(|(t, _)| t < crate::sim::USE_REACH)) {
+                            self.event(level, k, 0);
+                        }
+                    }
+                }
+                // (Kicked: run into at speed, or kicked where it's in front of her.)
                 "SeqEvent_TakeDamage" => {
-                    if inside && !was && speed > KICK_SPEED {
+                    let kick = kicking && op.regions.iter().any(|r| r.overlaps(&faith_move::Aabb::new(me.min - Vec3::splat(0.2), me.max + Vec3::splat(0.2)).translated(facing * 0.6)));
+                    if (inside && !was && speed > KICK_SPEED) || kick {
                         self.event(level, k, 0);
                     }
                 }
-                // (Stood on.)
+                // (Stood on, and got off.)
                 "SeqEvent_Mover" => {
                     if inside && !was {
                         let out = Self::output(op, "Pawn Attached", 0);
                         self.event(level, k, out);
+                    } else if was && !inside {
+                        if let Some(out) = op.param("outputs").and_then(|o| o.split('|').position(|n| n.eq_ignore_ascii_case("Pawn Detached"))) {
+                            self.fire(level, k, out);
+                        }
                     }
                 }
                 _ => {}
             }
+        }
+        // Events' outputs that are due.
+        let due: Vec<(f32, usize, usize)> = self.later.iter().copied().filter(|p| p.0 <= self.time).collect();
+        self.later.retain(|p| p.0 > self.time);
+        for (_, k, out) in due {
+            self.fire(level, k, out);
         }
         // The inputs that are due (and those they set off at once).
         let mut guard = 0;
@@ -187,6 +226,14 @@ impl MeLogic {
                     self.plays[k] = p;
                     let out = Self::output(op, "Completed", 0);
                     self.fire(level, k, out);
+                    // A mover event that set it going: it's open (after its stay-open time).
+                    for (e, ev) in level.me_logic.iter().enumerate() {
+                        if ev.op == "SeqEvent_Mover" && ev.outputs.iter().any(|o| o.1 == k) {
+                            if let Some(out) = ev.param("outputs").and_then(|o| o.split('|').position(|n| n.eq_ignore_ascii_case("Open Finished"))) {
+                                self.later.push((self.time + ev.num("stay_open", 1.5), e, out));
+                            }
+                        }
+                    }
                 }
             } else if p.dir < 0.0 && p.t <= 0.0 {
                 p.t = 0.0;
@@ -202,11 +249,16 @@ impl MeLogic {
                 self.bodies.insert(level.me_movers[m].sim, (m, d, q));
             }
         }
-        // The sim's movers go where the bodies are.
+        // The sim's movers go where the bodies are; switched off, they're passed through.
         for (&sim, &(_, d, q)) in &self.bodies {
             if let Some(mv) = movers.get_mut(sim) {
                 mv.target = Some(d);
                 mv.turned = q.angle_between(Quat::IDENTITY) > 0.02;
+            }
+        }
+        for def in &level.me_movers {
+            if let Some(mv) = movers.get_mut(def.sim) {
+                mv.present = !self.passable.contains(&def.sim);
             }
         }
     }
@@ -294,6 +346,42 @@ impl MeLogic {
                 let r = ((self.time * 1000.0) as usize).wrapping_mul(2654435761) % n;
                 self.fire(level, k, r);
             }
+            // Collision on or off (#111): the bodies it names are bumped into or passed
+            // through; the volumes, touched or not.
+            "SeqAct_ChangeCollision" => {
+                let blocks = op.param("blocks") == Some("true");
+                let touches = op.param("touches") == Some("true");
+                for &b in &op.bodies {
+                    if blocks {
+                        self.passable.remove(&b);
+                    } else {
+                        self.passable.insert(b);
+                    }
+                }
+                for (_, t) in op.params.iter().filter(|(k, _)| k == "target") {
+                    if touches {
+                        self.untouchable.remove(t);
+                    } else {
+                        self.untouchable.insert(t.clone());
+                    }
+                }
+                self.fire(level, k, 0);
+            }
+            // Hide, show, or the other way round (#111).
+            "SeqAct_ToggleHidden" => {
+                let name = op.param("inputs").and_then(|n| n.split('|').nth(input)).unwrap_or("");
+                for &p in &op.props {
+                    let was = self.hidden.get(&p).copied().unwrap_or(level.me_props[p].hidden);
+                    let hide = match name.to_ascii_lowercase().as_str() {
+                        "hide" => true,
+                        "unhide" | "show" => false,
+                        _ => !was,
+                    };
+                    self.hidden.insert(p, hide);
+                }
+                self.hidden_changes += 1;
+                self.fire(level, k, 0);
+            }
             // Events set off by others: a remote event's call, a sub-sequence's input.
             c if c.starts_with("SeqEvent") || c.starts_with("SeqEvt") => self.event(level, k, 0),
             // Anything else: goes on.
@@ -319,6 +407,11 @@ mod tests {
     /// A floor, a mover that rises 2 m over 1 s, and a trigger that plays it (through `between`,
     /// if any) when she walks into it.
     fn level(between: Option<(&str, Vec<(String, String)>)>) -> LevelDoc {
+        level_with("SeqEvent_Touch", between)
+    }
+
+    /// The same, set off by an event `event` (its region in front of her start).
+    fn level_with(event: &str, between: Option<(&str, Vec<(String, String)>)>) -> LevelDoc {
         let mut d = LevelDoc::new("logic");
         d.objects.push(Object::sized(Kind::Block { mat: crate::Mat::Concrete }, Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 1.0, 40.0)));
         d.objects.push(Object::new(Kind::Spawn { gravity: None }, Vec3::new(0.0, 0.0, 6.0)));
@@ -326,7 +419,7 @@ mod tests {
         let mut m = Object::new(Kind::MeMover { keys, length: 1.0, rate: 1.0, looping: false, carries: vec![] }, Vec3::new(5.0, 0.0, 0.0));
         m.name = "lift".into();
         d.objects.push(m);
-        let mut touch = Object::sized(Kind::MeLogic { op: "SeqEvent_Touch".into(), params: vec![("max".into(), "1".into())] }, Vec3::new(0.0, 1.0, 0.0), Vec3::new(2.0, 2.0, 2.0));
+        let mut touch = Object::sized(Kind::MeLogic { op: event.into(), params: vec![("max".into(), "1".into())] }, Vec3::new(0.0, 1.0, 0.0), Vec3::new(2.0, 2.0, 2.0));
         touch.name = "touch".into();
         let mut interp = Object::new(Kind::MeLogic { op: "SeqAct_Interp".into(), params: vec![("mover".into(), "lift".into()), ("outputs".into(), "Completed|Reversed".into())] }, Vec3::ZERO);
         interp.name = "interp".into();
@@ -382,5 +475,77 @@ mod tests {
         // (A 5 s delay: not yet risen 2 s after she's in.)
         assert!(risen(&level(Some(("SeqAct_Delay", vec![("duration".into(), "5".into())]))), 2.0) < 0.01);
         assert!((risen(&level(Some(("SeqAct_Delay", vec![("duration".into(), "1".into())]))), 3.0) - 2.0).abs() < 0.01);
+    }
+
+    /// Stood `metres` in front of the event's region (facing it), what's risen after `act`
+    /// and two seconds.
+    fn risen_after(d: &LevelDoc, metres: f32, act: impl Fn(&mut Sim, &mut Controller, usize)) -> f32 {
+        let l = d.build();
+        let mut sim = Sim::new(l);
+        let mut c = Controller::new(crate::tuning(5.3, 15.0), Vec3::new(0.0, 0.0, 1.0 + metres), 0.0);
+        c.state = State::Ground;
+        let dt = 1.0 / 60.0;
+        for f in 0..180 {
+            act(&mut sim, &mut c, f);
+            sim.step_player(&mut c, &Input::default(), dt);
+            sim.step(dt, &mut c);
+        }
+        sim.me.as_ref().map_or(0.0, |m| m.poses[0].0.y)
+    }
+
+    #[test]
+    fn a_use_event_fires_on_use_not_on_touch() {
+        let d = level_with("SeqEvent_TdUsed", None);
+        // (Walked into: nothing.)
+        assert!(risen(&d, 2.0) < 0.01);
+        // (Used, a metre from it, looking at it: up it goes.)
+        let up = risen_after(&d, 1.0, |sim, c, f| {
+            if f == 30 {
+                sim.use_key(crate::sim::Aim::of(c));
+            }
+        });
+        assert!((up - 2.0).abs() < 0.01, "risen {up}");
+    }
+
+    #[test]
+    fn a_kick_from_standing_sets_off_a_door() {
+        let d = level_with("SeqEvent_TakeDamage", None);
+        let up = risen_after(&d, 0.5, |sim, c, f| {
+            if f == 30 {
+                let input = Input { melee_pressed: true, ..Default::default() };
+                sim.step_player(c, &input, 1.0 / 60.0);
+            }
+        });
+        assert!((up - 2.0).abs() < 0.01, "risen {up}");
+    }
+
+    #[test]
+    fn a_lift_goes_back_down_once_it_s_been_open() {
+        // (Standing on it plays it up; "Open Finished" reverses it.)
+        let mut d = level_with("SeqEvent_Mover", None);
+        for o in d.objects.iter_mut() {
+            if let Kind::MeLogic { op, params } = &mut o.kind {
+                if op == "SeqEvent_Mover" {
+                    params.push(("outputs".into(), "Pawn Attached|Pawn Detached|Open Finished|Hit Actor".into()));
+                    params.push(("stay_open".into(), "1".into()));
+                    params[0].1 = "0".into();
+                    o.outputs.push(link(2, "interp", 1, 0.0));
+                }
+            }
+        }
+        let mut heights = vec![];
+        let l = d.build();
+        let mut sim = Sim::new(l);
+        let mut c = Controller::new(crate::tuning(5.3, 15.0), Vec3::new(0.0, 0.0, 0.5), 0.0);
+        c.state = State::Ground;
+        for f in 0..300 {
+            sim.step_player(&mut c, &Input::default(), 1.0 / 60.0);
+            sim.step(1.0 / 60.0, &mut c);
+            if f % 30 == 29 {
+                heights.push((sim.me.as_ref().unwrap().poses[0].0.y * 100.0).round() / 100.0);
+            }
+        }
+        // Up in a second, stays a second, back down in a second.
+        assert!(heights[1] > 1.9 && heights.last().unwrap().abs() < 0.05, "{heights:?}");
     }
 }

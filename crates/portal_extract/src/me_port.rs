@@ -229,7 +229,10 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
             let path = home.path(mesh as i32 + 1);
             // (Nor are its effects' meshes, light shafts and the like: glows the game blends
             // over the picture, nothing to stand on.)
-            if p.hidden || path.starts_with("L_Sun") || path.starts_with("L_Sky") || path.starts_with("FX_") {
+            // (A hidden one is kept if it collides (an invisible blocker) or its Kismet moves
+            // or shows it (an InterpActor): not drawn (#113).)
+            let kept_hidden = p.hidden && (p.blocks || p.class != "StaticMeshActor");
+            if p.hidden && !kept_hidden || path.starts_with("L_Sun") || path.starts_with("L_Sky") || path.starts_with("FX_") {
                 continue;
             }
             // (What it collides with isn't kept: the game reads it with the mesh. Only whether
@@ -246,7 +249,7 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                 true
             });
             let mut o = Object::new(
-                Kind::MeProp { package: home_name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true, materials: if p.import.is_none() { overrides(pkg, &p.materials) } else { Vec::new() } },
+                Kind::MeProp { package: home_name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true, materials: if p.import.is_none() { overrides(pkg, &p.materials) } else { Vec::new() }, hidden: p.hidden },
                 at,
             );
             o.set_rotation(turn(p.rotation));
@@ -271,7 +274,7 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                     (tidy(o - e), tidy(o + e))
                 });
                 let mut o = Object::new(
-                    Kind::MeProp { package: name.clone(), mesh: me_assets::bsp::BSP.into(), scale: Vec3::ONE, bounds, solid: true, own_shape: true, materials: vec![] },
+                    Kind::MeProp { package: name.clone(), mesh: me_assets::bsp::BSP.into(), scale: Vec3::ONE, bounds, solid: true, own_shape: true, materials: vec![], hidden: false },
                     Vec3::ZERO,
                 );
                 o.name = format!("{name} BSP");

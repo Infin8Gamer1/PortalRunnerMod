@@ -57,7 +57,7 @@ impl Library {
         let bounds = prop.bounds;
         let kind = match &prop.source {
             Source::Model(path) => Kind::Model { path: path.clone(), scale: Vec3::ONE, bounds, solid: bounds.is_some() },
-            Source::Me(package, mesh) => Kind::MeProp { package: package.to_string(), mesh: mesh.to_string(), scale: Vec3::ONE, bounds, solid: bounds.is_some(), own_shape: true, materials: Vec::new() },
+            Source::Me(package, mesh) => Kind::MeProp { package: package.to_string(), mesh: mesh.to_string(), scale: Vec3::ONE, bounds, solid: bounds.is_some(), own_shape: true, materials: Vec::new(), hidden: false },
         };
         let mut o = Object::new(kind, p);
         o.face(Vec3::new(-look.x, 0.0, -look.z));

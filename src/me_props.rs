@@ -467,12 +467,32 @@ fn place(commands: &mut Commands, parts: &Parts, tf: Transform, occluders: &std:
         .id()
 }
 
+/// Which of the level's `me_props` a drawn prop is.
+#[derive(Component)]
+pub struct PropIndex(pub usize);
+
 /// A prop a Mirror's Edge mover carries (#109): which body (sim mover) it's part of, and
 /// where it stands when that hasn't moved.
 #[derive(Component)]
 pub struct Carried {
     pub body: usize,
     pub base: Transform,
+}
+
+/// Props the level's Kismet hides or shows (#111).
+pub fn show_hidden(game: Res<Game>, mut seen: Local<(u64, u32)>, mut props: Query<(&PropIndex, &mut Visibility)>) {
+    let Some(me) = game.sim.me.as_ref() else { return };
+    if *seen == (game.loads, me.hidden_changes) {
+        return;
+    }
+    *seen = (game.loads, me.hidden_changes);
+    for (k, mut v) in &mut props {
+        let Some(&hide) = me.hidden.get(&k.0) else { continue };
+        let want = if hide { Visibility::Hidden } else { Visibility::Inherited };
+        if *v != want {
+            *v = want;
+        }
+    }
 }
 
 /// Carried props go where their movers are.
@@ -528,8 +548,13 @@ pub fn spawn_for_level(
                 let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
                 let tf = Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale);
                 let e = place(&mut commands, &parts, tf, &cache.occluders);
+                commands.entity(e).insert(PropIndex(k));
                 if let Some(&body) = carried_by.get(&k) {
                     commands.entity(e).insert(Carried { body, base: tf });
+                }
+                // (An invisible blocker: there, not drawn, till its Kismet shows it.)
+                if p.hidden {
+                    commands.entity(e).insert(Visibility::Hidden);
                 }
                 cache.drawn[k] = true;
             }

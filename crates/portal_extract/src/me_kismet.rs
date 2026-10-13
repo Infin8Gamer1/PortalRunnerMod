@@ -201,9 +201,35 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             }
         }
     }
-    // The ops that matter: those that lead (in any number of steps) to a matinee with a mover.
+    // What ops that switch things (collision, visibility) switch: the props (each its own
+    // body, to switch) and volumes (whose events are then on or off) they name (#111).
+    let mut targets: HashMap<usize, Vec<String>> = HashMap::new();
+    let mut bodies: Vec<(String, Vec3)> = Vec::new();
+    for (k, n) in nodes.iter().enumerate() {
+        if !matches!(n.op.class.as_str(), "SeqAct_ChangeCollision" | "SeqAct_ToggleHidden") {
+            continue;
+        }
+        let (pname, _, m) = &read[n.pkg];
+        for a in n.op.vars.iter().flat_map(|(_, v)| v.iter()).filter(|&&a| a > 0).map(|&a| a as usize - 1) {
+            if let Some(p) = m.meshes.iter().find(|p| p.export == a) {
+                let name = format!("{pname}.{}", p.name);
+                let entry = (p.name.clone(), tidy(ue(p.location)), name.clone());
+                if !carried.contains(&entry) {
+                    carried.push(entry);
+                }
+                if !bodies.iter().any(|b| b.0 == name) {
+                    bodies.push((name.clone(), tidy(ue(p.location))));
+                }
+                targets.entry(k).or_default().push(name);
+            } else if m.volumes.iter().any(|v| v.export == a) || m.others.iter().any(|o| o.export == a) {
+                targets.entry(k).or_default().push(format!("{pname}.{}", read[n.pkg].1.exports[a].name));
+            }
+        }
+    }
+    // The ops that matter: those that lead (in any number of steps) to a matinee with a mover,
+    // or to switching something.
     let mut keep = vec![false; nodes.len()];
-    let mut stack: Vec<usize> = interp_movers.keys().copied().collect();
+    let mut stack: Vec<usize> = interp_movers.keys().chain(targets.keys()).copied().collect();
     let mut into: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for (k, l) in links.iter().enumerate() {
         for &(_, t, _, _) in l {
@@ -219,6 +245,7 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
     }
     // What sets each event off: the actors that generate it (their GeneratedEvents).
     let mut originators: HashMap<usize, Vec<faith_move::Aabb>> = HashMap::new();
+    let mut origin_names: HashMap<usize, String> = HashMap::new();
     for (pi, (pname, pkg, m)) in read.iter().enumerate() {
         let mut region_of: Vec<(usize, Option<faith_move::Aabb>)> = Vec::new();
         for v in &m.volumes {
@@ -257,6 +284,19 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
                 }
             }
         }
+        // (Each event's actor, by name: switched off, its events don't fire.)
+        for (&export, _) in &regions {
+            for e in kismet::events_of(pkg, export) {
+                if let Some(&k) = id.get(&(pi, e)) {
+                    origin_names.entry(k).or_insert_with(|| format!("{pname}.{}", pkg.exports[export].name));
+                }
+            }
+        }
+        for op in &ops[pi] {
+            if let (Some(a), Some(&k)) = (op.originator, id.get(&(pi, op.export))) {
+                origin_names.entry(k).or_insert_with(|| format!("{pname}.{}", pkg.exports[a].name));
+            }
+        }
         // (And the actor an event names as its own.)
         for op in &ops[pi] {
             let Some(b) = op.originator.and_then(|a| regions.get(&a)) else { continue };
@@ -285,7 +325,24 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             set("max", format!("{}", num(pkg, n.op, "MaxTriggerCount").unwrap_or(1.0)));
             set("retrigger", format!("{}", num(pkg, n.op, "ReTriggerDelay").unwrap_or(0.5)));
         }
+        if let Some(o) = origin_names.get(&k) {
+            set("originator", o.clone());
+        }
+        for t in targets.get(&k).into_iter().flatten() {
+            set("target", t.clone());
+        }
+        if n.op.inputs.iter().any(|i| !i.0.is_empty()) {
+            set("inputs", n.op.inputs.iter().map(|i| i.0.clone()).collect::<Vec<_>>().join("|"));
+        }
         match c {
+            // (Whether she bumps into it after: only what blocks all, or all but weapons.)
+            "SeqAct_ChangeCollision" => {
+                let t = name_of(pkg, n.op, "CollisionType").unwrap_or_default();
+                let blocks = matches!(t.as_str(), "COLLIDE_BlockAll" | "COLLIDE_BlockAllButWeapons") || t.is_empty() && flag(pkg, n.op, "bBlockActors") == Some(true);
+                let touches = blocks || t.starts_with("COLLIDE_Touch");
+                set("blocks", blocks.to_string());
+                set("touches", touches.to_string());
+            }
             "SeqAct_Interp" => {
                 for m in interp_movers.get(&k).into_iter().flatten() {
                     set("mover", m.clone());
@@ -294,6 +351,8 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
                     set("rewind_on_play", "true".into());
                 }
             }
+            // (How long its mover stays open before it's "Open Finished": UE3's default 1.5 s.)
+            "SeqEvent_Mover" => set("stay_open", format!("{}", num(pkg, n.op, "StayOpenTime").unwrap_or(1.5))),
             "SeqAct_Delay" => set("duration", format!("{}", num(pkg, n.op, "Duration").or_else(|| num(pkg, n.op, "DefaultDuration")).unwrap_or(1.0))),
             "SeqAct_Gate" => {
                 if flag(pkg, n.op, "bOpen") == Some(false) {
@@ -346,6 +405,15 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             if let Some((_, _, new)) = carried.iter().find(|(n, at, _)| *n == o.name && at.distance(o.at) < 0.01) {
                 o.name = new.clone();
             }
+        }
+    }
+    // (A switched prop that no matinee moves: a body of its own, still.)
+    for (name, at) in bodies {
+        let moved = movers.iter().any(|o| matches!(&o.kind, Kind::MeMover { carries, .. } if carries.contains(&name)));
+        if !moved {
+            let mut o = Object::new(Kind::MeMover { keys: Vec::new(), length: 0.0, rate: 1.0, looping: false, carries: vec![name.clone()] }, at);
+            o.name = format!("{name}.body");
+            movers.push(o);
         }
     }
     report.push_str(&format!("  {} movers, {kept} Kismet ops driving them\n", movers.len()));
