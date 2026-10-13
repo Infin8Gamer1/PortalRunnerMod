@@ -418,8 +418,9 @@ mod tests {
             assert!(l.io.as_ref().is_some_and(|io| !io.ents.is_empty()), "{map}: no logic");
             assert!(!l.solids.is_empty() && !l.checkpoints.is_empty(), "{map}");
             assert!(l.art.as_ref().is_some_and(|a| !a.faces.is_empty()), "{map}: nothing drawn");
-            // (Every piece is the map's: drawn as its props.)
-            assert_eq!(l.map_items, l.items.len(), "{map}");
+            // (The map's pieces come first, drawn as its props; any after them were added in the
+            // editor.)
+            assert!(l.map_items <= l.items.len(), "{map}");
             n += 1;
         }
         assert_eq!(n, MAPS.len(), "a map's copy is missing from levels/portal");
