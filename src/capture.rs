@@ -1119,6 +1119,36 @@ fn script(name: &str) -> Vec<Act> {
         }
         // From Portal's Chamber 00 into the editor, a wall moved, Portal's brushes and a
         // trigger dropped in, then played.
+        // Clicking a prop's model selects it (#85): Chamber 00's clock radio, clicked on its
+        // face, well away from its origin (at its foot).
+        "editorpick" => {
+            use crate::LevelGroup::Portal as N;
+            vec![
+                Chamber(N, "testchmb_a_00"),
+                Wait(60),
+                Edit(|_, menu| menu.edit = Some(false)),
+                Wait(150),
+                Edit(|ed, _| {
+                    ed.selected = None;
+                    ed.cam = crate::editor::FlyCam { pos: Vec3::new(8.5, 5.0, 15.47), yaw: std::f32::consts::FRAC_PI_2, pitch: 0.0, speed: 8.0 };
+                }),
+                Wait(30),
+                Mouse(Hand::To(0.5, 0.5)),
+                Wait(2),
+                Mouse(Hand::Press),
+                Wait(2),
+                Mouse(Hand::Release),
+                Wait(10),
+                Edit(|ed, _| {
+                    let what = ed.selected.and_then(|i| ed.doc.objects.get(i)).map(|o| match &o.kind {
+                        aperture::doc::Kind::Entity { class, keys, .. } => format!("{class} {}", keys.iter().find(|(k, _)| k == "model").map_or("", |(_, v)| v.as_str())),
+                        k => format!("{k:?}").chars().take(60).collect(),
+                    });
+                    println!("capture: clicked the radio's face: selected {what:?}");
+                }),
+                Shot("editorpick_01_selected"),
+            ]
+        }
         "nativeedit" => {
             use crate::LevelGroup::Portal as N;
             vec![

@@ -835,7 +835,38 @@ fn volume(kind: &Kind) -> bool {
 }
 
 /// The object a ray meets first.
+#[cfg(test)]
 fn pick(doc: &LevelDoc, o: Vec3, d: Vec3) -> Option<usize> {
+    pick_hit(doc, o, d).map(|(_, i)| i)
+}
+
+/// The drawn model a ray meets first, if it's one of the level's props (what it's drawn for:
+/// the object standing where its model was put), and how far along the ray.
+fn model_pick(doc: &LevelDoc, cast: &mut bevy::picking::mesh_picking::ray_cast::MeshRayCast, drawn: &Query<(Option<&crate::chamber::PlacedAt>, Has<crate::chamber::ChamberGeom>, Option<&ChildOf>)>, ray: Ray3d) -> Option<(f32, usize)> {
+    // (Up from a mesh to its root: the prop it's part of, and whether it's the level's at all,
+    // not one of the editor's own handles and outlines.)
+    let root = |mut e: Entity| -> (Option<Vec3>, bool) {
+        let mut at = None;
+        loop {
+            let Ok((placed, geom, parent)) = drawn.get(e) else { return (at, false) };
+            at = at.or(placed.map(|p| p.0));
+            if geom {
+                return (at, true);
+            }
+            let Some(p) = parent else { return (at, false) };
+            e = p.parent();
+        }
+    };
+    let level = |e: Entity| root(e).1;
+    let settings = bevy::picking::mesh_picking::ray_cast::MeshRayCastSettings::default().with_filter(&level);
+    let &(e, ref hit) = cast.cast_ray(ray, &settings).first()?;
+    let at = root(e).0?;
+    let i = doc.objects.iter().enumerate().filter(|(_, o)| o.at.distance(at) < 0.02).min_by(|a, b| a.1.at.distance(at).total_cmp(&b.1.at.distance(at)))?.0;
+    Some((hit.distance, i))
+}
+
+/// The object a ray meets first, and how far along it.
+fn pick_hit(doc: &LevelDoc, o: Vec3, d: Vec3) -> Option<(f32, usize)> {
     let mut best: Option<(f32, usize)> = None;
     for (i, obj) in doc.objects.iter().enumerate() {
         if let Some((t, _)) = ray_box(o, d, &obj.bounds()) {
@@ -847,7 +878,7 @@ fn pick(doc: &LevelDoc, o: Vec3, d: Vec3) -> Option<usize> {
             }
         }
     }
-    best.map(|(_, i)| i)
+    best
 }
 
 /// What something makes where it's dropped; a ladder's foot goes down to the floor.
@@ -1011,6 +1042,8 @@ fn interact(
     mut settings: ResMut<TransformGizmoSettings>,
     mut handles: Query<&mut Transform>,
     lib: Res<Library>,
+    mut meshes_hit: bevy::picking::mesh_picking::ray_cast::MeshRayCast,
+    drawn: Query<(Option<&crate::chamber::PlacedAt>, Has<crate::chamber::ChamberGeom>, Option<&ChildOf>)>,
 ) {
     if !ed.active {
         if let Some(h) = ed.handle {
@@ -1181,7 +1214,15 @@ fn interact(
                     });
                 }
             } else {
-                ed.selected = pick(&ed.doc, o, d);
+                // (A prop: by its model, where that's what's clicked, not only the box round
+                // its origin.)
+                let by_box = pick_hit(&ed.doc, o, d);
+                let by_model = Dir3::new(d).ok().and_then(|dir| model_pick(&ed.doc, &mut meshes_hit, &drawn, Ray3d::new(o, dir)));
+                ed.selected = match (by_box, by_model) {
+                    (Some((tb, _)), Some((tm, i))) if tm <= tb => Some(i),
+                    (None, Some((_, i))) => Some(i),
+                    (b, _) => b.map(|(_, i)| i),
+                };
             }
         }
     }

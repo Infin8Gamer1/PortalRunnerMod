@@ -22,6 +22,11 @@ use crate::extracted::Extracted;
 #[derive(Component)]
 pub struct ChamberGeom;
 
+/// A drawn prop's root, and where the level puts the object it's drawn for (the editor finds
+/// that object by it when its model's clicked).
+#[derive(Component)]
+pub struct PlacedAt(pub Vec3);
+
 /// What a drawn piece shows, for keeping it in step with the sim.
 #[derive(Component, Clone, Copy, Debug)]
 pub enum Vis {
