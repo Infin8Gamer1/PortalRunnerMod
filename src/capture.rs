@@ -71,6 +71,8 @@ enum Act {
     Film(&'static str, MoveInput, u32),
     /// Wait until a live pellet has reached this x, or this many frames pass.
     WaitPelletX(f32, u32),
+    /// Wait until a live pellet's within this far of a point, or this many frames pass.
+    WaitPelletNear(Vec3, f32, u32),
     /// Put the first cube here, still.
     PlaceCube(Vec3),
     /// Send a live pellet (the first) from here at this velocity.
@@ -620,6 +622,25 @@ fn script(name: &str) -> Vec<Act> {
             v.push(Spectate(Vec3::new(-1.5, 1.8, -6.0), -90.0, 0.0));
             for k in 0..16 {
                 v.extend([Wait(8), Shot(Box::leak(format!("light_{k:02}").into_boxed_str()))]);
+            }
+            v
+        }
+        // Light through portals, as Portal with RTX's screenshot of Chamber 08 has it: the
+        // map's own orange on the west wall with the pellet passing in front of it, blue on the
+        // way in's west wall, and a spectator camera by the entrance elevator looking across
+        // the floor at blue. A shot with the pellet far off, then a shot every 6 frames as it
+        // passes orange. PORTAL_NOPORTALS=1: the same without the portals.
+        "portallight08" => {
+            use crate::LevelGroup::Portal as N;
+            let orange = Vec3::new(-9.648, 1.434, 1.644);
+            let mut v = vec![Chamber(N, "testchmb_a_04"), Wait(60)];
+            if std::env::var_os("PORTAL_NOPORTALS").is_none() {
+                v.push(Portal(PortalColor::Orange, orange, Vec3::X, Vec3::Y));
+                v.push(Portal(PortalColor::Blue, Vec3::new(-6.5024, 1.45, 18.5), Vec3::X, Vec3::Y));
+            }
+            v.extend([Spectate(Vec3::new(-0.5, 1.5, 19.3), 70.0, -14.0), WaitPelletNear(Vec3::new(-8.08, 1.56, 12.0), 3.0, 900), Wait(20), Shot("light08_far"), WaitPelletNear(orange, 5.0, 900)]);
+            for k in 0..10 {
+                v.extend([Wait(6), Shot(Box::leak(format!("light08_{k:02}").into_boxed_str()))]);
             }
             v
         }
@@ -1988,6 +2009,11 @@ pub fn run(
                     cap.wait = 0;
                 }
             }
+            Some(Act::WaitPelletNear(at, d, _)) => {
+                if game.sim.pellets.iter().any(|p| p.alive && p.pos.distance(*at) <= *d) {
+                    cap.wait = 0;
+                }
+            }
             _ => {}
         }
         if cap.wait == 0 {
@@ -2019,7 +2045,7 @@ pub fn run(
             cap.wait = *n;
             return;
         }
-        Act::WaitPelletX(_, n) => {
+        Act::WaitPelletX(_, n) | Act::WaitPelletNear(_, _, n) => {
             cap.wait = *n;
             return;
         }
