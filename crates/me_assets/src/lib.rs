@@ -7,6 +7,7 @@
 //! - `Animations/AS_C1P_Unarmed.upk`: every unarmed first-person animation.
 
 pub mod anim;
+pub mod bsp;
 pub mod map;
 #[cfg(feature = "prologue")]
 pub mod level;

@@ -1673,7 +1673,8 @@ impl Sim {
         // (A course's count only in turn: the next one.)
         let course = self.level.course;
         for (i, cp) in self.level.checkpoints.iter().enumerate() {
-            if i > self.checkpoint && (!course || i == self.checkpoint + 1) && geom::contains(&cp.region, feet + Vec3::Y * 0.1) {
+            let counts = if course { i == self.checkpoint + 1 } else if self.level.free_checkpoints { i != self.checkpoint } else { i > self.checkpoint };
+            if counts && geom::contains(&cp.region, feet + Vec3::Y * 0.1) {
                 self.checkpoint = i;
                 ctrl.spawn = cp.spawn;
                 ctrl.spawn_yaw = cp.yaw;

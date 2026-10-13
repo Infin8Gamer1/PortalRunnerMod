@@ -386,6 +386,9 @@ pub struct Level {
     /// Its checkpoints are a course (a time trial's): each counts only after the one before
     /// it, and the exit only once they've all been passed.
     pub course: bool,
+    /// Walking into any checkpoint makes it the respawn point, in whatever order (a story
+    /// level's, where they aren't in a line): else only one further on counts.
+    pub free_checkpoints: bool,
     /// Messages shown while you stand in a region.
     pub hints: Vec<(Aabb, &'static str)>,
     /// Falling below this kills you.
@@ -573,6 +576,7 @@ impl Level {
             gun: Gun::BOTH,
             exit: None,
             course: false,
+            free_checkpoints: false,
             hints: Vec::new(),
             kill_y: -30.0,
             gravity: None,

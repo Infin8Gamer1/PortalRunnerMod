@@ -50,6 +50,10 @@ pub struct LevelDoc {
     /// counts only after the one before it, and the exit only once they've all been passed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub course: bool,
+    /// Walking into any checkpoint makes it the respawn point, in whatever order (a story
+    /// level's).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub free_checkpoints: bool,
 }
 
 /// The fill light everywhere: its colour (sRGB, 0-1) and brightness.
@@ -760,7 +764,7 @@ impl Object {
 
 impl LevelDoc {
     pub fn new(name: &str) -> Self {
-        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None, course: false }
+        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None, course: false, free_checkpoints: false }
     }
 
     /// A white room to start from: floor, walls, ceiling, a lamp grid and the start.
@@ -839,6 +843,7 @@ impl LevelDoc {
         l.indoor = self.indoor;
         l.kill_y = self.kill_y;
         l.course = self.course;
+        l.free_checkpoints = self.free_checkpoints;
         l.gun = Gun { blue: self.blue, orange: self.orange };
         let corners = |o: &Object| {
             let b = o.bounds();

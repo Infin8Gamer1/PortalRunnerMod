@@ -19,9 +19,39 @@ use crate::level::{Mat, Slope, Solid};
 /// (`levels/me/<file>.ron`), and what it's called.
 pub const MAPS: &[(&str, &str, &str)] = &[
     ("Tutorial_p", "tutorial", "Mirror's Edge: Training"),
+    ("Edge_p", "edge", "Mirror's Edge: Edge"),
+    ("Escape_p", "escape", "Mirror's Edge: Escape"),
+    ("Stormdrain_p", "stormdrain", "Mirror's Edge: Stormdrain"),
+    ("Cranes_p", "cranes", "Mirror's Edge: Cranes"),
+    ("Subway_p", "subway", "Mirror's Edge: Subway"),
+    ("Mall_p", "mall", "Mirror's Edge: Mall"),
+    ("Factory_p", "factory", "Mirror's Edge: Factory"),
+    ("Boat_p", "boat", "Mirror's Edge: Boat"),
+    ("Convoy_p", "convoy", "Mirror's Edge: Convoy"),
+    ("Scraper_p", "scraper", "Mirror's Edge: Scraper"),
     ("TT_TutorialA01_p", "tt_tutorial_a01", "Mirror's Edge: Time trial, Training A1"),
     ("TT_TutorialA02_p", "tt_tutorial_a02", "Mirror's Edge: Time trial, Training A2"),
     ("TT_TutorialA03_p", "tt_tutorial_a03", "Mirror's Edge: Time trial, Training A3"),
+    ("TT_EdgeA01_p", "tt_edge_a01", "Mirror's Edge: Time trial, Edge A1"),
+    ("TT_EscapeA01_p", "tt_escape_a01", "Mirror's Edge: Time trial, Escape A1"),
+    ("TT_EscapeB01_p", "tt_escape_b01", "Mirror's Edge: Time trial, Escape B1"),
+    ("TT_StormdrainA02_p", "tt_stormdrain_a02", "Mirror's Edge: Time trial, Stormdrain A2"),
+    ("TT_StormdrainB01_p", "tt_stormdrain_b01", "Mirror's Edge: Time trial, Stormdrain B1"),
+    ("TT_StormdrainB02_p", "tt_stormdrain_b02", "Mirror's Edge: Time trial, Stormdrain B2"),
+    ("TT_StormdrainB03_p", "tt_stormdrain_b03", "Mirror's Edge: Time trial, Stormdrain B3"),
+    ("TT_CranesA01_p", "tt_cranes_a01", "Mirror's Edge: Time trial, Cranes A1"),
+    ("TT_CranesB01_p", "tt_cranes_b01", "Mirror's Edge: Time trial, Cranes B1"),
+    ("TT_CranesB02_p", "tt_cranes_b02", "Mirror's Edge: Time trial, Cranes B2"),
+    ("TT_CranesC01_p", "tt_cranes_c01", "Mirror's Edge: Time trial, Cranes C1"),
+    ("TT_CranesD01_p", "tt_cranes_d01", "Mirror's Edge: Time trial, Cranes D1"),
+    ("TT_MallA01_p", "tt_mall_a01", "Mirror's Edge: Time trial, Mall A1"),
+    ("TT_FactoryA01_p", "tt_factory_a01", "Mirror's Edge: Time trial, Factory A1"),
+    ("TT_ConvoyA01_p", "tt_convoy_a01", "Mirror's Edge: Time trial, Convoy A1"),
+    ("TT_ConvoyA02_p", "tt_convoy_a02", "Mirror's Edge: Time trial, Convoy A2"),
+    ("TT_ConvoyB01_p", "tt_convoy_b01", "Mirror's Edge: Time trial, Convoy B1"),
+    ("TT_ConvoyB02_p", "tt_convoy_b02", "Mirror's Edge: Time trial, Convoy B2"),
+    ("TT_ScraperA01_p", "tt_scraper_a01", "Mirror's Edge: Time trial, Scraper A1"),
+    ("TT_ScraperB01_p", "tt_scraper_b01", "Mirror's Edge: Time trial, Scraper B1"),
 ];
 
 /// What a Mirror's Edge mesh collides with, in its own space (ours: metres, before it's
@@ -185,6 +215,12 @@ pub fn shape(package: &str, mesh: &str) -> Option<Arc<MeShape>> {
         return s.clone();
     }
     let read = install.package(package).and_then(|pkg| {
+        // (A level's BSP: its solid faces.)
+        if mesh == me_assets::bsp::BSP {
+            let tris = me_assets::bsp::Bsp::read(&pkg).ok()?.collision_tris();
+            let s = MeShape { hulls: vec![], tris: tris.iter().map(|t| t.map(ue)).collect() };
+            return (!s.is_empty()).then(|| Arc::new(s));
+        }
         let i = pkg.exports.iter().position(|e| e.name == mesh && pkg.class_name(e) == "StaticMesh")?;
         let s = MeShape::from_game(&map::mesh_collision(&pkg, i));
         (!s.is_empty()).then(|| Arc::new(s))

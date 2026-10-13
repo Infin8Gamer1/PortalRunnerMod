@@ -122,8 +122,10 @@ map's.
 
 `portal_extract -- --port-me` makes Mirror's Edge's maps into level files (`levels/me/`), read
 from your install: the map and the sublevels it streams in. They're in the Chambers menu's
-**Mirror's Edge levels** folder, and open in the editor as any level file does (so far the
-Training map and its three time trials):
+**Mirror's Edge levels** folder, and open in the editor as any level file does: Training, the
+ten story chapters (Edge to The Shard) and the 23 time trials. A sublevel the map streams by a
+name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the map's name
+(Mall's).
 
 - Its meshes are **Mirror's Edge props**, standing, turned and scaled as the map has them (one
   mirrored is drawn wound the other way round), drawn from the install.
@@ -134,14 +136,19 @@ Training map and its three time trials):
   are solid only within 40 m of where she can go; the sky, the sun's flare and the effects'
   meshes (light shafts) are left out. Mirror's Edge props added from the browser collide the
   same way.
+- Its **BSP** (the rooms, floors and walls built from brushes: much of the indoors) is one more
+  prop in each sublevel, mesh `BSP`: drawn with its surfaces' materials and texture
+  coordinates, and colliding with its solid faces, both read from the install.
 - Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
   of what it is).
 - Its sun is the directional light its lightmaps were baked with (the level's shadows'), as
-  bright as ours; she starts at its start. A zipline sags as its
-  spline does. A time trial's timer checkpoints are a course (in the order they lead on to each
-  other), the last its finish.
+  bright as ours; its point, spot and area lights are lights. She starts at its start (a story
+  chapter's default checkpoint), on the floor under it. A zipline sags as its spline does. A
+  time trial's timer checkpoints are a course (in the order they lead on to each other), the
+  last its finish; a story chapter's checkpoints are checkpoints she can reach in any order.
+  (`PORT_ME_NEAR=x,y,z` lists what's round a point in every package, when porting.)
 
 Their materials are remastered for ray tracing (`assets/remaster/`, #101): each keeps the
 game's own art and gets, from what it's made of (plaster, concrete, roof, painted or bare metal,

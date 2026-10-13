@@ -51,7 +51,9 @@ pub const LAMP_BOOST: f32 = 30.0;
 /// The sky, as it shows on screen (scaled to nits like every emissive colour): the clear
 /// colour outdoors.
 const SKY: Vec3 = Vec3::new(0.34, 0.57, 0.85);
-const SKY_RADIUS: f32 = 900.0;
+// (Far enough that a ray to the sun from anywhere in a level leaves through the hole round it:
+// Mirror's Edge's levels run kilometres from their origin.)
+const SKY_RADIUS: f32 = 30_000.0;
 /// The hole round the sun (radians from its direction, to a triangle's centre: wide enough to
 /// take the triangle the sun is in).
 const SUN_HOLE: f32 = 0.1;

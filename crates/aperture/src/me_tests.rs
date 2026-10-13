@@ -190,3 +190,26 @@ fn time_trials_start_her_on_their_course() {
         assert!(r.c.state == State::Ground && r.c.feet.distance(cp.spawn) < 0.5, "{file}: she fell from her start: {:?} {:?}", r.c.feet, r.c.state);
     }
 }
+
+/// Every ported level (#100): it builds, and she stands where it starts her, alive, for two
+/// seconds.
+#[test]
+fn every_level_starts_her_on_her_feet() {
+    if !crate::me::installed() {
+        return;
+    }
+    let mut problems = vec![];
+    for (_, file, _) in crate::me::MAPS {
+        let Some(l) = level(file) else { continue };
+        let cp = l.checkpoints[0].clone();
+        let props = l.me_props.len();
+        let mut r = Run::new(l, cp.spawn, cp.yaw);
+        r.run(2.0, |_| Input::default());
+        let ok = r.deaths == 0 && r.c.state == State::Ground && r.c.feet.distance(cp.spawn) < 0.5;
+        eprintln!("{file}: {props} props, start {} -> {:?} {}", cp.spawn, r.c.feet, if ok { "ok" } else { "FELL" });
+        if !ok {
+            problems.push(format!("{file}: from {} to {:?} ({:?}, {} deaths)", cp.spawn, r.c.feet, r.c.state, r.deaths));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}

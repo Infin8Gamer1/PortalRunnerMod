@@ -107,8 +107,34 @@ fn streamed(pkg: &Package) -> Vec<String> {
     out
 }
 
+/// The packages a streamed sublevel's name is shipped as: itself; or, cut in parts, its
+/// `_Pt1`, `_Pt2`...; or, named for its map's folder (Mall's `SP05_MallExterior`), the same
+/// under its map's name (`Mall_MallExterior`).
+fn files_of(pkgs: &Packages, name: &str, persistent: &str) -> Vec<String> {
+    if pkgs.has(name) {
+        return vec![name.to_string()];
+    }
+    let parts: Vec<String> = (1..10).map(|i| format!("{name}_Pt{i}")).take_while(|n| pkgs.has(n)).collect();
+    if !parts.is_empty() {
+        return parts;
+    }
+    let stem = persistent.strip_suffix("_p").unwrap_or(persistent);
+    match name.split_once('_') {
+        Some((_, rest)) if pkgs.has(&format!("{stem}_{rest}")) => vec![format!("{stem}_{rest}")],
+        _ => vec![],
+    }
+}
+
 /// Where Faith starts, of the starts a level has (its own start first).
+// (Rank 0 is also a story level's default checkpoint.)
 const STARTS: [&str; 4] = ["TdTimeTrialStart", "PlayerStart", "TdPlayerStart", "TdTutorialStart"];
+
+/// A story checkpoint's box: what she walks into.
+const STORY_CHECKPOINT: Vec3 = Vec3::new(6.0, 4.0, 6.0);
+
+/// How bright a Mirror's Edge light of brightness 1 is, in lumens (its lightmaps' units aren't
+/// ours: set by eye against the sun).
+const LIGHT_LUMENS: f32 = 30_000.0;
 
 /// Where she can be: the level's starts, checkpoints and paths (its AI's). A mesh that only
 /// has triangles to collide with (a building's) only collides near these: the city's skyline
@@ -138,12 +164,41 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut read: Vec<(String, Rc<Package>, map::Map)> = vec![];
     for name in &names {
-        match pkgs.get(name) {
-            Ok(pkg) => {
-                let m = map::read(&pkg);
-                read.push((name.clone(), pkg, m));
+        let files = files_of(pkgs, name, persistent);
+        if files.is_empty() {
+            report.push_str(&format!("  {name}: not found\n"));
+        }
+        for file in files {
+            if read.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(&file)) {
+                continue;
             }
-            Err(_) => report.push_str(&format!("  {name}: not found\n")),
+            let Ok(pkg) = pkgs.get(&file) else { continue };
+            let m = map::read(&pkg);
+            read.push((file, pkg, m));
+        }
+    }
+    // (`PORT_ME_NEAR=x,y,z`: what's round a point, ours, in every package: why she falls
+    // somewhere, say.)
+    if let Some(at) = std::env::var("PORT_ME_NEAR").ok().and_then(|s| { let v: Vec<f32> = s.split(',').filter_map(|x| x.parse().ok()).collect(); (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2])) }) {
+        for (name, pkg, m) in &read {
+            for p in &m.meshes {
+                let d = ue(p.location) - at;
+                if Vec3::new(d.x, 0.0, d.z).length() < 12.0 && d.y.abs() < 15.0 {
+                    eprintln!("NEAR {name} mesh {} {} {} at {} hidden {} blocks {}", p.class, p.name, pkg.path(p.mesh as i32 + 1), ue(p.location), p.hidden, p.blocks);
+                }
+            }
+            for v in &m.volumes {
+                let d = ue(v.location) - at;
+                if Vec3::new(d.x, 0.0, d.z).length() < 30.0 && d.y.abs() < 30.0 {
+                    eprintln!("NEAR {name} vol {} {} at {} polys {}", v.class, v.name, ue(v.location), v.polys.len());
+                }
+            }
+            for o in &m.others {
+                let d = ue(o.location) - at;
+                if Vec3::new(d.x, 0.0, d.z).length() < 12.0 && d.y.abs() < 15.0 {
+                    eprintln!("NEAR {name} other {} {} at {}", o.class, o.name, ue(o.location));
+                }
+            }
         }
     }
     let places: Vec<Vec3> = read.iter().flat_map(|(_, _, m)| m.others.iter().filter(|o| PLACES.contains(&o.class.as_str())).map(|o| ue(o.location))).collect();
@@ -151,6 +206,8 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     let mut far = 0;
     let mut sun: Option<(f32, Vec3, Vec3)> = None;
     let mut course: Vec<(bool, String, Vec3, Option<String>)> = vec![];
+    let mut story: Vec<(String, String, Vec3, f32)> = vec![];
+    let mut lights = 0;
     for (name, pkg, m) in &read {
         let pkg: &Package = pkg;
         let mut seen: HashMap<usize, (bool, bool, Option<(Vec3, Vec3)>)> = HashMap::new();
@@ -191,6 +248,24 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
             }
             props += 1;
             doc.objects.push(o);
+        }
+        // Its BSP: the rooms, floors and walls built of brushes (one mesh, where it is).
+        let mut bsp_faces = 0;
+        if let Ok(b) = me_assets::bsp::Bsp::read(pkg) {
+            let mesh = b.mesh(pkg);
+            if !mesh.positions.is_empty() || !b.collision_tris().is_empty() {
+                bsp_faces = b.faces.len();
+                let bounds = (!mesh.positions.is_empty()).then(|| {
+                    let (o, e) = (ue(mesh.origin), Vec3::new(mesh.extent[1], mesh.extent[2], mesh.extent[0]) * 0.01);
+                    (tidy(o - e), tidy(o + e))
+                });
+                let mut o = Object::new(
+                    Kind::MeProp { package: name.clone(), mesh: me_assets::bsp::BSP.into(), scale: Vec3::ONE, bounds, solid: true, own_shape: true, materials: vec![] },
+                    Vec3::ZERO,
+                );
+                o.name = format!("{name} BSP");
+                doc.objects.push(o);
+            }
         }
         for v in &m.volumes {
             *counts.entry(v.class.clone()).or_default() += 1;
@@ -287,8 +362,52 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
             if let Some(rank) = STARTS.iter().position(|s| *s == o.class) {
                 starts.push((rank, ue(o.location), -(o.rotation[1] as f32) * 360.0 / 65536.0));
             }
+            // A story level's checkpoints: where she comes back to (its default one is where
+            // the level starts, before any player start).
+            if o.class == "TdCheckpoint" {
+                let a = map::Chain::new(pkg, o.export);
+                let yaw = -(o.rotation[1] as f32) * 360.0 / 65536.0;
+                // (Not the start's own: she'd start in it.)
+                if a.bool("DefaultCheckpoint") == Some(true) {
+                    starts.push((0, ue(o.location), yaw));
+                    continue;
+                }
+                story.push((a.name("CheckpointName").unwrap_or_else(|| o.name.clone()), o.name.clone(), ue(o.location), yaw));
+            }
+            // Its lights: a point light (an area light as one, a bit bigger), a spot light.
+            if o.class.contains("PointLight") || o.class.contains("SpotLight") || o.class == "TdAreaLight" {
+                let a = map::Chain::new(pkg, o.export);
+                let Some(c) = a.object("LightComponent").filter(|&c| c > 0) else { continue };
+                let c = map::Chain::new(pkg, c as usize - 1);
+                if c.bool("bEnabled") == Some(false) {
+                    continue;
+                }
+                let brightness = c.f32("Brightness").unwrap_or(1.0);
+                if brightness <= 0.0 {
+                    continue;
+                }
+                let color = c.bytes("LightColor").filter(|b| b.len() == 4).map_or(Vec3::ONE, |b| Vec3::new(b[2] as f32, b[1] as f32, b[0] as f32) / 255.0);
+                let color = Vec3::new(round(color.x, 1e3), round(color.y, 1e3), round(color.z, 1e3));
+                let range = round(c.f32("Radius").unwrap_or(1024.0) * 0.01, 1e2);
+                let intensity = round(brightness * LIGHT_LUMENS, 1.0);
+                let spot = o.class.contains("SpotLight");
+                let kind = if spot {
+                    let outer = c.f32("OuterConeAngle").unwrap_or(44.0);
+                    let inner = c.f32("InnerConeAngle").unwrap_or(0.0);
+                    Kind::SpotLight { color, intensity, range, radius: 0.1, angle: round(outer.clamp(1.0, 89.0), 1e2), soft: round((1.0 - inner / outer.max(1.0)).clamp(0.0, 1.0), 1e2), shadows: false }
+                } else {
+                    Kind::PointLight { color, intensity, range, radius: if o.class == "TdAreaLight" { 0.4 } else { 0.1 }, shadows: false }
+                };
+                let mut l = Object::new(kind, tidy(ue(o.location)));
+                if spot {
+                    l.face(ue_dir(map::rotate(o.rotation, [1.0, 0.0, 0.0])).normalize());
+                }
+                l.name = o.name.clone();
+                doc.objects.push(l);
+                lights += 1;
+            }
         }
-        report.push_str(&format!("  {name}: {props} meshes ({solid} solid), {} volumes\n", m.volumes.len()));
+        report.push_str(&format!("  {name}: {props} meshes ({solid} solid), {} volumes, {bsp_faces} BSP faces\n", m.volumes.len()));
     }
     report.push_str(&format!("  {far} meshes with only triangles to collide with are out of her way: not solid\n"));
     // (As bright as our outdoor sun: Mirror's Edge's brightness is its lightmaps'.)
@@ -327,6 +446,19 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
         doc.course = true;
         report.push_str(&format!("  a time trial: {} checkpoints, the last its finish\n", order.len()));
     }
+    // A story level's checkpoints (not a time trial's: it has its course), in any order.
+    if !doc.course && !story.is_empty() {
+        for (name, actor, at, yaw) in &story {
+            let feet = tidy(*at - Vec3::Y * HALF_HEIGHT);
+            let mut o = Object::sized(Kind::Checkpoint { name: name.clone(), spawn: Vec3::new(0.0, -STORY_CHECKPOINT.y * 0.5, 0.0) }, tidy(feet + Vec3::Y * STORY_CHECKPOINT.y * 0.5), STORY_CHECKPOINT);
+            o.yaw = round(yaw.rem_euclid(360.0), 1e3);
+            o.name = actor.clone();
+            doc.objects.push(o);
+        }
+        doc.free_checkpoints = true;
+        report.push_str(&format!("  {} checkpoints\n", story.len()));
+    }
+    report.push_str(&format!("  {lights} lights\n"));
     starts.sort_by_key(|s| s.0);
     if let Some(&(_, at, yaw)) = starts.first() {
         let mut o = Object::new(Kind::Spawn { gravity: None }, tidy(at - Vec3::Y * HALF_HEIGHT));
@@ -377,7 +509,22 @@ fn ray(boxes: &[aperture::level::Solid], o: Vec3, d: Vec3, len: f32) -> Option<f
 fn place_ladders(doc: &mut LevelDoc, report: &mut String) {
     let l = doc.build();
     let boxes = &l.solids[..l.map_solids];
+    let free = doc.free_checkpoints;
     for o in doc.objects.iter_mut() {
+        // Her start, and where a story level's checkpoints start her again: on the floor under
+        // where the game stands her (its point is her middle, not always as high over it).
+        let feet = match &o.kind {
+            Kind::Spawn { .. } => Some(o.at),
+            Kind::Checkpoint { spawn, .. } if free => Some(o.at + *spawn),
+            _ => None,
+        };
+        if let Some(feet) = feet {
+            let middle = feet + Vec3::Y * HALF_HEIGHT;
+            if let Some(t) = ray(boxes, middle, Vec3::NEG_Y, HALF_HEIGHT + 2.0) {
+                o.at.y = round(o.at.y + (middle.y - t) - feet.y, 1e4);
+            }
+            continue;
+        }
         // A beam's path runs through it: ours runs along its top.
         if let Kind::Beam { to, .. } = &o.kind {
             let mid = o.at + *to * 0.5;
