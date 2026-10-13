@@ -902,6 +902,18 @@ impl Sim {
         }
         sim.static_world = BoxWorld::indexed(statics.iter().map(|s| s.b).collect(), Vec::new(), 4.0);
         sim.statics = statics;
+        // (A body the map has resting on something, a hair into its top as that one's hull has
+        // it: up onto it.)
+        for k in 0..sim.props.len() {
+            if !sim.bodies.contains(&sim.props[k].id) {
+                continue;
+            }
+            let b = sim.props[k].aabb();
+            let top = sim.statics.iter().filter(|s| s.b.overlaps(&b) && s.b.max.y > b.min.y && s.b.max.y - b.min.y < 0.05).map(|s| s.b.max.y).reduce(f32::max);
+            if let Some(top) = top {
+                sim.props[k].pos.y += top - b.min.y + 0.002;
+            }
+        }
         for p in level.portals.clone() {
             let portal = Portal::sized(p.center, p.normal, p.up, sim.portal_half());
             sim.set_portal(p.color, Some(portal));

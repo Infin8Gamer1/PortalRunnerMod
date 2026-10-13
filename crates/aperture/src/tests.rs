@@ -2019,3 +2019,18 @@ fn a_turned_physics_prop_is_hit_where_it_stands() {
     assert!((end.t - 1.4).abs() < 0.02, "{}", end.t);
 }
 
+
+/// #84: the relaxation vault's clock radio, mug and clipboard stay on its table (a prop_dynamic:
+/// solid as its hull).
+#[test]
+fn chamber_00_table_holds_whats_on_it() {
+    let level = portal_map("testchmb_a_00");
+    let (mut sim, mut c) = start(level);
+    let on_table: Vec<(u32, Vec3)> = sim.bodies.iter().filter_map(|&id| sim.props.iter().find(|p| p.id == id)).filter(|p| (p.pos.x - 6.6).abs() < 1.0 && (p.pos.z - 15.3).abs() < 1.0 && p.pos.y > 4.4).map(|p| (p.id, p.pos)).collect();
+    assert_eq!(on_table.len(), 3, "the radio, mug and clipboard: {on_table:?}");
+    run(&mut sim, &mut c, 3.0, |_, _| Input::default());
+    for (id, was) in on_table {
+        let p = sim.props.iter().find(|p| p.id == id).unwrap();
+        assert!(p.pos.y > 4.6 && p.pos.distance(was) < 0.2, "fell off the table: from {was} to {}", p.pos);
+    }
+}
