@@ -39,6 +39,10 @@ pub struct Surface {
     /// How brightly it glows, its colour times this (backlit signs): 0, it doesn't.
     #[serde(default)]
     pub glow: f32,
+    /// Its colour map packs other maps into its channels: `"grey_r_spec_b"`, its colour the
+    /// red channel's grey, its specular the blue (the far city's buildings).
+    #[serde(default)]
+    pub pack: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -193,8 +197,12 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
     // a parameter of its own. A mask goes from near-black up to the tint.)
     let named = surface.tint.as_ref().and_then(|n| slot.vectors.iter().find(|(v, _)| v.eq_ignore_ascii_case(n)).map(|(_, c)| *c));
     let tint = named.or(slot.tint).unwrap_or([1.0; 3]);
+    // (A packed colour map: grey from its red, specular from its blue.)
+    let grey_r = surface.pack.as_deref() == Some("grey_r_spec_b");
+    let packed_spec: Option<Rgba> = grey_r.then(|| Rgba { width: base.width, height: base.height, pixels: base.pixels.chunks_exact(4).flat_map(|c| [c[2], c[2], c[2], 255]).collect() });
     let base_lin: Vec<[f32; 4]> = to_lin(base)
         .into_iter()
+        .map(|c| if grey_r { [c[0], c[0], c[0], c[3]] } else { c })
         .map(|c| {
             if surface.mask {
                 let m = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -210,7 +218,7 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
     });
     // The specular map: its brightness about its mean (varying the roughness), and where it's
     // brightest (glass in a facade's windows, polished metal) glossy.
-    let spec: Option<(Vec<[f32; 2]>, u32, u32)> = slot.specular.as_ref().map(|t| {
+    let spec: Option<(Vec<[f32; 2]>, u32, u32)> = packed_spec.as_ref().or(slot.specular.as_ref()).map(|t| {
         let v: Vec<f32> = t.pixels.chunks_exact(4).map(|c| (c[0] as f32 * 0.299 + c[1] as f32 * 0.587 + c[2] as f32 * 0.114) / 255.0).collect();
         let mean = (v.iter().sum::<f32>() / v.len() as f32).max(1e-3);
         (v.into_iter().map(|x| [x / mean, x]).collect(), t.width, t.height)

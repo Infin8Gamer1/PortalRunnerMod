@@ -9,7 +9,9 @@
 // how rough it is (0-1, before its detail and the game's specular map vary it), how metallic,
 // and how strongly the detail shows (0-1). Optionally: the colour parameter that tints it
 // (`tint`), whether its colour map is a mask from near-black up to that tint (`mask`), and how
-// brightly it glows (`glow`: its colour times this; backlit signs).
+// brightly it glows (`glow`: its colour times this; backlit signs), and whether its colour map
+// packs other maps in its channels (`pack`: "grey_r_spec_b", the far city's buildings: grey in
+// red, specular in blue).
 //
 // `rules`: in order, the first whose `match` has a word in a material's path (its package,
 // groups and name, any case) gives its surface. A material no rule takes keeps the game's own
@@ -26,6 +28,9 @@
         "cardboard": (detail: None, size: 1.0, roughness: 0.9, metallic: 0.0, strength: 0.0),
         "glass": (detail: None, size: 1.0, roughness: 0.05, metallic: 0.0, strength: 0.0),
         "plastic": (detail: None, size: 1.0, roughness: 0.5, metallic: 0.0, strength: 0.0),
+        // The far city's buildings: their colour map's red is their grey, its blue their windows'
+        // shine.
+        "far_building": (detail: Some("plaster"), size: 1.0, roughness: 0.8, metallic: 0.0, strength: 0.2, pack: Some("grey_r_spec_b")),
         // A backlit advert: its graphic (a mask) in its colour, glowing.
         "advert": (detail: None, size: 1.0, roughness: 0.25, metallic: 0.0, strength: 0.0, tint: Some("AdColor"), mask: true, glow: 4.0),
     },
@@ -34,6 +39,7 @@
         (match: ["vegetation", "leaves", "bush", "tree", "b_vista", "mountain", "skydome"], surface: None),
         (match: ["m_advertisement", "mi_ad_"], surface: Some("advert")),
         (match: ["glass", "window"], surface: Some("glass")),
+        (match: ["b_bd_", "b_materials.m_bd"], surface: Some("far_building")),
         (match: ["cardboard"], surface: Some("cardboard")),
         (match: ["tarp", "plasticcover", "housecover", "tent", "cover", "fabric", "cloth", "sack"], surface: Some("fabric")),
         (match: ["wood", "plank", "pallet", "crate", "runnerobjects"], surface: Some("wood")),
