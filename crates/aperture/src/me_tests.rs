@@ -1,5 +1,6 @@
 //! Mirror's Edge's levels as the game's own (`levels/me/`, #100): they build, she stands
-//! where they start her, and their ladders, zipline, swing poles and beam work.
+//! where they start her, and their ladders, zipline, swing poles and beam work. (Their props
+//! collide with their meshes' shapes, read from the game: without it, these don't run.)
 
 use faith_move::{Controller, Fixture, Input, State};
 use glam::{Vec2, Vec3};
@@ -9,7 +10,11 @@ use crate::sim::{Sim, SimEvent};
 
 const DT: f32 = 1.0 / 60.0;
 
+/// A level, if it's been made and the game's there to read its props' shapes from.
 fn level(file: &str) -> Option<crate::Level> {
+    if !crate::me::installed() {
+        return None;
+    }
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/me").join(format!("{file}.ron"));
     let doc = LevelDoc::from_ron(&std::fs::read_to_string(path).ok()?).ok()?;
     Some(doc.build())

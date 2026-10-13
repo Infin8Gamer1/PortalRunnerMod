@@ -73,6 +73,8 @@ pub struct MePropCache {
 pub fn setup(world: &mut World) {
     world.insert_resource(MePropCache { level: u64::MAX, ..default() });
     let Some(cooked) = world.get_resource::<crate::me_viewmodel::MeArms>().map(|a| a.cooked_pc().to_path_buf()) else { return };
+    // (Props collide with their meshes' own shapes, read from the same install.)
+    aperture::me::set_install(&cooked);
     world.insert_non_send(MePackages(Packages::new(&cooked)));
 }
 

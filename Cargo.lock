@@ -190,6 +190,7 @@ version = "0.1.0"
 dependencies = [
  "faith_move",
  "glam",
+ "me_assets",
  "ron",
  "serde",
 ]

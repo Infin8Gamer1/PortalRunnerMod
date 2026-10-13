@@ -9,23 +9,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use aperture::doc::{Kind, LevelDoc, Object};
-use aperture::me::MeShape;
+use aperture::me::{plane, ue, ue_dir, MeShape};
 use aperture::Mat;
 use glam::{Mat3, Quat, Vec3, Vec4};
-use me_assets::map::{self, Shape};
+use me_assets::map;
 use me_assets::{Package, Packages};
 
 use aperture::me::MAPS;
-
-/// Unreal's points (centimetres; X forward, Y right, Z up) as ours (metres; X right, Y up,
-/// Z back).
-fn ue(p: [f32; 3]) -> Vec3 {
-    Vec3::new(p[1], p[2], -p[0]) * 0.01
-}
-
-fn ue_dir(p: [f32; 3]) -> Vec3 {
-    Vec3::new(p[1], p[2], -p[0])
-}
 
 /// An Unreal rotator as our turn.
 fn turn(r: [i32; 3]) -> Quat {
@@ -45,53 +35,6 @@ fn round(x: f32, k: f32) -> f32 {
 
 fn tidy(v: Vec3) -> Vec3 {
     Vec3::new(round(v.x, 1e4), round(v.y, 1e4), round(v.z, 1e4))
-}
-
-fn plane(n: Vec3, d: f32) -> Vec4 {
-    let len = n.length();
-    let n = n / len;
-    Vec4::new(round(n.x, 1e5), round(n.y, 1e5), round(n.z, 1e5), round(d / len, 1e4))
-}
-
-/// A box's planes: its centre `c`, unit axes and half sizes.
-fn box_planes(c: Vec3, axes: [Vec3; 3], half: [f32; 3]) -> Vec<Vec4> {
-    let mut out = vec![];
-    for k in 0..3 {
-        let a = axes[k].normalize();
-        out.push(plane(a, a.dot(c) + half[k]));
-        out.push(plane(-a, -a.dot(c) + half[k]));
-    }
-    out
-}
-
-/// A mesh's collision, in its own space as ours.
-fn shape_of(c: &map::Collision) -> MeShape {
-    let mut s = MeShape::default();
-    for sh in &c.shapes {
-        match sh {
-            Shape::Hull { planes, .. } => {
-                if planes.len() >= 4 {
-                    s.hulls.push(planes.iter().map(|p| plane(ue_dir([p[0], p[1], p[2]]), p[3] * 0.01)).collect());
-                }
-            }
-            Shape::Box { tm, size } => {
-                let axes = [ue_dir(tm[0]), ue_dir(tm[1]), ue_dir(tm[2])];
-                s.hulls.push(box_planes(ue(tm[3]), axes, [size[0] * 0.005, size[1] * 0.005, size[2] * 0.005]));
-            }
-            // (A capsule or a ball as the box round it.)
-            Shape::Capsule { tm, radius, length } => {
-                let axes = [ue_dir(tm[0]), ue_dir(tm[1]), ue_dir(tm[2])];
-                let r = radius * 0.01;
-                s.hulls.push(box_planes(ue(tm[3]), axes, [r, r, length * 0.005 + r]));
-            }
-            Shape::Sphere { center, radius } => {
-                let r = radius * 0.01;
-                s.hulls.push(box_planes(ue(*center), [Vec3::X, Vec3::Y, Vec3::Z], [r, r, r]));
-            }
-        }
-    }
-    s.tris = c.tris.iter().map(|t| t.map(|p| tidy(ue(p)))).collect();
-    s
 }
 
 /// A mesh's box (ours, from its origin).
@@ -129,6 +72,7 @@ fn volume_planes(v: &map::Volume) -> Vec<Vec4> {
         let n = n.normalize();
         let n = if n.dot(p[0] - mid) < 0.0 { -n } else { n };
         let pl = plane(n, n.dot(p[0]));
+        let pl = Vec4::new(round(pl.x, 1e5), round(pl.y, 1e5), round(pl.z, 1e5), round(pl.w, 1e4));
         if !out.iter().any(|q| q.truncate().dot(pl.truncate()) > 0.9999 && (q.w - pl.w).abs() < 1e-3) {
             out.push(pl);
         }
@@ -180,7 +124,6 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     names.extend(streamed(&top).into_iter().filter(|n| !n.eq_ignore_ascii_case(persistent)));
     let mut doc = LevelDoc::new(title);
     doc.indoor = false;
-    let mut shapes: BTreeMap<String, MeShape> = BTreeMap::new();
     let mut starts: Vec<(usize, Vec3, f32)> = vec![];
     let mut low = f32::MAX;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -212,18 +155,11 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
             if p.hidden || path.starts_with("L_Sun") || path.starts_with("L_Sky") || path.starts_with("FX_") {
                 continue;
             }
-            let key = format!("{name}.{}", p.mesh_name);
+            // (What it collides with isn't kept: the game reads it with the mesh. Only whether
+            // it has anything, and whether that's only triangles.)
             let (shaped, tris_only, bounds) = *seen.entry(p.mesh).or_insert_with(|| {
-                let path = pkg.path(p.mesh as i32 + 1);
-                // (The sky is a mesh too: nothing to bump into.)
-                let sky = path.starts_with("L_Sky") || path.starts_with("L_Sun");
-                let shape = if sky { MeShape::default() } else { shape_of(&map::mesh_collision(&pkg, p.mesh)) };
-                let shaped = !shape.hulls.is_empty() || !shape.tris.is_empty();
-                let tris_only = shape.hulls.is_empty();
-                if shaped {
-                    shapes.insert(key.clone(), shape);
-                }
-                (shaped, tris_only, mesh_box(pkg, p.mesh))
+                let shape = MeShape::from_game(&map::mesh_collision(pkg, p.mesh));
+                (!shape.is_empty(), shape.hulls.is_empty(), mesh_box(pkg, p.mesh))
             });
             let at = tidy(ue(p.location));
             // (Where it stands, roughly: its box's size round its point.)
@@ -233,7 +169,7 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                 true
             });
             let mut o = Object::new(
-                Kind::MeProp { package: name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped },
+                Kind::MeProp { package: name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true },
                 at,
             );
             o.set_rotation(turn(p.rotation));
@@ -378,17 +314,6 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     if low < f32::MAX {
         doc.kill_y = round(low - 10.0, 10.0);
     }
-    // (Only the shapes of meshes that are solid somewhere.)
-    let used: std::collections::HashSet<String> = doc
-        .objects
-        .iter()
-        .filter_map(|o| match &o.kind {
-            Kind::MeProp { package, mesh, solid: true, .. } => Some(format!("{package}.{mesh}")),
-            _ => None,
-        })
-        .collect();
-    shapes.retain(|k, _| used.contains(k));
-    doc.me_shapes = shapes;
     place_ladders(&mut doc, report);
     let others: Vec<String> = counts.iter().map(|(c, n)| format!("{c} {n}")).collect();
     report.push_str(&format!("  actors: {}\n", others.join(", ")));
@@ -479,6 +404,8 @@ pub fn port_all(cooked: &Path, only: Option<&str>) {
         .filter_map(|l| l.split_once(' ').and_then(|(n, f)| Some((n.to_string(), f.parse().ok()?))))
         .collect();
     let mut pkgs = Packages::new(cooked);
+    // (The levels' props collide with their meshes' shapes, read from here as the game does.)
+    aperture::me::set_install(cooked);
     let (mut made, mut kept) = (0, Vec::new());
     for (map, file, title) in MAPS {
         if only.is_some_and(|o| !o.eq_ignore_ascii_case(file) && !o.eq_ignore_ascii_case(map)) {

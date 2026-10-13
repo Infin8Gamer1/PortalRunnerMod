@@ -120,11 +120,13 @@ Training map and its three time trials):
 
 - Its meshes are **Mirror's Edge props**, standing, turned and scaled as the map has them (one
   mirrored is drawn wound the other way round), drawn from the install.
-- What each mesh collides with is kept in the file, once per mesh (`me_shapes`): its convex
-  hulls, or for a mesh that has none, its triangles. A placed mesh collides with its shapes
-  wherever it's moved (and isn't drawn as boxes). Meshes that only have triangles (the city's
-  buildings) collide only within 40 m of where she can go; the sky, the sun's flare and the
-  effects' meshes (light shafts) are left out.
+- Each prop collides with its mesh's own collision (**Collision: the mesh's own**), read from
+  the game with the mesh: its convex hulls, or for a mesh that has none, its triangles, placed
+  wherever the prop is moved (and not drawn as boxes). Nothing of it is in the file; without
+  the game a prop collides as its box. Meshes that only have triangles (the city's buildings)
+  are solid only within 40 m of where she can go; the sky, the sun's flare and the effects'
+  meshes (light shafts) are left out. Mirror's Edge props added from the browser collide the
+  same way.
 - Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top

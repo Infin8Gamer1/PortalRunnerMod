@@ -1518,11 +1518,16 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             });
             ui.end_row();
         }
-        Kind::MeProp { package, mesh, scale, bounds, solid } => {
+        Kind::MeProp { package, mesh, scale, bounds, solid, own_shape } => {
             ui.label("Mirror's Edge");
             ui.label(format!("{package} / {mesh}"));
             ui.end_row();
             prop_fields(ui, scale, bounds, solid);
+            if *solid {
+                ui.label("Collision");
+                ui.checkbox(own_shape, "The mesh's own").on_hover_text("Collide with the shapes Mirror's Edge gives the mesh (read from the game with it), not its box");
+                ui.end_row();
+            }
         }
         Kind::Model { path, scale, bounds, solid } => {
             ui.label("Model");

@@ -7,7 +7,7 @@
 //! as Faith's does. A built chamber can be read back into one ([`LevelDoc::from_level`]) as a
 //! starting point: its boxes as they end up, after the rooms are cut.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::{EulerRot, Quat, Vec3, Vec4};
@@ -46,10 +46,6 @@ pub struct LevelDoc {
     /// changes lead to the next map's copy, and it's played by Portal's rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map: Option<String>,
-    /// What its Mirror's Edge meshes collide with (`package.mesh`): a solid one that's here
-    /// collides with this, not its box.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub me_shapes: BTreeMap<String, MeShape>,
 }
 
 /// The fill light everywhere: its colour (sRGB, 0-1) and brightness.
@@ -148,6 +144,10 @@ fn is_zero(v: &Vec3) -> bool {
     *v == Vec3::ZERO
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 fn is_zero_f(v: &f32) -> bool {
     *v == 0.0
 }
@@ -242,8 +242,21 @@ pub enum Kind {
     Sun { color: Vec3, illuminance: f32 },
     /// A Mirror's Edge static mesh, standing here, turned `yaw`. `bounds` is its box (from here,
     /// before it's turned or scaled); with `solid`, that's a block too (turned with it a quarter
-    /// at a time), drawn instead when the game isn't installed.
-    MeProp { package: String, mesh: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
+    /// at a time), drawn instead when the game isn't installed. With `own_shape` as well, it
+    /// collides with its mesh's own collision instead, read from the game with the mesh (its
+    /// box when the game isn't there).
+    MeProp {
+        package: String,
+        mesh: String,
+        #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")]
+        scale: Vec3,
+        #[serde(default)]
+        bounds: Option<(Vec3, Vec3)>,
+        #[serde(default)]
+        solid: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        own_shape: bool,
+    },
     /// A model from the extracted props (`props/portal2/...glb`, under the extracted folder),
     /// standing here, turned `yaw`; `bounds` and `solid` as a Mirror's Edge prop's.
     Model { path: String, #[serde(default = "scale3::one", deserialize_with = "scale3::deserialize")] scale: Vec3, #[serde(default)] bounds: Option<(Vec3, Vec3)>, #[serde(default)] solid: bool },
@@ -730,7 +743,7 @@ impl Object {
 
 impl LevelDoc {
     pub fn new(name: &str) -> Self {
-        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None, me_shapes: BTreeMap::new() }
+        LevelDoc { name: name.into(), intro: String::new(), indoor: true, kill_y: -30.0, blue: true, orange: true, objects: Vec::new(), ambient: None, map: None }
     }
 
     /// A white room to start from: floor, walls, ceiling, a lamp grid and the start.
@@ -787,14 +800,14 @@ impl LevelDoc {
         // Mirror's Edge's meshes and volumes collide as their shapes, and aren't drawn as boxes
         // (the meshes are drawn): their solids first, as a map's own are.
         let shape_of = |o: &Object| match &o.kind {
-            Kind::MeProp { package, mesh, solid: true, .. } => self.me_shapes.get(&format!("{package}.{mesh}")),
+            Kind::MeProp { package, mesh, solid: true, own_shape: true, .. } => crate::me::shape(package, mesh),
             _ => None,
         };
         for o in &self.objects {
             match &o.kind {
                 Kind::MeProp { package, mesh, scale, .. } => {
                     if let Some(shape) = shape_of(o) {
-                        crate::me::place_kept(&format!("{package}.{mesh}"), shape, o.at, o.rotation(), *scale, Mat::Wall, &mut l.solids, &mut l.slopes);
+                        crate::me::place_kept(&format!("{package}.{mesh}"), &shape, o.at, o.rotation(), *scale, Mat::Wall, &mut l.solids, &mut l.slopes);
                     }
                 }
                 _ => {}
@@ -803,7 +816,7 @@ impl LevelDoc {
         if !map {
             l.map_solids = l.solids.len();
         }
-        l.me_art = !self.me_shapes.is_empty();
+        l.me_art = self.objects.iter().any(|o| matches!(o.kind, Kind::MeProp { own_shape: true, .. }));
         let first = l.solids.len();
         l.intro = leak(&self.intro);
         l.indoor = self.indoor;
@@ -942,8 +955,8 @@ impl LevelDoc {
                 Kind::Ladder { height, pipe, exit } => {
                     l.fixtures.push(Fixture::Ladder(Ladder { base: at, top: at.y + *height, normal: o.dir(), pipe: *pipe, exit: *exit }));
                 }
-                Kind::MeProp { package, mesh, scale, bounds, solid } => {
-                    let shaped = self.me_shapes.contains_key(&format!("{package}.{mesh}"));
+                Kind::MeProp { package, mesh, scale, bounds, solid, .. } => {
+                    let shaped = shape_of(o).is_some();
                     let stand_in = (bounds.is_some() && *solid && !shaped).then(|| o.bounds());
                     l.me_props.push(MeProp { package: leak(package), mesh: leak(mesh), at, turn: o.rotation(), scale: *scale, stand_in });
                 }
@@ -1199,13 +1212,13 @@ impl LevelDoc {
         }
         for p in &l.me_props {
             // A prop that stands in a box of its own: that box is the prop's, not a block.
-            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false }, p.at);
+            let mut o = Object::new(Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: None, solid: false, own_shape: false }, p.at);
             o.set_rotation(p.turn);
             if let Some(b) = p.stand_in {
                 if let Some(i) = d.objects.iter().position(|o| o.kind == Kind::Block { mat: Mat::Prop } && (o.bounds().min - b.min).length() < 1e-4 && (o.bounds().max - b.max).length() < 1e-4) {
                     d.objects.remove(i);
                 }
-                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true };
+                o.kind = Kind::MeProp { package: p.package.to_string(), mesh: p.mesh.to_string(), scale: p.scale, bounds: Some(o.unturned_box(&b, p.scale)), solid: true, own_shape: false };
             }
             push(&mut d, o);
         }

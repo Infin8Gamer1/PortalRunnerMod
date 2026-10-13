@@ -1,13 +1,14 @@
 //! Mirror's Edge's levels, as the game's own (see `portal_extract --port-me`): their meshes are
-//! [`Kind::MeProp`](crate::doc::Kind::MeProp)s, drawn from the player's install, and what each
-//! mesh collides with is kept in the level ([`MeShape`]), so the level plays (and its pieces
-//! can be moved) without reading the game.
+//! [`Kind::MeProp`](crate::doc::Kind::MeProp)s, drawn from the player's install. A prop set to
+//! (`own_shape`) collides with its mesh's own collision, read from the install with the mesh
+//! ([`shape`]) and placed where the prop stands; without the game it collides as its box.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use glam::{Quat, Vec3, Vec4};
-use serde::{Deserialize, Serialize};
+use me_assets::map::{self, Shape};
 
 use crate::brush::{polygon, Brush, Contents, Face};
 use faith_move::Aabb;
@@ -26,12 +27,175 @@ pub const MAPS: &[(&str, &str, &str)] = &[
 /// What a Mirror's Edge mesh collides with, in its own space (ours: metres, before it's
 /// placed): convex hulls, each its faces' planes (`n·p = d`, facing out: `(n, d)`), or, for a
 /// mesh that has none, its triangles.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeShape {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hulls: Vec<Vec<Vec4>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tris: Vec<[Vec3; 3]>,
+}
+
+/// Unreal's points (centimetres; X forward, Y right, Z up) as ours (metres; X right, Y up,
+/// Z back).
+pub fn ue(p: [f32; 3]) -> Vec3 {
+    Vec3::new(p[1], p[2], -p[0]) * 0.01
+}
+
+pub fn ue_dir(p: [f32; 3]) -> Vec3 {
+    Vec3::new(p[1], p[2], -p[0])
+}
+
+/// A plane, its normal made unit length.
+pub fn plane(n: Vec3, d: f32) -> Vec4 {
+    let len = n.length();
+    (n / len).extend(d / len)
+}
+
+/// A box's planes: its centre `c`, axes and half sizes.
+pub fn box_planes(c: Vec3, axes: [Vec3; 3], half: [f32; 3]) -> Vec<Vec4> {
+    let mut out = vec![];
+    for k in 0..3 {
+        let a = axes[k].normalize();
+        out.push(plane(a, a.dot(c) + half[k]));
+        out.push(plane(-a, -a.dot(c) + half[k]));
+    }
+    out
+}
+
+impl MeShape {
+    /// A mesh's collision as the game has it, as ours.
+    pub fn from_game(c: &map::Collision) -> MeShape {
+        let mut s = MeShape::default();
+        for sh in &c.shapes {
+            match sh {
+                Shape::Hull { planes, .. } => {
+                    if planes.len() >= 4 {
+                        s.hulls.push(planes.iter().map(|p| plane(ue_dir([p[0], p[1], p[2]]), p[3] * 0.01)).collect());
+                    }
+                }
+                Shape::Box { tm, size } => {
+                    let axes = [ue_dir(tm[0]), ue_dir(tm[1]), ue_dir(tm[2])];
+                    s.hulls.push(box_planes(ue(tm[3]), axes, [size[0] * 0.005, size[1] * 0.005, size[2] * 0.005]));
+                }
+                // (A capsule or a ball as the box round it.)
+                Shape::Capsule { tm, radius, length } => {
+                    let axes = [ue_dir(tm[0]), ue_dir(tm[1]), ue_dir(tm[2])];
+                    let r = radius * 0.01;
+                    s.hulls.push(box_planes(ue(tm[3]), axes, [r, r, length * 0.005 + r]));
+                }
+                Shape::Sphere { center, radius } => {
+                    let r = radius * 0.01;
+                    s.hulls.push(box_planes(ue(*center), [Vec3::X, Vec3::Y, Vec3::Z], [r, r, r]));
+                }
+            }
+        }
+        s.tris = c.tris.iter().map(|t| t.map(ue)).collect();
+        s
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hulls.is_empty() && self.tris.is_empty()
+    }
+}
+
+/// Where the game is and what's been read of it: each package's file, the packages open now
+/// (the last few: a level's props come a package at a time), each mesh's shape.
+#[derive(Default)]
+struct Install {
+    cooked: Option<PathBuf>,
+    files: HashMap<String, PathBuf>,
+    open: Vec<(String, Arc<me_assets::Package>)>,
+    shapes: HashMap<String, Option<Arc<MeShape>>>,
+}
+
+static INSTALL: Mutex<Option<Install>> = Mutex::new(None);
+const OPEN_MOST: usize = 3;
+
+/// Read Mirror's Edge from here (its folder, or its `TdGame/CookedPC`), rather than where
+/// [`find_install`] looks.
+pub fn set_install(dir: &Path) {
+    let cooked = me_assets::cooked_pc(dir);
+    if let Ok(mut i) = INSTALL.lock() {
+        if i.as_ref().is_some_and(|i| i.cooked == cooked) {
+            return;
+        }
+        *i = Some(Install::at(cooked));
+    }
+}
+
+/// Mirror's Edge's install: `FAITH_ME_DIR`, `me_path.txt` (here or at the repository's top), or
+/// Steam's.
+pub fn find_install() -> Option<PathBuf> {
+    let mut tries: Vec<PathBuf> = std::env::var_os("FAITH_ME_DIR").map(PathBuf::from).into_iter().collect();
+    for f in [PathBuf::from("me_path.txt"), Path::new(env!("CARGO_MANIFEST_DIR")).join("../../me_path.txt")] {
+        if let Ok(s) = std::fs::read_to_string(f) {
+            tries.push(PathBuf::from(s.trim()));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        for steam in [".local/share/Steam", ".steam/steam", ".var/app/com.valvesoftware.Steam/.local/share/Steam"] {
+            tries.push(Path::new(&home).join(steam).join("steamapps/common/mirrors edge"));
+        }
+    }
+    for s in [r"C:\Program Files (x86)\Steam\steamapps\common", r"C:\Program Files\Steam\steamapps\common"] {
+        tries.push(Path::new(s).join("mirrors edge"));
+    }
+    tries.into_iter().find_map(|p| me_assets::cooked_pc(&p))
+}
+
+impl Install {
+    fn at(cooked: Option<PathBuf>) -> Install {
+        let mut files = HashMap::new();
+        let mut stack: Vec<PathBuf> = cooked.iter().cloned().collect();
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    files.entry(stem.to_ascii_lowercase()).or_insert(p);
+                }
+            }
+        }
+        Install { cooked, files, ..Default::default() }
+    }
+
+    fn package(&mut self, name: &str) -> Option<Arc<me_assets::Package>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(k) = self.open.iter().position(|(n, _)| *n == key) {
+            let p = self.open.remove(k);
+            self.open.push(p.clone());
+            return Some(p.1);
+        }
+        let p = Arc::new(me_assets::Package::open(self.files.get(&key)?).ok()?);
+        if self.open.len() >= OPEN_MOST {
+            self.open.remove(0);
+        }
+        self.open.push((key, p.clone()));
+        Some(p)
+    }
+}
+
+/// What mesh `mesh` in package `package` collides with, read from the install (once), if the
+/// game's there and the mesh has anything to collide with.
+pub fn shape(package: &str, mesh: &str) -> Option<Arc<MeShape>> {
+    let mut guard = INSTALL.lock().ok()?;
+    let install = guard.get_or_insert_with(|| Install::at(find_install()));
+    let key = format!("{package}.{mesh}");
+    if let Some(s) = install.shapes.get(&key) {
+        return s.clone();
+    }
+    let read = install.package(package).and_then(|pkg| {
+        let i = pkg.exports.iter().position(|e| e.name == mesh && pkg.class_name(e) == "StaticMesh")?;
+        let s = MeShape::from_game(&map::mesh_collision(&pkg, i));
+        (!s.is_empty()).then(|| Arc::new(s))
+    });
+    install.shapes.insert(key, read.clone());
+    read
+}
+
+/// Whether the game's there to read shapes from.
+pub fn installed() -> bool {
+    INSTALL.lock().ok().is_some_and(|mut g| g.get_or_insert_with(|| Install::at(find_install())).cooked.is_some())
 }
 
 /// How thick a triangle is to collide with (behind its face).
