@@ -92,12 +92,24 @@ fn main() {
         .and_then(|p| std::fs::canonicalize(p).ok())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "assets".into());
+    // The window starts as the settings have it (borderless fullscreen, say), rather than
+    // windowed and switched once it's up: each switch costs the desktop's compositor memory it
+    // doesn't give back.
+    let start_mode = {
+        let s = settings::Settings::load();
+        let mode = std::env::var("PORTAL_WINDOW_MODE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(s.window_mode);
+        match mode.round() as i32 {
+            1 => bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary),
+            _ => bevy::window::WindowMode::Windowed,
+        }
+    };
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Portal Runner".into(),
                     resolution: (1600, 900).into(),
+                    mode: start_mode,
                     // PORTAL_NOVSYNC=1: uncapped, for measuring.
                     present_mode: if std::env::var_os("PORTAL_NOVSYNC").is_some() {
                         bevy::window::PresentMode::AutoNoVsync

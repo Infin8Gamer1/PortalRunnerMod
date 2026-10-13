@@ -29,5 +29,12 @@ what was padding: `binder.rs`, `raytracing_scene_bindings.wgsl`'s `Material.alph
 `trace_ray_plain` loops over candidate hits, confirming one only where the base colour's alpha
 reaches it (`alpha_passes`). Opaque meshes stay on the fast path.
 
+Light leaking through thin walls' corners: a world cache cell is a cube in space (15 cm near the
+camera, keyed by position and normal), so where a wall's plane carries on past a thin wall
+across it (Mirror's Edge's 5 cm walls), one cell holds points on both sides, and whichever side
+made it lights the other: glowing patches along corners. `world_cache_query.wgsl` now checks a
+reused cell's point is in sight of where it's queried (one short ray, when they're more than
+2 cm apart); out of sight, the cell's light isn't used.
+
 Drop these, and the `[patch.crates-io]` entry in the root `Cargo.toml`, once Bevy's own release
 carries fixes.
