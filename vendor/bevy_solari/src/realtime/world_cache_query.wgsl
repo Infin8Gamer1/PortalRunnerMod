@@ -4,6 +4,7 @@ enable wgpu_ray_query;
 
 #import bevy_pbr::utils::{rand_f, rand_vec2f}
 #import bevy_render::maths::orthonormalize
+#import bevy_solari::scene_bindings::trace_ray_plain
 #import bevy_solari::realtime_bindings::{
     world_cache_life,
     world_cache_checksums,
@@ -33,6 +34,10 @@ const WORLD_CACHE_MAX_SEARCH_STEPS: u32 = 3u;
 
 /// Size of a cache cell at the lowest LOD in meters
 const WORLD_CACHE_POSITION_BASE_CELL_SIZE: f32 = 0.15;
+/// A cell's point further than this from where it's queried is checked to be in sight of it
+/// (PortalRunner), each a little off its surface.
+const WORLD_CACHE_SEE_CHECK_DISTANCE: f32 = 0.02;
+const WORLD_CACHE_SEE_OFFSET: f32 = 0.01;
 /// How fast the world cache transitions between LODs as a function of distance to the camera
 const WORLD_CACHE_POSITION_LOD_SCALE: f32 = 15.0;
 
@@ -78,7 +83,23 @@ fn query_world_cache(world_position_in: vec3<f32>, world_normal: vec3<f32>, view
         }
 
         if existing_checksum == checksum {
-            // Cache entry already exists - get radiance
+            // Cache entry already exists - get radiance, if the cell's point can be seen from
+            // here: a cell can span a thin wall (the plane of a wall carries on past a 5 cm wall
+            // across it), and one made from the far side would bring its light through.
+            // (PortalRunner: light leaks through thin walls' corners.)
+            let stored = world_cache_geometry_data[key].world_position;
+            if distance(stored, world_position_in) > WORLD_CACHE_SEE_CHECK_DISTANCE {
+                let start = world_position_in + world_normal * WORLD_CACHE_SEE_OFFSET;
+                let end = stored + world_cache_geometry_data[key].world_normal * WORLD_CACHE_SEE_OFFSET;
+                let gap = end - start;
+                let length_ = length(gap);
+                if length_ > 0.0001 {
+                    let hit = trace_ray_plain(start, gap / length_, 0.0, length_, RAY_FLAG_TERMINATE_ON_FIRST_HIT);
+                    if hit.kind != RAY_QUERY_INTERSECTION_NONE {
+                        return vec3(0.0);
+                    }
+                }
+            }
             return world_cache_radiance[key].rgb;
         } else if existing_checksum == WORLD_CACHE_EMPTY_CELL {
             // Cell is empty - initialize it

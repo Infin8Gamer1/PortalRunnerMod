@@ -183,18 +183,24 @@ fn apply(
 ) {
     // ---- the window
     let novsync = std::env::var_os("PORTAL_NOVSYNC").is_some();
-    let window = (settings.window_mode.round() as i32, settings.resolution.round() as i32, settings.vsync > 0.5 && !novsync);
+    // (PORTAL_WINDOW_MODE=0/1/2 in place of the setting: for tests.)
+    let mode = std::env::var("PORTAL_WINDOW_MODE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(settings.window_mode);
+    let window = (mode.round() as i32, settings.resolution.round() as i32, settings.vsync > 0.5 && !novsync);
     if applied.window != Some(window) {
         if let Ok((mut w, on)) = windows.single_mut() {
             let first = applied.window.is_none();
             // The monitor it's on, if that's known (asking for "the current one" panics when
             // the window system won't say, as on Wayland at times); else the first.
             let monitor = on.map(|m| MonitorSelection::Entity(m.0)).unwrap_or(MonitorSelection::Index(0));
-            w.mode = match window.0 {
+            let mode = match window.0 {
                 1 => WindowMode::BorderlessFullscreen(monitor),
                 2 => WindowMode::Fullscreen(monitor, VideoModeSelection::Current),
                 _ => WindowMode::Windowed,
             };
+            // (Already that kind of window (it started as one): left as it is, not switched.)
+            if std::mem::discriminant(&w.mode) != std::mem::discriminant(&mode) {
+                w.mode = mode;
+            }
             // The size is only ours to set when windowed (and not at startup when it's the
             // default, so a window manager's own placement stands).
             if window.0 == 0 && (!first || window.1 != 1) {

@@ -1283,6 +1283,9 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("editorpick_01_selected"),
             ]
         }
+        // Start, run two seconds, quit (for what starting and quitting leave behind: the GPU's
+        // memory).
+        "quit" => vec![Wait(120)],
         // A walk in a Mirror's Edge level (#109): she's put at PORTAL_ME_AT (x,y,z,yaw), runs
         // forward PORTAL_ME_RUN frames (90 unless said), a shot every 15 (`walk_00`, ...).
         "mewalk" => {
