@@ -8,6 +8,10 @@ use wgpu::{
     TextureTransition, TextureUses, TextureView, hal::api::Vulkan,
 };
 
+/// Whether the SDK this was built against has Ray Reconstruction's preset F (310.9.1 on).
+/// Older SDKs' libraries crash creating the feature if asked for it.
+pub const PRESET_F_AVAILABLE: bool = cfg!(dlss_responsivity_mask);
+
 /// Ray Reconstruction's model preset (NGX's `NVSDK_NGX_RayReconstruction_Hint_Render_Preset`:
 /// 0 lets DLSS choose; 4 D, 5 E, 6 F), for features created from now on.
 pub static RAY_RECONSTRUCTION_PRESET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
