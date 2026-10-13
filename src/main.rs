@@ -153,7 +153,7 @@ fn main() {
         play.run_if(editor::idle),
         speed_fx::update,
         (chamber::update, chamber::scroll_goo, chamber::face_glows, (map_fx::sync, map_fx::update, map_fx::beams, map_fx::tag_cameras, map_fx::cameras, map_fx::screen, map_grade::update), source_map::sync, source_map::bulbs, source_map::move_models, source_map::move_bodies, source_map::perch_props, source_map::show_frames, source_map::show_skins, source_map::show_props, source_map::face_sprites, source_map::tag_prop_players, source_map::animate_props, grill_fx::update),
-        (me_props::spawn_for_level, beacon::update),
+        (me_props::spawn_for_level, me_props::follow_movers, beacon::update),
         model_props::spawn_for_level,
         placed_lights::spawn_for_level,
         (
@@ -823,7 +823,7 @@ fn play(
                     let of = game.sim.level.checkpoints.len() - 1;
                     game.flash = Some((format!("CHECKPOINT {index} / {of}  {}", hud::fmt_time(t)), 0.0));
                 } else {
-                    game.flash = Some((format!("CHECKPOINT - {name}"), 0.0));
+                    game.flash = Some((if name.is_empty() { "CHECKPOINT".into() } else { format!("CHECKPOINT - {name}") }, 0.0));
                 }
             }
             SimEvent::PortalsCleared => game.flash = Some(("PORTALS CLEARED".into(), 0.0)),

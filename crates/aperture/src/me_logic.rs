@@ -1,0 +1,386 @@
+//! Mirror's Edge's Kismet, run alongside the sim (#109): what sets its matinees off (she walks
+//! into a trigger, kicks a door, the level loads, another sequence calls it), through the ops
+//! between (delays, gates, switches), and the matinees playing their movers.
+//!
+//! An op's input sets it going; it fires outputs, each leading to other ops' inputs (after the
+//! output's delay). Events fire from what happens; actions do what they do and fire their first
+//! output ("Out"), unless they're one of the few this knows more of. The movers' poses go to
+//! the sim's movers (for collision, carrying her) and to `poses` (for drawing).
+
+use glam::{Quat, Vec3};
+
+use faith_move::Controller;
+
+use crate::level::{Level, LogicOp};
+use crate::sim::Mover;
+
+/// A matinee's state: how far through it is (seconds), which way it's playing (1 forwards,
+/// -1 back) and whether it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Play {
+    t: f32,
+    dir: f32,
+    on: bool,
+}
+
+/// How fast she has to be going into a door for it to be a kick (m/s).
+const KICK_SPEED: f32 = 3.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeLogic {
+    time: f32,
+    started: bool,
+    /// Inputs to set off: when, which op, which input.
+    pending: Vec<(f32, usize, usize)>,
+    /// Each op's: how many times it's fired (events), when last, whether she's in its region.
+    fired: Vec<u32>,
+    last: Vec<f32>,
+    inside: Vec<bool>,
+    /// A gate's: open. A switch's: the next output.
+    open: Vec<bool>,
+    next: Vec<usize>,
+    /// Each matinee op's play.
+    plays: Vec<Play>,
+    /// Each mover's pose now: how far it's moved and turned about its pivot.
+    pub poses: Vec<(Vec3, Quat)>,
+    /// Each body's (sim mover's): the mover that last moved it, and its pose (what's drawn).
+    pub bodies: std::collections::HashMap<usize, (usize, Vec3, Quat)>,
+}
+
+impl MeLogic {
+    /// Where a body (a sim mover) is: its pivot, how far it's moved and turned.
+    pub fn body(&self, level: &Level, sim: usize) -> Option<(Vec3, Vec3, Quat)> {
+        let &(m, d, q) = self.bodies.get(&sim)?;
+        Some((level.me_movers.get(m)?.pivot, d, q))
+    }
+}
+
+impl MeLogic {
+    pub fn new(level: &Level) -> MeLogic {
+        let n = level.me_logic.len();
+        let open = level.me_logic.iter().map(|o| o.param("open").is_none_or(|v| v != "false")).collect();
+        let mut me = MeLogic {
+            time: 0.0,
+            started: false,
+            pending: Vec::new(),
+            fired: vec![0; n],
+            last: vec![f32::MIN; n],
+            inside: vec![false; n],
+            open,
+            next: vec![0; n],
+            plays: vec![Play::default(); n],
+            poses: Vec::new(),
+            bodies: std::collections::HashMap::new(),
+        };
+        me.poses = level.me_movers.iter().map(|m| m.at(0.0)).collect();
+        me
+    }
+
+    /// The index of an op's output by its name (its params' `outputs`, `|`-separated), else
+    /// `default`.
+    fn output(op: &LogicOp, name: &str, default: usize) -> usize {
+        op.param("outputs").and_then(|o| o.split('|').position(|n| n.eq_ignore_ascii_case(name))).unwrap_or(default)
+    }
+
+    /// Fire output `out` of op `k`: its links' inputs, each after its delay.
+    fn fire(&mut self, level: &Level, k: usize, out: usize) {
+        for &(o, to, input, delay) in &level.me_logic[k].outputs {
+            if o == out {
+                self.pending.push((self.time + delay, to, input));
+            }
+        }
+    }
+
+    /// An event of op `k` happens: it fires `out`, if it may (it's fired fewer than its most
+    /// times, and not too soon after it last did).
+    fn event(&mut self, level: &Level, k: usize, out: usize) {
+        let op = &level.me_logic[k];
+        let most = op.num("max", 0.0) as u32;
+        if most > 0 && self.fired[k] >= most {
+            return;
+        }
+        if self.time - self.last[k] < op.num("retrigger", 0.0) {
+            return;
+        }
+        self.fired[k] += 1;
+        self.last[k] = self.time;
+        self.fire(level, k, out);
+    }
+
+    pub fn step(&mut self, level: &Level, movers: &mut [Mover], ctrl: &Controller, dt: f32) {
+        self.time += dt;
+        // The level's loaded (and a time trial's race has started).
+        if !self.started {
+            self.started = true;
+            for k in 0..level.me_logic.len() {
+                if matches!(level.me_logic[k].op.as_str(), "SeqEvent_LevelLoaded" | "SeqEvt_TTRaceStarted" | "SeqEvent_LevelStartup") {
+                    self.event(level, k, 0);
+                }
+            }
+        }
+        // What she's in or runs into.
+        let me = ctrl.body().aabb(ctrl.feet);
+        let speed = Vec3::new(ctrl.vel.x, 0.0, ctrl.vel.z).length();
+        for k in 0..level.me_logic.len() {
+            let op = &level.me_logic[k];
+            if op.regions.is_empty() {
+                continue;
+            }
+            let reach = if op.op == "SeqEvent_TakeDamage" { 0.3 } else { 0.0 };
+            let inside = op.regions.iter().any(|r| r.overlaps(&faith_move::Aabb::new(me.min - Vec3::splat(reach), me.max + Vec3::splat(reach))));
+            let was = std::mem::replace(&mut self.inside[k], inside);
+            match op.op.as_str() {
+                "SeqEvent_Touch" | "SeqEvent_TdTouch" | "SeqEvent_TdUsed" | "SeqEvent_Used" => {
+                    if inside && !was {
+                        self.event(level, k, 0);
+                    } else if was && !inside && op.op.ends_with("Touch") {
+                        let out = Self::output(op, "UnTouched", 1);
+                        self.event(level, k, out);
+                    }
+                }
+                // (Kicked: run into at speed.)
+                "SeqEvent_TakeDamage" => {
+                    if inside && !was && speed > KICK_SPEED {
+                        self.event(level, k, 0);
+                    }
+                }
+                // (Stood on.)
+                "SeqEvent_Mover" => {
+                    if inside && !was {
+                        let out = Self::output(op, "Pawn Attached", 0);
+                        self.event(level, k, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // The inputs that are due (and those they set off at once).
+        let mut guard = 0;
+        loop {
+            let due: Vec<(f32, usize, usize)> = self.pending.iter().copied().filter(|p| p.0 <= self.time).collect();
+            if due.is_empty() || guard > 64 {
+                break;
+            }
+            guard += 1;
+            self.pending.retain(|p| p.0 > self.time);
+            for (_, k, input) in due {
+                self.input(level, k, input);
+            }
+        }
+        // The matinees play.
+        for k in 0..level.me_logic.len() {
+            let mut p = self.plays[k];
+            if !p.on {
+                continue;
+            }
+            let op = &level.me_logic[k];
+            let length = op.movers.iter().map(|&m| level.me_movers[m].length).fold(0.0f32, f32::max).max(op.num("length", 0.0));
+            let rate = op.movers.first().map_or(1.0, |&m| level.me_movers[m].rate);
+            p.t += dt * rate * p.dir;
+            let looping = op.movers.first().is_some_and(|&m| level.me_movers[m].looping);
+            if p.dir > 0.0 && p.t >= length {
+                if looping && length > 0.0 {
+                    p.t -= length;
+                } else {
+                    p.t = length;
+                    p.on = false;
+                    self.plays[k] = p;
+                    let out = Self::output(op, "Completed", 0);
+                    self.fire(level, k, out);
+                }
+            } else if p.dir < 0.0 && p.t <= 0.0 {
+                p.t = 0.0;
+                p.on = false;
+                self.plays[k] = p;
+                let out = Self::output(op, "Reversed", 1);
+                self.fire(level, k, out);
+            }
+            self.plays[k] = p;
+            for &m in &op.movers {
+                let (d, q) = level.me_movers[m].at(p.t);
+                self.poses[m] = (d, q);
+                self.bodies.insert(level.me_movers[m].sim, (m, d, q));
+            }
+        }
+        // The sim's movers go where the bodies are.
+        for (&sim, &(_, d, q)) in &self.bodies {
+            if let Some(mv) = movers.get_mut(sim) {
+                mv.target = Some(d);
+                mv.turned = q.angle_between(Quat::IDENTITY) > 0.02;
+            }
+        }
+    }
+
+    /// Input `input` of op `k`.
+    fn input(&mut self, level: &Level, k: usize, input: usize) {
+        let op = &level.me_logic[k];
+        match op.op.as_str() {
+            // A matinee: play, reverse, stop, pause, change direction.
+            "SeqAct_Interp" => {
+                let p = &mut self.plays[k];
+                let length = op.movers.iter().map(|&m| level.me_movers[m].length).fold(0.0f32, f32::max);
+                match input {
+                    0 => {
+                        if p.t >= length && op.param("rewind_on_play") == Some("true") {
+                            p.t = 0.0;
+                        }
+                        p.dir = 1.0;
+                        p.on = true;
+                    }
+                    1 => {
+                        p.dir = -1.0;
+                        p.on = true;
+                    }
+                    2 => p.on = false,
+                    3 => p.on = !p.on,
+                    _ => {
+                        p.dir = if p.dir < 0.0 { 1.0 } else { -1.0 };
+                        p.on = true;
+                    }
+                }
+            }
+            // Wait, then go on (stop: don't).
+            "SeqAct_Delay" => match input {
+                0 => {
+                    let t = self.time + op.num("duration", 1.0);
+                    for &(o, to, i, d) in &op.outputs {
+                        if o == 0 {
+                            self.pending.push((t + d, to, i));
+                        }
+                    }
+                }
+                _ => {
+                    let targets: Vec<(usize, usize)> = op.outputs.iter().filter(|o| o.0 == 0).map(|o| (o.1, o.2)).collect();
+                    self.pending.retain(|p| !targets.contains(&(p.1, p.2)));
+                }
+            },
+            // In: through, if open; open, close, toggle.
+            "SeqAct_Gate" => match input {
+                0 => {
+                    if self.open[k] {
+                        self.fire(level, k, 0);
+                    }
+                }
+                1 => self.open[k] = true,
+                2 => self.open[k] = false,
+                _ => self.open[k] = !self.open[k],
+            },
+            // Each time, the next output (round again if it loops).
+            "SeqAct_Switch" => {
+                let n = op.num("links", 1.0).max(1.0) as usize;
+                let i = self.next[k];
+                if i < n {
+                    self.fire(level, k, i);
+                }
+                let step = op.num("increment", 1.0).max(1.0) as usize;
+                self.next[k] = if op.param("looping") == Some("true") { (i + step) % n } else { (i + step).min(n) };
+            }
+            // Each output in turn, a delay apart.
+            "SeqAct_DelaySwitch" => {
+                let n = op.num("links", 1.0).max(1.0) as usize;
+                let gap = op.num("delay", 1.0);
+                for i in 0..n {
+                    for &(o, to, inp, d) in &op.outputs {
+                        if o == i {
+                            self.pending.push((self.time + gap * (i + 1) as f32 + d, to, inp));
+                        }
+                    }
+                }
+            }
+            // One of its outputs, at random (the same way each time she plays it: a hash of
+            // when).
+            "SeqAct_RandomSwitch" => {
+                let n = op.num("links", 1.0).max(1.0) as usize;
+                let r = ((self.time * 1000.0) as usize).wrapping_mul(2654435761) % n;
+                self.fire(level, k, r);
+            }
+            // Events set off by others: a remote event's call, a sub-sequence's input.
+            c if c.starts_with("SeqEvent") || c.starts_with("SeqEvt") => self.event(level, k, 0),
+            // Anything else: goes on.
+            _ => self.fire(level, k, 0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use faith_move::{Controller, Input, State};
+    use glam::Vec3;
+
+    use crate::doc::{Kind, LevelDoc, Object};
+    use crate::io::Output;
+    use crate::level::MoverKey;
+    use crate::sim::Sim;
+
+    fn link(event: usize, target: &str, input: usize, delay: f32) -> Output {
+        Output { event: event.to_string(), target: target.into(), input: input.to_string(), param: String::new(), delay, times: -1 }
+    }
+
+    /// A floor, a mover that rises 2 m over 1 s, and a trigger that plays it (through `between`,
+    /// if any) when she walks into it.
+    fn level(between: Option<(&str, Vec<(String, String)>)>) -> LevelDoc {
+        let mut d = LevelDoc::new("logic");
+        d.objects.push(Object::sized(Kind::Block { mat: crate::Mat::Concrete }, Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 1.0, 40.0)));
+        d.objects.push(Object::new(Kind::Spawn { gravity: None }, Vec3::new(0.0, 0.0, 6.0)));
+        let keys = vec![MoverKey { t: 0.0, offset: Vec3::ZERO, ..Default::default() }, MoverKey { t: 1.0, offset: Vec3::new(0.0, 2.0, 0.0), linear: true, ..Default::default() }];
+        let mut m = Object::new(Kind::MeMover { keys, length: 1.0, rate: 1.0, looping: false, carries: vec![] }, Vec3::new(5.0, 0.0, 0.0));
+        m.name = "lift".into();
+        d.objects.push(m);
+        let mut touch = Object::sized(Kind::MeLogic { op: "SeqEvent_Touch".into(), params: vec![("max".into(), "1".into())] }, Vec3::new(0.0, 1.0, 0.0), Vec3::new(2.0, 2.0, 2.0));
+        touch.name = "touch".into();
+        let mut interp = Object::new(Kind::MeLogic { op: "SeqAct_Interp".into(), params: vec![("mover".into(), "lift".into()), ("outputs".into(), "Completed|Reversed".into())] }, Vec3::ZERO);
+        interp.name = "interp".into();
+        match between {
+            Some((op, params)) => {
+                let mut b = Object::new(Kind::MeLogic { op: op.into(), params }, Vec3::ZERO);
+                b.name = "between".into();
+                b.outputs.push(link(0, "interp", 0, 0.0));
+                touch.outputs.push(link(0, "between", 0, 0.0));
+                d.objects.push(b);
+            }
+            None => touch.outputs.push(link(0, "interp", 0, 0.0)),
+        }
+        d.objects.push(touch);
+        d.objects.push(interp);
+        d
+    }
+
+    /// How far the lift's risen after she's walked from her start to the trigger and stood
+    /// there `wait` seconds more.
+    fn risen(d: &LevelDoc, wait: f32) -> f32 {
+        let l = d.build();
+        let cp = l.checkpoints[0].clone();
+        let mut sim = Sim::new(l);
+        let mut c = Controller::new(crate::tuning(5.3, 15.0), cp.spawn, 0.0);
+        c.state = State::Ground;
+        let dt = 1.0 / 60.0;
+        let mut t = 0.0;
+        while t < 2.5 + wait {
+            let input = if c.feet.z > 0.2 { Input { move_axis: glam::Vec2::new(0.0, 1.0), ..Default::default() } } else { Input::default() };
+            sim.step_player(&mut c, &input, dt);
+            sim.step(dt, &mut c);
+            t += dt;
+        }
+        sim.me.as_ref().map_or(0.0, |m| m.poses[0].0.y)
+    }
+
+    #[test]
+    fn walking_into_a_trigger_plays_its_matinee() {
+        let d = level(None);
+        let up = risen(&d, 2.0);
+        assert!((up - 2.0).abs() < 0.01, "risen {up}");
+        // (Its sim mover went with it.)
+        let l = d.build();
+        assert_eq!(l.me_movers.len(), 1);
+        assert_eq!(l.me_logic.len(), 2);
+    }
+
+    #[test]
+    fn a_closed_gate_stops_it_and_a_delay_holds_it() {
+        assert!(risen(&level(Some(("SeqAct_Gate", vec![("open".into(), "false".into())]))), 2.0) < 0.01);
+        assert!((risen(&level(Some(("SeqAct_Gate", vec![]))), 2.0) - 2.0).abs() < 0.01);
+        // (A 5 s delay: not yet risen 2 s after she's in.)
+        assert!(risen(&level(Some(("SeqAct_Delay", vec![("duration".into(), "5".into())]))), 2.0) < 0.01);
+        assert!((risen(&level(Some(("SeqAct_Delay", vec![("duration".into(), "1".into())]))), 3.0) - 2.0).abs() < 0.01);
+    }
+}

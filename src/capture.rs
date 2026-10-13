@@ -1283,6 +1283,22 @@ fn script(name: &str) -> Vec<Act> {
                 Shot("editorpick_01_selected"),
             ]
         }
+        // A walk in a Mirror's Edge level (#109): she's put at PORTAL_ME_AT (x,y,z,yaw), runs
+        // forward PORTAL_ME_RUN frames (90 unless said), a shot every 15 (`walk_00`, ...).
+        "mewalk" => {
+            let file: &'static str = Box::leak(std::env::var("PORTAL_ME_LEVEL").unwrap_or_else(|_| "escape".into()).into_boxed_str());
+            let f: Vec<f32> = std::env::var("PORTAL_ME_AT").unwrap_or_default().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            let frames: u32 = std::env::var("PORTAL_ME_RUN").ok().and_then(|v| v.parse().ok()).unwrap_or(90);
+            let mut v = vec![Chamber(crate::LevelGroup::MirrorsEdge, file), Wait(120)];
+            if f.len() == 4 {
+                v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Look(f[3], -5.0), Wait(60)]);
+            }
+            for k in 0..=frames / 15 {
+                v.push(Shot(Box::leak(format!("walk_{k:02}").into_boxed_str())));
+                v.push(Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), ..default() }, 15));
+            }
+            v
+        }
         // A tour of a Mirror's Edge level (PORTAL_ME_LEVEL, a time trial's best: its course):
         // from its start and each checkpoint, a look along the way to the next, from a little
         // above and behind (`tour_00`, ...).

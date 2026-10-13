@@ -316,6 +316,11 @@ pub struct Mover {
     pub spin_angle: f32,
     /// How much of its top speed it's spinning up to, and which way (-1: backwards).
     pub spin_scale: f32,
+    /// A Mirror's Edge mover's (#109): where its logic wants it this step (an offset from
+    /// where it stands), and whether it's turned from how it stands (then, as a swinging door
+    /// that's open, it isn't solid: its boxes can't turn).
+    pub target: Option<Vec3>,
+    pub turned: bool,
 }
 
 /// How long a shuttling platform waits at each end.
@@ -355,7 +360,7 @@ impl Mover {
         // can't turn).
         let (d, solid) = match self.def.swing {
             Some(_) => (self.carried, self.at.length() < 0.02),
-            None => (self.offset(), true),
+            None => (self.offset(), !self.turned),
         };
         self.def.boxes.iter().filter(move |_| self.present && solid).map(move |b| (b.b.translated(d), b.mat))
     }
@@ -682,6 +687,8 @@ pub struct Sim {
     pub io_signals: Vec<bool>,
     /// The map's logic (Portal's maps).
     pub io: Option<crate::io::Io>,
+    /// A Mirror's Edge level's Kismet and its movers (#109).
+    pub me: Option<crate::me_logic::MeLogic>,
     /// The prop Faith is carrying (index into `props`).
     pub held: Option<usize>,
     /// The turret she's carrying.
@@ -765,6 +772,7 @@ impl Sim {
             signals: vec![false; level.signal_count()],
             io_signals: vec![false; level.signal_count()],
             io: level.io.clone(),
+            me: (!level.me_movers.is_empty()).then(|| crate::me_logic::MeLogic::new(&level)),
             held: None,
             held_turret: None,
             held_through: None,
@@ -883,7 +891,7 @@ impl Sim {
                     let at = def.path.get(def.start).copied().unwrap_or(Vec3::ZERO);
                     let spin_on = def.spin.as_ref().is_some_and(|s| s.on);
                     let spin_rate = def.spin.as_ref().filter(|s| s.on).map_or(0.0, |s| s.speed);
-                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, def });
+                    sim.movers.push(Mover { at, node: def.start, goal: None, present: def.present, speed: def.speed, wait: 0.0, carried: Vec3::ZERO, closed: vec![false; def.path.len()], spin_on, spin_rate, spin_angle: 0.0, spin_scale: 1.0, target: None, turned: false, def });
                 }
             }
         }
@@ -1992,6 +2000,9 @@ impl Sim {
         let aim = Aim::of(ctrl);
         let player_box = ctrl.body().aabb(ctrl.feet);
 
+        if let Some(me) = self.me.as_mut() {
+            me.step(&self.level, &mut self.movers, ctrl, dt);
+        }
         self.update_movers(dt, ctrl);
         self.fizzle_portals_on_movers();
         self.update_pellets(dt, ctrl);
@@ -2617,6 +2628,18 @@ impl Sim {
     /// Movers along their paths, carrying Faith and cubes that stand on them.
     fn update_movers(&mut self, dt: f32, ctrl: &mut Controller) {
         const STANDING: f32 = 0.08;
+        // A Mirror's Edge mover goes where its logic puts it, this step: along a path from where
+        // it is to there (its first point where it stands), as fast as that takes.
+        for m in self.movers.iter_mut() {
+            let Some(t) = m.target.take() else { continue };
+            if t == m.at {
+                continue;
+            }
+            m.def.path = vec![Vec3::ZERO, m.at, t];
+            m.node = 1;
+            m.goal = Some(2);
+            m.speed = t.distance(m.at) / dt.max(1e-4);
+        }
         for m in self.movers.iter_mut() {
             let Some(inputs) = &m.def.inputs else { continue };
             let last = m.def.path.len().saturating_sub(1);

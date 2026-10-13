@@ -18,14 +18,14 @@ use me_assets::{Package, Packages};
 use aperture::me::MAPS;
 
 /// An Unreal rotator as our turn.
-fn turn(r: [i32; 3]) -> Quat {
+pub fn turn(r: [i32; 3]) -> Quat {
     let a = map::axes(r);
     // Where it takes our X (Unreal's Y), Y (its Z) and Z (its -X).
     Quat::from_mat3(&Mat3::from_cols(ue_dir(a[1]), ue_dir(a[2]), -ue_dir(a[0]))).normalize()
 }
 
 /// Unreal's scale along its axes as ours.
-fn scale(s: [f32; 3]) -> Vec3 {
+pub fn scale(s: [f32; 3]) -> Vec3 {
     Vec3::new(s[1], s[2], s[0])
 }
 
@@ -47,7 +47,7 @@ fn overrides(pkg: &Package, materials: &[i32]) -> Vec<String> {
 }
 
 /// A mesh's box (ours, from its origin).
-fn mesh_box(pkg: &Package, mesh: usize) -> Option<(Vec3, Vec3)> {
+pub fn mesh_box(pkg: &Package, mesh: usize) -> Option<(Vec3, Vec3)> {
     let props = me_assets::props::Props::read(pkg, &pkg.exports[mesh]).ok()?;
     let mut c = me_assets::package::Cursor::new(&pkg.data, props.end);
     let (o, e) = (c.vec3().ok()?, c.vec3().ok()?);
@@ -56,7 +56,7 @@ fn mesh_box(pkg: &Package, mesh: usize) -> Option<(Vec3, Vec3)> {
 }
 
 /// A volume's faces' planes (ours, from where it stands, before it's turned).
-fn volume_planes(v: &map::Volume) -> Vec<Vec4> {
+pub fn volume_planes(v: &map::Volume) -> Vec<Vec4> {
     let polys: Vec<Vec<Vec3>> = v
         .polys
         .iter()
@@ -180,11 +180,11 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     // (`PORT_ME_NEAR=x,y,z`: what's round a point, ours, in every package: why she falls
     // somewhere, say.)
     if let Some(at) = std::env::var("PORT_ME_NEAR").ok().and_then(|s| { let v: Vec<f32> = s.split(',').filter_map(|x| x.parse().ok()).collect(); (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2])) }) {
-        for (name, pkg, m) in &read {
+        for (name, _pkg, m) in &read {
             for p in &m.meshes {
                 let d = ue(p.location) - at;
                 if Vec3::new(d.x, 0.0, d.z).length() < 12.0 && d.y.abs() < 15.0 {
-                    eprintln!("NEAR {name} mesh {} {} {} at {} hidden {} blocks {}", p.class, p.name, pkg.path(p.mesh as i32 + 1), ue(p.location), p.hidden, p.blocks);
+                    eprintln!("NEAR {name} mesh {} {} {} at {} hidden {} blocks {}", p.class, p.name, p.mesh_name, ue(p.location), p.hidden, p.blocks);
                 }
             }
             for v in &m.volumes {
@@ -210,12 +210,23 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     let mut lights = 0;
     for (name, pkg, m) in &read {
         let pkg: &Package = pkg;
-        let mut seen: HashMap<usize, (bool, bool, Option<(Vec3, Vec3)>)> = HashMap::new();
+        let mut seen: HashMap<(String, usize), (bool, bool, Option<(Vec3, Vec3)>)> = HashMap::new();
         let (mut props, mut solid) = (0, 0);
         for p in &m.meshes {
+            // Its mesh: in this package, or (an import) its own.
+            let (home_name, home, mesh) = match &p.import {
+                None => (name.clone(), read.iter().find(|r| r.0 == *name).map(|r| r.1.clone()), p.mesh),
+                Some(other) => {
+                    let Ok(h) = pkgs.get(other) else { continue };
+                    let Some(i) = h.exports.iter().position(|e| e.name == p.mesh_name && h.class_name(e) == "StaticMesh") else { continue };
+                    (other.clone(), Some(h), i)
+                }
+            };
+            let Some(home) = home else { continue };
+            let home: &Package = &home;
             // (The sky is a dome round the city, the sun's flare a card drawn over the sun:
             // ray traced, the dome would shut the sun out. The game's own sky stands in.)
-            let path = pkg.path(p.mesh as i32 + 1);
+            let path = home.path(mesh as i32 + 1);
             // (Nor are its effects' meshes, light shafts and the like: glows the game blends
             // over the picture, nothing to stand on.)
             if p.hidden || path.starts_with("L_Sun") || path.starts_with("L_Sky") || path.starts_with("FX_") {
@@ -223,9 +234,9 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
             }
             // (What it collides with isn't kept: the game reads it with the mesh. Only whether
             // it has anything, and whether that's only triangles.)
-            let (shaped, tris_only, bounds) = *seen.entry(p.mesh).or_insert_with(|| {
-                let shape = MeShape::from_game(&map::mesh_collision(pkg, p.mesh));
-                (!shape.is_empty(), shape.hulls.is_empty(), mesh_box(pkg, p.mesh))
+            let (shaped, tris_only, bounds) = *seen.entry((home_name.clone(), mesh)).or_insert_with(|| {
+                let shape = MeShape::from_game(&map::mesh_collision(home, mesh));
+                (!shape.is_empty(), shape.hulls.is_empty(), mesh_box(home, mesh))
             });
             let at = tidy(ue(p.location));
             // (Where it stands, roughly: its box's size round its point.)
@@ -235,7 +246,7 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                 true
             });
             let mut o = Object::new(
-                Kind::MeProp { package: name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true, materials: overrides(pkg, &p.materials) },
+                Kind::MeProp { package: home_name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true, materials: if p.import.is_none() { overrides(pkg, &p.materials) } else { Vec::new() } },
                 at,
             );
             o.set_rotation(turn(p.rotation));
@@ -292,7 +303,23 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                 "TdLadderVolume" | "TdZiplineVolume" | "TdSwingVolume" | "TdBalanceWalkVolume" => {
                     let a = map::Chain::new(pkg, v.export);
                     let (Some(start), Some(end)) = (a.vec3("Start"), a.vec3("End")) else { continue };
-                    let (start, end) = (ue(start), ue(end));
+                    let (mut start, mut end) = (ue(start), ue(end));
+                    // (Its path is in the volume, or near it: one that isn't (a volume whose
+                    // path was never set, or was left behind when it was moved) runs up its
+                    // middle, bottom to top.)
+                    if v.class == "TdLadderVolume" {
+                        if let Some(b) = aperture::me::hull_brush(&planes).turned(q).bounds() {
+                            // (Its top can be out over what she climbs onto.)
+                            let (lo, hi) = (at + b.min - Vec3::new(2.0, 3.0, 2.0), at + b.max + Vec3::new(2.0, 8.0, 2.0));
+                            let inside = |p: Vec3| p.cmpge(lo).all() && p.cmple(hi).all();
+                            if !inside(start) || !inside(end) || end.y - start.y < 0.5 {
+                                let c = at + b.center();
+                                report.push_str(&format!("  {}: its path {start} -> {end} isn't in it ({lo} - {hi}): up its middle\n", v.name));
+                                start = Vec3::new(c.x, at.y + b.min.y + LADDER_FOOT, c.z);
+                                end = Vec3::new(c.x, at.y + b.max.y - LADDER_TOP, c.z);
+                            }
+                        }
+                    }
                     let wall = a.vec3("WallNormal").map_or(Vec3::Z, |n| ue_dir(n).normalize_or(Vec3::Z));
                     let mut o = match v.class.as_str() {
                         // (Where its foot and top are is worked out once the level's built:
@@ -372,7 +399,8 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                     starts.push((0, ue(o.location), yaw));
                     continue;
                 }
-                story.push((a.name("CheckpointName").unwrap_or_else(|| o.name.clone()), o.name.clone(), ue(o.location), yaw));
+                // (Its name as the game shows it, if it has one: not its actor's.)
+                story.push((a.name("CheckpointName").filter(|n| n != "None").unwrap_or_default(), o.name.clone(), ue(o.location), yaw));
             }
             // Its lights: a point light (an area light as one, a bit bigger), a spot light.
             if o.class.contains("PointLight") || o.class.contains("SpotLight") || o.class == "TdAreaLight" {
@@ -448,7 +476,12 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     }
     // A story level's checkpoints (not a time trial's: it has its course), in any order.
     if !doc.course && !story.is_empty() {
+        // (Not one round where she starts: she'd reach it as she starts.)
+        let start = starts.iter().min_by_key(|s| s.0).map(|s| s.1);
         for (name, actor, at, yaw) in &story {
+            if start.is_some_and(|s| (s - *at).abs().cmplt(STORY_CHECKPOINT).all()) {
+                continue;
+            }
             let feet = tidy(*at - Vec3::Y * HALF_HEIGHT);
             let mut o = Object::sized(Kind::Checkpoint { name: name.clone(), spawn: Vec3::new(0.0, -STORY_CHECKPOINT.y * 0.5, 0.0) }, tidy(feet + Vec3::Y * STORY_CHECKPOINT.y * 0.5), STORY_CHECKPOINT);
             o.yaw = round(yaw.rem_euclid(360.0), 1e3);
@@ -470,6 +503,9 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     if low < f32::MAX {
         doc.kill_y = round(low - 10.0, 10.0);
     }
+    // Its movers and the Kismet that drives them (#109).
+    super::me_kismet::port(&read, &mut doc, report);
+    free_lights(&mut doc, report);
     place_ladders(&mut doc, report);
     let others: Vec<String> = counts.iter().map(|(c, n)| format!("{c} {n}")).collect();
     report.push_str(&format!("  actors: {}\n", others.join(", ")));
@@ -506,6 +542,67 @@ fn ray(boxes: &[aperture::level::Solid], o: Vec3, d: Vec3, len: f32) -> Option<f
 /// she climbs out onto. Found in the level as it's built: the wall behind the path (a pipe, or
 /// the ladder's own rungs, if they stand out from it), the floor under its start (unless it
 /// starts high up the wall), the top past its end.
+/// The most a light's moved out of the lamp it's in.
+const LIGHT_FREE: f32 = 1.0;
+
+/// Mirror's Edge puts many of its lights inside their lamps (a fluorescent tube's housing, a
+/// caged bulb): its lightmaps were baked without the lamps in the way. Traced, the lamp would
+/// shut its own light in: a light inside a small prop's box is moved out of it, the nearest way
+/// (a ceiling lamp's, out of its bottom), a little past it.
+fn free_lights(doc: &mut LevelDoc, report: &mut String) {
+    // Small props' boxes: where, turned, scaled, and their box.
+    let boxes: Vec<(Vec3, Quat, Vec3, Vec3, Vec3)> = doc
+        .objects
+        .iter()
+        .filter_map(|o| match &o.kind {
+            Kind::MeProp { mesh, scale, bounds: Some((lo, hi)), .. } if mesh != me_assets::bsp::BSP => {
+                let size = (*hi - *lo) * scale.abs();
+                (size.max_element() < 4.0 && size.min_element() > 0.01).then(|| (o.at, o.rotation(), *scale, *lo, *hi))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut moved = 0;
+    for o in doc.objects.iter_mut() {
+        if !matches!(o.kind, Kind::PointLight { .. } | Kind::SpotLight { .. }) {
+            continue;
+        }
+        let mut p = o.at;
+        for &(at, turn, scale, lo, hi) in &boxes {
+            if (p - at).length_squared() > 4.0 * 4.0 * 3.0 {
+                continue;
+            }
+            // (In its own space, scaled: its box's size as it's drawn.)
+            let s = scale.abs();
+            let local = (turn.inverse() * (p - at)) * scale.signum();
+            let (lo, hi) = (lo * s, hi * s);
+            if !(local.cmpgt(lo).all() && local.cmplt(hi).all()) {
+                continue;
+            }
+            let (to_lo, to_hi) = (local - lo, hi - local);
+            let (mut k, mut d, mut out) = (0, f32::MAX, Vec3::ZERO);
+            for i in 0..3 {
+                if to_lo[i] < d {
+                    (k, d, out) = (i, to_lo[i], -Vec3::AXES[i]);
+                }
+                if to_hi[i] < d {
+                    (k, d, out) = (i, to_hi[i], Vec3::AXES[i]);
+                }
+            }
+            let _ = k;
+            if d + 0.05 > LIGHT_FREE {
+                continue;
+            }
+            p += turn * (out * scale.signum()) * (d + 0.05);
+        }
+        if p != o.at {
+            o.at = tidy(p);
+            moved += 1;
+        }
+    }
+    report.push_str(&format!("  {moved} lights moved out of their lamps\n"));
+}
+
 fn place_ladders(doc: &mut LevelDoc, report: &mut String) {
     let l = doc.build();
     let boxes = &l.solids[..l.map_solids];
@@ -606,5 +703,59 @@ pub fn port_all(cooked: &Path, only: Option<&str>) {
     println!("{made} of Mirror's Edge's maps as the game's own levels (levels/me/)");
     if !kept.is_empty() {
         println!("kept as edited (delete them to have them made again): {}", kept.join(", "));
+    }
+}
+
+/// `--audit-me <level file>`: a level's materials by how much of it they cover (m², its
+/// props' sections' areas as placed), and what was found for each: its colour map (and how
+/// it's tiled), or none (drawn plain), and its blend: to find what's drawn wrong.
+pub fn audit(cooked: &Path, file: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../levels/me").join(format!("{file}.ron"));
+    let Some(doc) = std::fs::read_to_string(&path).ok().and_then(|t| LevelDoc::from_ron(&t).ok()) else {
+        eprintln!("can't read {}", path.display());
+        return;
+    };
+    let mut pkgs = Packages::new(cooked);
+    // (package, mesh, overrides) -> (instances, area scale sum)
+    let mut uses: BTreeMap<(String, String, Vec<String>), (usize, f32)> = BTreeMap::new();
+    for o in &doc.objects {
+        if let Kind::MeProp { package, mesh, scale, materials, .. } = &o.kind {
+            let s = scale.abs();
+            let e = uses.entry((package.clone(), mesh.clone(), materials.clone())).or_default();
+            e.0 += 1;
+            e.1 += (s.x * s.y + s.y * s.z + s.x * s.z) / 3.0;
+        }
+    }
+    // material path -> (area, instances, what was found)
+    let mut mats: BTreeMap<String, (f32, usize, String)> = BTreeMap::new();
+    for ((package, mesh, overrides), (n, scale2)) in &uses {
+        let Ok((m, slots)) = me_assets::load_static_mesh_with(&mut pkgs, package, mesh, overrides, 64) else { continue };
+        for (s, slot) in m.sections.iter().zip(&slots) {
+            let mut area = 0.0f32;
+            for t in m.indices[s.first_index as usize..(s.first_index + 3 * s.triangles) as usize].chunks(3) {
+                let p = |k: u32| Vec3::from(m.positions[k as usize]) * 0.01;
+                area += (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])).length() * 0.5;
+            }
+            let found = match &slot.diffuse {
+                Some(d) => format!("colour map {}x{} x{:?}", d.width, d.height, slot.uv_scale),
+                None => format!("no colour map: {:?}", slot.color),
+            };
+            let e = mats.entry(if slot.path.is_empty() { slot.material.clone() } else { slot.path.clone() }).or_insert((0.0, 0, String::new()));
+            e.0 += area * scale2;
+            e.1 += n;
+            let glow = slot.glow.as_ref().map_or(String::new(), |(m, c)| format!(" glows {c:?}{}", if m.is_some() { " (mapped)" } else { "" }));
+            e.2 = format!("{found} {:?}{glow}", slot.blend);
+        }
+    }
+    let mut list: Vec<_> = mats.into_iter().collect();
+    list.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+    for (m, (area, n, found)) in list.iter().take(60) {
+        println!("{area:>10.0} m² {n:>5}  {m}: {found}");
+    }
+    println!("-- plain or tiled under 1:");
+    for (m, (area, n, found)) in &list {
+        if found.contains("no colour") || found.contains("x[0.") {
+            println!("{area:>10.0} m² {n:>5}  {m}: {found}");
+        }
     }
 }

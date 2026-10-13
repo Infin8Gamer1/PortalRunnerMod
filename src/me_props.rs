@@ -25,8 +25,13 @@ const LADDER_STEP: f32 = 2.56;
 const CABLE_RADIUS: f32 = 0.012;
 const PIPE_RADIUS: f32 = 0.03;
 
-/// The biggest a prop's textures are read (their mips that size, from the game's files).
-const ME_TEXTURE: u32 = 1024;
+/// The biggest a prop's textures are read (their mips that size, from the game's files): the
+/// texture detail setting's (it's taken as a level's props are read).
+static ME_TEXTURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1024);
+
+fn me_texture() -> u32 {
+    ME_TEXTURE.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Stands in for the ziplines and swing poles (see [`StandIn`]).
 pub const LINES: usize = usize::MAX - 1;
@@ -132,16 +137,57 @@ fn drawn_as(slot: &MaterialSlot) -> (AlphaMode, bool) {
 
 /// How many metres of the mesh one texture's width covers, over a section's triangles (its
 /// area over its UVs' area): how big the texture is in the world.
-fn metres_per_uv(mesh: &StaticMesh, first: usize, tris: usize) -> f32 {
+fn metres_per_uv(mesh: &StaticMesh, first: usize, tris: usize, scale: Vec2) -> f32 {
     let (mut world, mut uv) = (0.0f64, 0.0f64);
     for t in 0..tris {
         let i = [mesh.indices[first + 3 * t] as usize, mesh.indices[first + 3 * t + 1] as usize, mesh.indices[first + 3 * t + 2] as usize];
         let p = i.map(|k| Vec3::from(ue(mesh.positions[k])));
-        let q = i.map(|k| Vec2::from(mesh.uvs[k]));
+        let q = i.map(|k| Vec2::from(mesh.uvs[k]) * scale);
         world += (p[1] - p[0]).cross(p[2] - p[0]).length() as f64 * 0.5;
         uv += ((q[1] - q[0]).perp_dot(q[2] - q[0])).abs() as f64 * 0.5;
     }
     if uv > 1e-9 { (world / uv).sqrt() as f32 } else { 1.0 }
+}
+
+/// A material that's an effect the game blends over its picture, not a surface: what's added
+/// over it (light shafts, glows, fake bloom), see-through fog, haze, sky domes and the like,
+/// and the fake shadows under cars. Traced, they'd be sheets of white or grey hanging in the air: they're left out.
+fn effect(slot: &MaterialSlot) -> bool {
+    const WORDS: [&str; 11] = ["fog", "bloom", "glow", "skydome", "lightshaft", "light_shaft", "trail", "haze", "blocker", "levelfx", "beam"];
+    let name = slot.path.to_ascii_lowercase();
+    // (A fake shadow under a car: the traced light casts its own.)
+    let fake_shadow = ["dropshadow", "blobshadow", "fakeshadow"].iter().any(|w| name.contains(w));
+    fake_shadow || slot.blend == me_assets::Blend::Additive || slot.blend == me_assets::Blend::Translucent && WORDS.iter().any(|w| name.contains(w))
+}
+
+/// The most a lamp's glow is (its colour's brightest channel): a few of the game's are far
+/// brighter than its bloom ever let them look.
+const GLOW_MOST: f32 = 12.0;
+
+/// What a material glows, if it's a lamp's or a sign's (its emissive input, as the game has
+/// it). Others' emissive inputs aren't glows: the far city's and its water's are how they're
+/// lit (unlit, they'd glow like the sun), a wet floor's a sheen.
+fn glow_of(slot: &MaterialSlot) -> Option<(Option<&me_assets::Rgba>, [f32; 3])> {
+    const LAMPS: [&str; 10] = ["light", "lamp", "bulb", "neon", "sign", "screen", "monitor", "led_", "_on", "glow"];
+    const NOT: [&str; 6] = ["b_vista", "vista", "water", "floor", "glass", "lightshaft"];
+    let name = slot.path.to_ascii_lowercase();
+    if !LAMPS.iter().any(|w| name.contains(w)) || NOT.iter().any(|w| name.contains(w)) {
+        return None;
+    }
+    let (map, c) = slot.glow.as_ref()?;
+    let most = c.iter().fold(0.0f32, |m, v| m.max(*v));
+    let k = if most > GLOW_MOST { GLOW_MOST / most } else { 1.0 };
+    Some((map.as_ref(), [c[0] * k, c[1] * k, c[2] * k]))
+}
+
+/// Makes a material glow as its lamp does (see [`glow_of`]).
+fn light_up(slot: &MaterialSlot, mat: &Handle<StandardMaterial>, materials: &mut Assets<StandardMaterial>, images: &mut Assets<Image>) {
+    let Some((map, [r, g, b])) = glow_of(slot) else { return };
+    let tex = map.map(|t| images.add(crate::me_remaster::plain(t, crate::me_remaster::Map::Color)));
+    if let Some(mut m) = materials.get_mut(mat) {
+        m.emissive = LinearRgba::rgb(r, g, b);
+        m.emissive_texture = tex;
+    }
 }
 
 fn build(
@@ -164,15 +210,31 @@ fn build(
     mesh.sections
         .iter()
         .zip(slots)
-        .filter(|(s, _)| s.triangles > 0)
+        .filter(|(s, slot)| s.triangles > 0 && !effect(slot))
         .map(|(s, slot)| {
             let first = s.first_index as usize;
-            let indices = mesh.indices[first..first + 3 * s.triangles as usize].to_vec();
+            // Only the points its triangles use (a level's BSP is one mesh of many materials:
+            // each with all of its points would be many times what's drawn).
+            let mut remap: HashMap<u32, u32> = HashMap::new();
+            let mut used: Vec<usize> = Vec::new();
+            let indices: Vec<u32> = mesh.indices[first..first + 3 * s.triangles as usize]
+                .iter()
+                .map(|&i| {
+                    *remap.entry(i).or_insert_with(|| {
+                        used.push(i as usize);
+                        used.len() as u32 - 1
+                    })
+                })
+                .collect();
+            let pick = |v: &[[f32; 3]]| -> Vec<[f32; 3]> { used.iter().map(|&i| v[i]).collect() };
+            // (Its UVs as its material tiles them.)
+            let scale = Vec2::from(slot.uv_scale);
+            let uvs: Vec<[f32; 2]> = used.iter().map(|&i| (Vec2::from(mesh.uvs[i]) * scale).to_array()).collect();
             let m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
-                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals.clone())
-                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, mesh.uvs.clone())
-                .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pick(&positions))
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, pick(&normals))
+                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, used.iter().map(|&i| tangents[i]).collect::<Vec<_>>())
                 .with_inserted_indices(Indices::U32(indices));
             // Cut-outs (fences, grilles) where the diffuse map's alpha says so.
             // How it's drawn: as the game's material has it (cut out, see-through, from both
@@ -184,7 +246,7 @@ fn build(
             // material for every mesh with it at that size).
             // (Once per material: its detail's tiling from the first mesh that has it.)
             if let Some(surface) = slot.diffuse.as_ref().and(crate::me_remaster::surface_of(&slot.path)) {
-                let reps = crate::me_remaster::repeats(&surface, metres_per_uv(mesh, first, s.triangles as usize));
+                let reps = crate::me_remaster::repeats(&surface, metres_per_uv(mesh, first, s.triangles as usize, scale));
                 let key = (slot.path.clone(), 1);
                 let mat = match remastered.get(&key) {
                     Some(m) => Some(m.clone()),
@@ -207,6 +269,7 @@ fn build(
                             cull_mode,
                             ..default()
                         });
+                        light_up(slot, &m, materials, images);
                         remastered.insert(key, m.clone());
                         m
                     }),
@@ -260,6 +323,7 @@ fn build(
                     g.base_color = g.base_color.with_alpha(if opaque { 0.25 } else { 1.0 });
                 }
             }
+            light_up(slot, &mat, materials, images);
             if !slot.path.is_empty() {
                 remastered.insert(key, mat.clone());
             }
@@ -277,7 +341,7 @@ fn get(
     images: &mut Assets<Image>,
 ) -> Option<Parts> {
     if !cache.meshes.contains_key(&key) {
-        let made = match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, ME_TEXTURE) {
+        let made = match me_assets::load_static_mesh(&mut pkgs.0, key.0, key.1, me_texture()) {
             Ok((mesh, slots)) => {
                 let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
                 for p in &mesh.positions {
@@ -337,7 +401,7 @@ fn get_with(
     let k = (key.0, key.1, overrides.to_vec());
     if !cache.overridden.contains_key(&k) {
         let names: Vec<String> = overrides.iter().map(|o| o.to_string()).collect();
-        let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, ME_TEXTURE) {
+        let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, me_texture()) {
             Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders)),
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{} with its own materials: {e}", key.0, key.1);
@@ -389,15 +453,38 @@ fn mirrored(key: (&'static str, &'static str), parts: &Parts, cache: &mut MeProp
     flipped
 }
 
-fn place(commands: &mut Commands, parts: &Parts, tf: Transform, occluders: &std::collections::HashSet<AssetId<StandardMaterial>>) {
-    commands.spawn((ChamberGeom, crate::chamber::PlacedAt(tf.translation), tf, Visibility::default())).with_children(|c| {
-        for (m, mat) in parts {
-            let mut e = c.spawn((Mesh3d(m.clone()), MeshMaterial3d(mat.clone()), Transform::default()));
-            if occluders.contains(&mat.id()) {
-                e.insert(crate::raytrace::CastsTracedShadow);
+fn place(commands: &mut Commands, parts: &Parts, tf: Transform, occluders: &std::collections::HashSet<AssetId<StandardMaterial>>) -> Entity {
+    commands
+        .spawn((ChamberGeom, crate::chamber::PlacedAt(tf.translation), tf, Visibility::default()))
+        .with_children(|c| {
+            for (m, mat) in parts {
+                let mut e = c.spawn((Mesh3d(m.clone()), MeshMaterial3d(mat.clone()), Transform::default()));
+                if occluders.contains(&mat.id()) {
+                    e.insert(crate::raytrace::CastsTracedShadow);
+                }
             }
+        })
+        .id()
+}
+
+/// A prop a Mirror's Edge mover carries (#109): which body (sim mover) it's part of, and
+/// where it stands when that hasn't moved.
+#[derive(Component)]
+pub struct Carried {
+    pub body: usize,
+    pub base: Transform,
+}
+
+/// Carried props go where their movers are.
+pub fn follow_movers(game: Res<Game>, mut carried: Query<(&Carried, &mut Transform)>) {
+    let Some(me) = game.sim.me.as_ref() else { return };
+    for (c, mut tf) in &mut carried {
+        let Some((pivot, d, q)) = me.body(&game.sim.level, c.body) else { continue };
+        let to = Transform { translation: pivot + d + q * (c.base.translation - pivot), rotation: q * c.base.rotation, scale: c.base.scale };
+        if *tf != to {
+            *tf = to;
         }
-    });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -410,23 +497,50 @@ pub fn spawn_for_level(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut stand_ins: Query<(&StandIn, &mut Visibility)>,
+    settings: Res<crate::settings::Settings>,
 ) {
     let Some(mut pkgs) = pkgs else { return };
     let cache = &mut *cache;
     if cache.level != game.loads {
         cache.level = game.loads;
+        // (A different texture detail: what's been read is read again.)
+        // (PORTAL_TEXTURE_DETAIL=0/1/2 in place of the setting: for captures.)
+        let level_of = std::env::var("PORTAL_TEXTURE_DETAIL").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(settings.texture_detail);
+        let detail = [256, 512, 1024][(level_of.round().max(0.0) as usize).min(2)];
+        if ME_TEXTURE.swap(detail, std::sync::atomic::Ordering::Relaxed) != detail {
+            cache.meshes.clear();
+            cache.overridden.clear();
+            cache.mirrored.clear();
+            cache.remastered.clear();
+        }
         let level = &game.sim.level;
         cache.drawn = vec![false; level.me_props.len()];
         let started = std::time::Instant::now();
+        // (Which props movers carry.)
+        let mut carried_by: HashMap<usize, usize> = HashMap::new();
+        for mv in &level.me_movers {
+            for &k in &mv.carries {
+                carried_by.insert(k, mv.sim);
+            }
+        }
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get_with((p.package, p.mesh), &p.materials, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
-                place(&mut commands, &parts, Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale), &cache.occluders);
+                let tf = Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale);
+                let e = place(&mut commands, &parts, tf, &cache.occluders);
+                if let Some(&body) = carried_by.get(&k) {
+                    commands.entity(e).insert(Carried { body, base: tf });
+                }
                 cache.drawn[k] = true;
             }
         }
         if !level.me_props.is_empty() {
             info!("Mirror's Edge props: {} drawn in {:.1} s", level.me_props.len(), started.elapsed().as_secs_f32());
+            if std::env::var_os("PORTAL_ME_MEMORY").is_some() {
+                let tex: usize = images.iter().map(|(_, i)| i.data.as_ref().map_or(0, |d| d.len())).sum();
+                let (verts, idx): (usize, usize) = meshes.iter().fold((0, 0), |(v, x), (_, m)| (v + m.count_vertices(), x + m.indices().map_or(0, |i| i.len())));
+                info!("Mirror's Edge memory: {} images {} MB, {} meshes {} k vertices {} k indices", images.len(), tex >> 20, meshes.len(), verts / 1000, idx / 1000);
+            }
         }
         // Ziplines and swing poles: round steel, the ladder's.
         cache.lines = level.me_art;

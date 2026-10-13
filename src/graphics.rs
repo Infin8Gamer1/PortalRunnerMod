@@ -107,6 +107,10 @@ impl Aa {
 /// theirs (env_tonemap_controller: 0.75x to 1.5x). (These and the reference are exact in
 /// binary: Bevy's curve wants its segments' ends to meet exactly.)
 const AUTO_EXPOSURE_RANGE: (f32, f32) = (-0.4375, 0.5625);
+/// Mirror's Edge's levels: as far down, and up to 3 stops brighter, as its own eye adaptation
+/// opens up indoors (its rooms are lit for that; traced, a room lit only by its lamps is far
+/// darker than the sunlit roofs).
+const ME_AUTO_EXPOSURE_RANGE: (f32, f32) = (-0.4375, 3.0);
 /// The view's brightness (log2 of its average luminance, metered as Bevy does) that's left
 /// as it is: a chamber as bright as Portal's first ones. Brighter is turned down, darker up.
 const AUTO_EXPOSURE_REFERENCE: f32 = -1.625;
@@ -341,8 +345,9 @@ fn map_tone(
     // (In sixteenths of a stop, as the curve wants; and as far as it can go either way.)
     let sixteenths = |v: f32| (v * 16.0).round() as i32;
     let stops = |scale: f32| sixteenths(scale.max(1e-3).log2().clamp(-9.5, 6.0));
-    let down = get("setautoexposuremin").map_or(sixteenths(AUTO_EXPOSURE_RANGE.0), stops);
-    let up = get("setautoexposuremax").map_or(sixteenths(AUTO_EXPOSURE_RANGE.1), stops).max(down + 1);
+    let range = if game.sim.level.me_art { ME_AUTO_EXPOSURE_RANGE } else { AUTO_EXPOSURE_RANGE };
+    let down = get("setautoexposuremin").map_or(sixteenths(range.0), stops);
+    let up = get("setautoexposuremax").map_or(sixteenths(range.1), stops).max(down + 1);
     let speed = AUTO_EXPOSURE_SPEED * get("settonemaprate").map_or(1.0, |r| r.clamp(0.05, 4.0));
     let bloom = 0.15 * settings.bloom * get("setbloomscale").map_or(1.0, |b| (b / 0.3).clamp(0.0, 4.0));
     for (auto, glow) in &mut cams {

@@ -317,7 +317,9 @@ fn cache_path(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Pa
     let dir = crate::extracted::find_root()?.join("me_remaster");
     let table = remaster().and_then(|r| r.lock().ok().map(|r| std::fs::read_to_string(r.root.join("me.ron")).unwrap_or_default())).unwrap_or_default();
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (CACHE_VERSION, &slot.path, repeats, format!("{surface:?}"), table, slot.diffuse.as_ref().map(|d| (d.width, d.height)), slot.tint.map(|t| t.map(f32::to_bits))).hash(&mut h);
+    // (What its maps hold, sampled: a material whose maps are read differently is baked again.)
+    let sampled = |m: &Option<me_assets::Rgba>| m.as_ref().map(|d| (d.width, d.height, d.pixels.iter().step_by(4099).copied().collect::<Vec<u8>>()));
+    (CACHE_VERSION, &slot.path, repeats, format!("{surface:?}"), table, sampled(&slot.diffuse), sampled(&slot.normal), slot.tint.map(|t| t.map(f32::to_bits))).hash(&mut h);
     Some(dir.join(format!("{:016x}.bin", h.finish())))
 }
 

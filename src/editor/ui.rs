@@ -1558,6 +1558,30 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut Kind, newest: usize) -> bool {
             ui.end_row();
             prop_fields(ui, scale, bounds, solid);
         }
+        Kind::MeMover { keys, length, rate, looping, carries } => {
+            ui.label("Carries");
+            ui.label(carries.join(", "));
+            ui.end_row();
+            ui.label("Keys");
+            ui.label(format!("{} over {length:.2} s", keys.len())).on_hover_text("When, and how far what it carries has moved and turned from where it stands");
+            ui.end_row();
+            ui.label("Rate");
+            ui.add(egui::DragValue::new(rate).speed(0.05).range(0.01..=20.0)).on_hover_text("How fast its matinee plays (1: as long as it is)");
+            ui.end_row();
+            ui.label("Loops");
+            ui.checkbox(looping, "");
+            ui.end_row();
+        }
+        Kind::MeLogic { op, params } => {
+            ui.label("Kismet");
+            ui.label(op.as_str());
+            ui.end_row();
+            for (k, v) in params.iter_mut() {
+                ui.label(k.as_str());
+                ui.text_edit_singleline(v);
+                ui.end_row();
+            }
+        }
         Kind::PointLight { color, intensity, range, radius, shadows } => light_fields(ui, color, intensity, range, radius, shadows),
         Kind::SpotLight { color, intensity, range, radius, angle, soft, shadows } => {
             light_fields(ui, color, intensity, range, radius, shadows);
