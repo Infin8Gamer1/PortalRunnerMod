@@ -59,6 +59,9 @@ fn main() {
                 .count();
             println!("    region {c:?}: {inside} of {} triangles", s.triangles);
         }
+        if let Some(l) = slot.loi {
+            println!("    runner vision: {l:?}");
+        }
         if let Some(t) = slot.tint {
             let w = match &slot.tint_where {
                 me_assets::TintWhere::All => "all".to_string(),

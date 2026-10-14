@@ -117,6 +117,19 @@ pub struct MaterialSlot {
     /// What glows (its emissive input): a map (where, from its mesh's UVs) times a colour
     /// (linear, as bright as the game has it: a lamp's tube, a lit sign), if it glows.
     pub glow: Option<(Option<Rgba>, [f32; 3])>,
+    /// How it looks highlighted, if it can be (runner vision, #118): its graph's `LOI_Strength`
+    /// fades it to that, as a level's Kismet says.
+    pub loi: Option<Loi>,
+}
+
+/// A material's runner-vision highlight at full strength (its `LOI_Strength` at 1; at rest
+/// it's 0): its colour times `color` (or `color` itself, if `absolute`), and glowing its
+/// colour times `glow`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Loi {
+    pub color: [f32; 3],
+    pub absolute: bool,
+    pub glow: f32,
 }
 
 /// An expression of a mesh's UVs alone, as a material has it (the UVs scaled, shifted,
@@ -602,7 +615,8 @@ fn slots_for(pkgs: &mut Packages, pkg: &Rc<Package>, materials: &[i32], max_text
             };
             let region = uv_region(pkgs, pkg, m, &vectors);
             let glow = material_emissive(pkgs, pkg, m, max_texture);
-            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, tint_where, region, vectors, blend, two_sided, uv_scale, glow }
+            let loi = material_loi(pkgs, pkg, m, &vectors);
+            MaterialSlot { material, path, diffuse, normal, specular, color, emissive, tint, tint_where, region, vectors, blend, two_sided, uv_scale, glow, loi }
         })
         .collect()
 }
@@ -703,6 +717,85 @@ fn material_emissive(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32, max_texture
         None => None,
     };
     Some((map, color))
+}
+
+/// A material's runner-vision highlight (#118), from its graph: its diffuse a lerp by its
+/// `LOI_Strength` parameter from its colour (A) to its highlight (B), which is a colour
+/// parameter (`LOI_Color`) or a constant times A (or a colour on its own); its emissive that
+/// strength times the lerp times a constant.
+fn material_loi(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32, vectors: &[(String, [f32; 3])]) -> Option<Loi> {
+    let mut next = Some((pkg.clone(), m));
+    let mut base = None;
+    for _ in 0..6 {
+        let (p, obj) = next.take()?;
+        let (mp, mi) = pkgs.resolve(&p, obj)?;
+        if mp.class_name(&mp.exports[mi]) == "Material" {
+            base = Some((mp, mi));
+            break;
+        }
+        next = props::Props::read(&mp, &mp.exports[mi]).ok()?.object(&mp, "Parent").map(|par| (mp.clone(), par));
+    }
+    let (p, mi) = base?;
+    let class = |e: usize| p.class_name(&p.exports[e]).to_string();
+    let is_strength = |e: usize| {
+        class(e) == "MaterialExpressionScalarParameter"
+            && props::Props::read(&p, &p.exports[e]).ok().and_then(|pr| pr.name(&p, "ParameterName")).is_some_and(|n| n.eq_ignore_ascii_case("LOI_Strength"))
+    };
+    let lerp = input_of(&p, mi, "DiffuseColor").filter(|&x| class(x) == "MaterialExpressionLinearInterpolate")?;
+    if !input_of(&p, lerp, "Alpha").is_some_and(is_strength) {
+        return None;
+    }
+    let (a, b) = (input_of(&p, lerp, "A"), input_of(&p, lerp, "B")?);
+    // A colour expression's value (a parameter's, an instance's own first), if it's a colour.
+    let value = |e: usize| -> Option<[f32; 3]> {
+        let pr = props::Props::read(&p, &p.exports[e]).ok()?;
+        match class(e).as_str() {
+            "MaterialExpressionVectorParameter" => {
+                let n = pr.name(&p, "ParameterName").unwrap_or_default().to_ascii_lowercase();
+                vectors.iter().find(|(v, _)| !n.is_empty() && *v == n).map(|(_, c)| *c).or_else(|| pr.get("DefaultValue").and_then(|t| linear_color(&p, t)))
+            }
+            "MaterialExpressionConstant" => Some([pr.f32(&p, "R").unwrap_or(0.0); 3]),
+            "MaterialExpressionConstant3Vector" | "MaterialExpressionConstant4Vector" => Some([pr.f32(&p, "R").unwrap_or(0.0), pr.f32(&p, "G").unwrap_or(0.0), pr.f32(&p, "B").unwrap_or(0.0)]),
+            _ => None,
+        }
+    };
+    // (B's colours multiplied together; what else it multiplies is A's colour, as it is.)
+    fn factor(p: &Package, e: usize, a: Option<usize>, value: &dyn Fn(usize) -> Option<[f32; 3]>, depth: u32) -> [f32; 3] {
+        if Some(e) == a || depth > 6 {
+            return [1.0; 3];
+        }
+        if let Some(c) = value(e) {
+            return c;
+        }
+        if p.class_name(&p.exports[e]) == "MaterialExpressionMultiply" {
+            let f = |i: &str| input_of(p, e, i).map_or([1.0; 3], |x| factor(p, x, a, value, depth + 1));
+            let (x, y) = (f("A"), f("B"));
+            return [x[0] * y[0], x[1] * y[1], x[2] * y[2]];
+        }
+        [1.0; 3]
+    }
+    let (color, absolute) = match value(b) {
+        Some(c) => (c, true),
+        None => (factor(&p, b, a, &value, 0), false),
+    };
+    // Its glow: strength × (the lerp × a constant).
+    let glow = input_of(&p, mi, "EmissiveColor")
+        .filter(|&e| class(e) == "MaterialExpressionMultiply")
+        .and_then(|e| {
+            let (x, y) = (input_of(&p, e, "A")?, input_of(&p, e, "B")?);
+            let rest = if is_strength(x) { y } else if is_strength(y) { x } else { return None };
+            if rest == lerp {
+                return Some(1.0);
+            }
+            if class(rest) != "MaterialExpressionMultiply" {
+                return None;
+            }
+            let (u, v) = (input_of(&p, rest, "A")?, input_of(&p, rest, "B")?);
+            let c = if u == lerp { v } else if v == lerp { u } else { return None };
+            value(c).map(|c| c[0])
+        })
+        .unwrap_or(0.0);
+    Some(Loi { color, absolute, glow })
 }
 
 /// Following a material's emissive input back through its expressions.

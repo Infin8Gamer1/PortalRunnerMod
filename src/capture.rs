@@ -1155,6 +1155,28 @@ fn script(name: &str) -> Vec<Act> {
             Hold(MoveInput::default(), 12),
             Shot("b03_jumping"),
         ],
+        // Runner vision (#118) on Training: the runner ramp at the end of the start roof at
+        // rest, then lit, once the first challenge (a jump, a crouch, a walk) is done.
+        "lit" => {
+            let eye = Vec3::new(-78.2, 59.6, 15.5);
+            vec![
+                Chamber(crate::LevelGroup::MirrorsEdge, "tutorial"),
+                // (The opening pan.)
+                Wait(1020),
+                Spectate(eye, 4.0, -14.0),
+                Wait(30),
+                Shot("lit_00_rest"),
+                Unspectate,
+                Hold(MoveInput { jump_pressed: true, jump_held: true, ..default() }, 1),
+                Hold(MoveInput::default(), 70),
+                Hold(MoveInput { crouch_held: true, ..default() }, 30),
+                Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), ..default() }, 18),
+                Hold(MoveInput::default(), 90),
+                Spectate(eye, 4.0, -14.0),
+                Wait(30),
+                Shot("lit_01_on"),
+            ]
+        }
         // Faith's own look (#107) on Training, in the sun on the start roof and in the shade by
         // the board wall: her first-person arms and legs, standing (looking down) and running,
         // then her third-person face, hair and lashes from a spectator a metre in front of her.

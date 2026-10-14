@@ -781,6 +781,20 @@ impl Controller {
         Body { half_width: self.tuning.half_width, height: self.height() }
     }
 
+    /// Her legs tucked up in the air (TdMove_Coil).
+    pub fn coiled(&self) -> bool {
+        self.coiled
+    }
+
+    /// In the air off a jump: a plain one, or off a wallrun (TdMove_WallrunJump).
+    pub fn jumped(&self) -> Option<bool> {
+        match (self.state, self.takeoff) {
+            (State::Air, Takeoff::Jump) => Some(false),
+            (State::Air, Takeoff::WallJump) => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn horizontal_speed(&self) -> f32 {
         horiz(self.vel).length()
     }

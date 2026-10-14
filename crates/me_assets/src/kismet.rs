@@ -157,6 +157,31 @@ pub fn moves(pkg: &Package, ops: &[Op]) -> Vec<Move> {
     out
 }
 
+/// A matinee's (a SeqAct_Interp's) length and its event tracks' keys: each output it fires
+/// partway through (by its name) and when (seconds). None if it has no data.
+pub fn interp_timing(pkg: &Package, op: &Op) -> Option<(f32, Vec<(String, f32)>)> {
+    let data = op.vars.iter().flat_map(|(_, v)| v.iter()).copied().filter(|&d| d > 0).map(|d| d as usize - 1).find(|&d| pkg.class_name(&pkg.exports[d]) == "InterpData")?;
+    let dp = Props::read(pkg, &pkg.exports[data]).ok()?;
+    let length = dp.f32(pkg, "InterpLength").unwrap_or(5.0);
+    let mut events = Vec::new();
+    for g in dp.object_array(pkg, "InterpGroups").into_iter().filter(|&g| g > 0) {
+        let Ok(gp) = Props::read(pkg, &pkg.exports[g as usize - 1]) else { continue };
+        for t in gp.object_array(pkg, "InterpTracks").into_iter().filter(|&t| t > 0) {
+            let te = &pkg.exports[t as usize - 1];
+            if pkg.class_name(te) != "InterpTrackEvent" {
+                continue;
+            }
+            let Ok(tp) = Props::read(pkg, te) else { continue };
+            for k in tp.struct_array(pkg, "EventTrack") {
+                if let Some(name) = k.name(pkg, "EventName") {
+                    events.push((name, k.f32(pkg, "Time").unwrap_or(0.0)));
+                }
+            }
+        }
+    }
+    Some((length, events))
+}
+
 /// The events an actor sets off (its `GeneratedEvents`): ops' exports.
 pub fn events_of(pkg: &Package, actor: usize) -> Vec<usize> {
     crate::map::Chain::new(pkg, actor).objects("GeneratedEvents").into_iter().filter(|&e| e > 0).map(|e| e as usize - 1).collect()
