@@ -268,6 +268,8 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
     // What sets each event off: the actors that generate it (their GeneratedEvents).
     let mut originators: HashMap<usize, Vec<faith_move::Aabb>> = HashMap::new();
     let mut origin_names: HashMap<usize, String> = HashMap::new();
+    // (A use event's: how many turns its trigger takes, a valve's several, a button's one.)
+    let mut turns: HashMap<usize, i32> = HashMap::new();
     // Training's movement challenges (#118): their checkpoints, each passed by going through
     // it (its touch volume, else its cylinder), in its track's order.
     let mut checkpoints: Vec<Object> = Vec::new();
@@ -346,12 +348,14 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             for e in kismet::events_of(pkg, export) {
                 if let Some(&k) = id.get(&(pi, e)) {
                     origin_names.entry(k).or_insert_with(|| format!("{pname}.{}", pkg.exports[export].name));
+                    turns.entry(k).or_insert_with(|| map::Chain::new(pkg, export).i32("NumberOfRevs").unwrap_or(1));
                 }
             }
         }
         for op in &ops[pi] {
             if let (Some(a), Some(&k)) = (op.originator, id.get(&(pi, op.export))) {
                 origin_names.entry(k).or_insert_with(|| format!("{pname}.{}", pkg.exports[a].name));
+                turns.entry(k).or_insert_with(|| map::Chain::new(pkg, a).i32("NumberOfRevs").unwrap_or(1));
             }
         }
         // (And the actor an event names as its own.)
@@ -413,6 +417,12 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
                 }
                 if flag(pkg, n.op, "bRewindOnPlay") == Some(true) {
                     set("rewind_on_play", "true".into());
+                }
+            }
+            // (A use: how many turns, when it's a valve's.)
+            "SeqEvent_TdUsed" | "SeqEvent_Used" => {
+                if let Some(&t) = turns.get(&k).filter(|&&t| t > 1) {
+                    set("turns", t.to_string());
                 }
             }
             // (How long its mover stays open before it's "Open Finished": UE3's default 1.5 s.)
