@@ -402,3 +402,22 @@ fn training_runner_vision_follows_its_challenges() {
     r.run(1.2, |_| Input::default());
     assert!(soon > 0.0 && soon < 0.5 && lit(&r) == 1.0, "lit {soon} then {}", lit(&r));
 }
+
+/// Convoy's construction lift (#109): pressing its button inside (a use whose "Finished" sets
+/// it off, as most of the game's buttons and valves) takes her down its 28.6 m shaft, standing,
+/// and its lower doors open to let her out.
+#[test]
+fn convoy_lift_carries_her_down() {
+    let Some(l) = level("convoy") else { return };
+    let button = Vec3::new(101.16, 27.12, -8.68);
+    let mut r = Run::new(l, Vec3::new(102.4, 25.8, -8.6), yaw_to(Vec3::Z));
+    r.run(0.5, |_| Input::default());
+    let eye = r.c.feet + Vec3::Y * 1.6;
+    r.sim.use_key(crate::sim::Aim { eye, dir: (button - eye).normalize(), yaw: r.c.yaw });
+    r.run(8.0, |_| Input::default());
+    assert!((r.c.feet.y + 2.84).abs() < 0.1 && r.c.state == State::Ground, "at {:?} {:?}", r.c.feet, r.c.state);
+    assert_eq!(r.deaths, 0);
+    // Out through its doors (+Z).
+    r.run(2.0, |_| forward());
+    assert!(r.c.feet.z > -6.0 && (r.c.feet.y + 2.84).abs() < 0.3, "still in at {:?}", r.c.feet);
+}

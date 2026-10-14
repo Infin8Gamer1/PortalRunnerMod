@@ -154,7 +154,13 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
   Movers carrying the same thing (a door's matinee for each way it swings) are one body.
   Kismet switches things too: `ChangeCollision` makes a body passable or solid again (and a
   trigger volume touchable or not), `ToggleHidden` hides and shows props; a use event fires when
-  she presses use looking at it in reach; a door is kicked open by running into it or kicking it
+  she presses use looking at it in reach: "Start" at once, then "Looping" a turn at a time (a
+  valve's several, its trigger's `NumberOfRevs`), "Last turn" and "Finished" after a second a
+  turn (most of the game's buttons and valves, Convoy's lift among them, are wired to
+  "Finished"); a story checkpoint's "loaded" events fire when she starts or comes back there
+  (after a death too), setting the level up as it is by then, and its "activated" ones when she
+  reaches it; the game's level reset after a death isn't run (the game's also puts every
+  matinee and gate back to its start, which this doesn't: alone, it'd make open doors solid); a door is kicked open by running into it or kicking it
   (melee); a mover event fires as she gets on and off, and "Open Finished" once its matinee's
   done and its stay-open time has passed (a lift that goes back down). A matinee plays for its
   length (a camera's too) and fires its event tracks' outputs as it passes them.
@@ -170,6 +176,9 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
   next and switches the highlights. What she can't do here (show the objectives, look at a
   point, a fight's disarms) counts as done. `me_challenges` (aperture example) plays them all
   a checkpoint at a time; the `lit` capture shows the first highlight.
+- `me_movers_audit` (aperture example) lists, for each level, the movers its Kismet can never
+  play from what happens in play, and what they wait on instead (`-v`: which); `me_lift <level>
+  x,y,z button` tries a lift: she stands there and uses the button.
 - Meshes the game hides but that collide (invisible blockers), and hidden ones its Kismet moves
   or shows, are kept as hidden props: not drawn, colliding as their shapes. Not the cards for
   its baked lighting (hidden, a quad to collide with and nothing for physics: they stand in

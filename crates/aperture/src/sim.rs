@@ -1690,6 +1690,9 @@ impl Sim {
                 ctrl.spawn = cp.spawn;
                 ctrl.spawn_yaw = cp.yaw;
                 self.events.push(SimEvent::Checkpoint { index: i });
+                if let Some(me) = self.me.as_mut() {
+                    me.checkpoint(&self.level, cp.spawn, false);
+                }
             }
         }
         let all_passed = !course || self.checkpoint + 1 >= self.level.checkpoints.len();
@@ -1859,6 +1862,12 @@ impl Sim {
         self.player_env = None;
         self.burn = 0.0;
         self.events.push(SimEvent::PlayerDied);
+        // (Back at her checkpoint: a Mirror's Edge level's Kismet sets itself up as it is by
+        // then. Not its level reset, which would put things back only half way: the game's also
+        // returns every matinee and gate to its start, which this doesn't.)
+        if let Some(me) = self.me.as_mut() {
+            me.checkpoint(&self.level, ctrl.spawn, true);
+        }
     }
 
     /// Go back to checkpoint `i` (or the last one reached).
@@ -1868,6 +1877,10 @@ impl Sim {
             ctrl.spawn = cp.spawn;
             ctrl.spawn_yaw = cp.yaw;
             self.checkpoint = i;
+            // (A Mirror's Edge level's Kismet sets itself up as it is by then.)
+            if let Some(me) = self.me.as_mut() {
+                me.checkpoint(&self.level, cp.spawn, true);
+            }
         }
         if let Some(h) = self.held.take() {
             self.events.push(SimEvent::Drop { id: self.props[h].id });

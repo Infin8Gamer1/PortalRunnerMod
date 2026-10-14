@@ -26,6 +26,10 @@ struct Play {
 /// How fast she has to be going into a door for it to be a kick (m/s).
 const KICK_SPEED: f32 = 3.0;
 
+/// How long a turn of a use takes (a button's push, a valve's turn), seconds: its "Finished"
+/// comes after its turns.
+const USE_TURN: f32 = 1.0;
+
 /// A highlight's least time on before it fades out (`TdLOIAddOnObject.MinDuration`), seconds.
 const LIT_AT_LEAST: f32 = 0.5;
 
@@ -175,6 +179,8 @@ impl MeLogic {
                     self.event(level, k, 0);
                 }
             }
+            // (And the checkpoint she starts at has loaded.)
+            self.checkpoint(level, ctrl.spawn, true);
         }
         // What she's in or runs into, kicks, or uses.
         let me = ctrl.body().aabb(ctrl.feet);
@@ -207,7 +213,7 @@ impl MeLogic {
                 "SeqEvent_TdUsed" | "SeqEvent_Used" => {
                     if let Some(aim) = used {
                         if op.regions.iter().any(|r| crate::geom::ray_aabb(aim.eye, aim.dir, &faith_move::Aabb::new(r.min - Vec3::splat(0.15), r.max + Vec3::splat(0.15))).is_some_and(|(t, _)| t < crate::sim::USE_REACH)) {
-                            self.event(level, k, 0);
+                            self.used(level, k);
                         }
                     }
                 }
@@ -329,6 +335,47 @@ impl MeLogic {
             if let Some(mv) = movers.get_mut(def.sim) {
                 mv.present = !self.passable.contains(&def.sim);
             }
+        }
+    }
+
+    /// A story checkpoint, the one standing at `at`: she's started or come back there
+    /// (`loaded`: its `SeqEvt_TdCheckpointLoaded` events happen, setting the level up as it
+    /// is by then, a door already open), or she's reached it (its `SeqEvt_TdCheckpointActivated`).
+    pub fn checkpoint(&mut self, level: &Level, at: Vec3, loaded: bool) {
+        let kind = if loaded { "SeqEvt_TdCheckpointLoaded" } else { "SeqEvt_TdCheckpointActivated" };
+        // (Its events stand at it: within a metre.)
+        let p = at + Vec3::Y * 0.1;
+        let near = |r: &faith_move::Aabb| p.cmpge(r.min - Vec3::ONE).all() && p.cmple(r.max + Vec3::ONE).all();
+        for k in 0..level.me_logic.len() {
+            let op = &level.me_logic[k];
+            if op.op == kind && op.regions.iter().any(near) {
+                self.event(level, k, 0);
+            }
+        }
+    }
+
+    /// She uses use event `k`'s trigger: it starts at once, then each turn of it (a valve's)
+    /// loops, and after the last it's "Finished" (what most of the game's buttons and valves are
+    /// wired to).
+    fn used(&mut self, level: &Level, k: usize) {
+        let before = self.fired[k];
+        self.event(level, k, 0);
+        if self.fired[k] == before {
+            return;
+        }
+        let op = &level.me_logic[k];
+        let turns = op.num("turns", 1.0).max(1.0) as usize;
+        let named = |n: &str| op.param("outputs").and_then(|o| o.split('|').position(|x| x.eq_ignore_ascii_case(n)));
+        if let Some(out) = named("Looping") {
+            for t in 1..turns {
+                self.later.push((self.time + t as f32 * USE_TURN, k, out));
+            }
+        }
+        if let Some(out) = named("Last turn") {
+            self.later.push((self.time + (turns as f32 - 0.5) * USE_TURN, k, out));
+        }
+        if let Some(out) = named("Finished") {
+            self.later.push((self.time + turns as f32 * USE_TURN, k, out));
         }
     }
 
@@ -709,6 +756,58 @@ mod tests {
             }
         });
         assert!((up - 2.0).abs() < 0.01, "risen {up}");
+    }
+
+    /// Most of the game's buttons and valves set things off when their use is "Finished": after
+    /// its turn, not as she presses it.
+    #[test]
+    fn a_use_finished_fires_after_its_turn() {
+        let mut d = level_with("SeqEvent_TdUsed", None);
+        for o in d.objects.iter_mut() {
+            if let Kind::MeLogic { op, params } = &mut o.kind {
+                if op == "SeqEvent_TdUsed" {
+                    params.push(("outputs".into(), "Start|Looping|Last turn|Finished".into()));
+                    o.outputs[0].event = "3".into();
+                }
+            }
+        }
+        let rise = |wait: usize| {
+            risen_after(&d, 1.0, |sim, c, f| {
+                if f == 30 {
+                    sim.use_key(crate::sim::Aim::of(c));
+                }
+                // (Stopped short of its full rise, `wait` frames after the use.)
+                if f == 30 + wait {
+                    if let Some(me) = sim.me.as_mut() {
+                        me.pending.clear();
+                        me.later.clear();
+                    }
+                }
+            })
+        };
+        // (Nothing yet half a second in; up once its turn is done.)
+        assert!(rise(30) < 0.01, "{}", rise(30));
+        assert!((rise(120) - 2.0).abs() < 0.01, "{}", rise(120));
+    }
+
+    /// A checkpoint's "loaded" events happen when she starts or comes back there, not when she
+    /// reaches it.
+    #[test]
+    fn checkpoint_loaded_fires_coming_back_not_reaching() {
+        let d = level_with("SeqEvt_TdCheckpointLoaded", None);
+        let l = d.build();
+        let c = Controller::new(crate::tuning(5.3, 15.0), Vec3::new(0.0, 0.0, 6.0), 0.0);
+        let run = |me: &mut super::MeLogic| {
+            for _ in 0..120 {
+                me.step(&l, &mut [], &c, None, 1.0 / 60.0);
+            }
+            me.poses[0].0.y
+        };
+        let mut me = super::MeLogic::new(&l);
+        me.checkpoint(&l, Vec3::ZERO, false);
+        assert!(run(&mut me) < 0.01);
+        me.checkpoint(&l, Vec3::ZERO, true);
+        assert!((run(&mut me) - 2.0).abs() < 0.01);
     }
 
     #[test]
