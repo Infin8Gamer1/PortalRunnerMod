@@ -185,8 +185,10 @@ as the game's graphs have them: its colour map times a colour parameter (an inst
 else the parameter's own), only where it fades that in (a door's paint by its specular map, not
 its kick plate; a scaffold board's planks, by its UVs, not its brace), as much as a runner-vision
 highlight's strength lets it (none, at rest); a one-way door's red is on the triangles its
-lightmap UVs put it on. The game's normal maps are read the right way up (theirs
-are DirectX's: the `normaltest` capture, with `PORTAL_NORMAL_TEST=1`, shows how Bevy reads one).
+lightmap UVs put it on. The game's normal maps are read as the game reads them: they're
+DirectX's (green down the image), and so are its meshes' tangents (their bitangent runs down the
+image; Bevy's own run up it, for OpenGL's maps). The `normaltest` capture, with
+`PORTAL_NORMAL_TEST=1`, shows both: a bump on Bevy's tangents and one on the game's.
 A material's colour map is tiled as its texture coordinates are (a chain-link fence's one link,
 thirty times over); a layered material's main layer is the one its own normal map belongs to,
 not a dirt layer's. A lamp's or a sign's material glows as the game's emissive input has it

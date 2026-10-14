@@ -898,12 +898,25 @@ fn play(
 }
 
 /// A spectator camera hides her arms and gun (their cameras) and the HUD, unless it's asked
-/// to show them.
-fn spectator_overlays(game: Res<Game>, mut cams: Query<&mut Camera, Or<(With<viewmodel::ViewmodelCamera>, With<gun::GunCamera>)>>, mut hud: Query<&mut Visibility, With<hud::HudRoot>>) {
+/// to show them; and without them it shows her as others see her (her third-person body, not
+/// her first-person legs).
+#[allow(clippy::type_complexity)]
+fn spectator_overlays(
+    game: Res<Game>,
+    mut cams: Query<&mut Camera, Or<(With<viewmodel::ViewmodelCamera>, With<gun::GunCamera>)>>,
+    mut hud: Query<&mut Visibility, With<hud::HudRoot>>,
+    mut main: Query<&mut RenderLayers, With<PlayerCamera>>,
+) {
     let (hands, shown) = match game.spectate {
         Some(sp) => (sp.hands, sp.hud),
         None => (true, true),
     };
+    let her = if hands { PLAYER_LAYER } else { body3p::BODY_LAYER };
+    for mut layers in &mut main {
+        if !layers.intersects(&RenderLayers::layer(her)) {
+            *layers = RenderLayers::from_layers(&[0, her, portal_render::SURFACE_LAYER]);
+        }
+    }
     for mut c in &mut cams {
         if c.is_active != hands {
             c.is_active = hands;

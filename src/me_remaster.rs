@@ -151,8 +151,8 @@ fn load_detail(root: &Path, name: &str) -> Option<Detail> {
     let rmean = (rough.iter().sum::<f32>() / rough.len() as f32).max(1e-3);
     let rough = rough.into_iter().map(|x| x / rmean).collect();
     // Its normals' X and Y (OpenGL's: Y up the image). The game's maps are the other way up
-    // (Unreal's, DirectX's): Y flipped to match them, so the two blend as one (and the result
-    // written OpenGL's way up again).
+    // (Unreal's, DirectX's), as its meshes' tangents read them: Y flipped to match them, so the
+    // two blend as one.
     let normal = n.pixels().map(|p| [p[0] as f32 / 127.5 - 1.0, -(p[1] as f32 / 127.5 - 1.0)]).collect();
     Some(Detail { size, lum, normal, rough })
 }
@@ -291,8 +291,8 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
                         let nz = (1.0 - g[0] * g[0] - g[1] * g[1]).max(0.0).sqrt();
                         let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-6);
                         let enc = |c: f32| ((c / len * 0.5 + 0.5) * 255.0 + 0.5) as u8;
-                        // (Written OpenGL's way up, Y flipped, as Bevy and Solari read maps.)
-                        n_row[o..o + 4].copy_from_slice(&[enc(nx), enc(-ny), enc(nz), 255]);
+                        // (Written the game's way up, as its meshes' tangents read it: see `plain`.)
+                        n_row[o..o + 4].copy_from_slice(&[enc(nx), enc(ny), enc(nz), 255]);
                         // Roughness: the surface's, varied by the detail's and (shinier where it's
                         // brighter) the game's specular map; metalness the surface's.
                         let sp = spec.as_ref().map_or([1.0, 0.0], |(sm, sw, sh)| bilinear(sm, *sw, *sh, u, v, mix2));
@@ -314,7 +314,7 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
 
 /// The baked maps kept on disk (`assets/extracted/me_remaster/`), so a level's materials are
 /// baked once: by the material, its tiling, its surface, the table and this.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 fn cache_path(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
@@ -546,17 +546,12 @@ pub fn compressed(w: u32, h: u32, pixels: Vec<u8>, map: Map) -> Image {
     sampled(img, n)
 }
 
-/// A game texture as it is, with mips, compressed. A normal map OpenGL's way up: the game's
-/// (Unreal's, DirectX's) are the other way up, and Bevy and Solari both read OpenGL's (the
-/// `normaltest` capture shows Bevy's).
+/// A game texture as it is, with mips, compressed. A normal map too: the game's are DirectX's
+/// (green down the image), and so are the game's meshes' tangents as we draw them (their
+/// bitangent, Unreal's TangentY, runs down the image; Bevy's own run up it, for OpenGL's maps),
+/// so Bevy and Solari read them as the game does. The `normaltest` capture shows both.
 pub fn plain(t: &Rgba, map: Map) -> Image {
-    let mut px = t.pixels.clone();
-    if map == Map::Normal {
-        for c in px.chunks_exact_mut(4) {
-            c[1] = 255 - c[1];
-        }
-    }
-    compressed(t.width, t.height, px, map)
+    compressed(t.width, t.height, t.pixels.clone(), map)
 }
 
 /// The game's colour map tinted as its material tints it (`slot`'s tint, where it has it) and
@@ -659,5 +654,25 @@ mod tests {
         let kept = mip_levels(16, 16, px, true, Some(0.5));
         assert!(coverage(&kept[1].2, 0.5, 1.0) > 0.0);
         assert_eq!(coverage(&kept.last().unwrap().2, 0.5, 1.0), 0.0);
+    }
+
+    /// Which way Bevy's own tangents' bitangent runs over the texture: up the image (against
+    /// +V), so a normal map on them reads green up the image (OpenGL's way). The game's meshes'
+    /// run down it (the `tangent_sense` example), which is why its maps aren't flipped (`plain`).
+    #[test]
+    fn bevys_bitangent_runs_up_the_image() {
+        use bevy::mesh::VertexAttributeValues as V;
+        let mut mesh = Mesh::from(Rectangle::new(4.0, 4.0));
+        mesh.generate_tangents().unwrap();
+        let Some(V::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+        let Some(V::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else { panic!() };
+        let Some(V::Float32x3(n)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!() };
+        let Some(V::Float32x4(t)) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT) else { panic!() };
+        for i in 0..p.len() {
+            let b = Vec3::from(n[i]).cross(Vec3::new(t[i][0], t[i][1], t[i][2])) * t[i][3];
+            // (The rectangle's +V runs down it.)
+            let down = (0..p.len()).find(|&j| uv[j][0] == uv[i][0] && uv[j][1] != uv[i][1]).map(|j| (Vec3::from(p[j]) - Vec3::from(p[i])) * (uv[j][1] - uv[i][1]).signum()).unwrap();
+            assert!(b.dot(down) < 0.0, "corner {i}: bitangent {b}, +V {down}");
+        }
     }
 }

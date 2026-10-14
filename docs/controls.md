@@ -16,7 +16,7 @@
 | Pause menu / controls | Esc / F1 | Start |
 | Debug readout (state, speed, fps) / Mirror's Edge body on/off | F3 / F2 | |
 | Level editor (in it, F5 or F4 plays the level) | F4 | |
-| Spectator camera: fly about freely while the chamber runs on (WASD, mouse; Space up, C or Ctrl down, Shift faster); Faith waits where she was | F6 | |
+| Spectator camera: fly about freely while the chamber runs on (WASD, mouse; Space up, C or Ctrl down, Shift faster); Faith waits where she was, and you see her as others would | F6 | |
 
 While holding a cube, either trigger lets go of it with a push.
 

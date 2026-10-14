@@ -471,7 +471,18 @@ impl FaithArms {
         let pkg = Rc::new(Package::open(&cooked.join("Characters/CH_TKY_Crim_Fixer.upk"))?);
         let mesh = SkeletalMesh::read(&pkg, "SK_TKY_Crim_Fixer")?;
         let anims = AnimSet::read_named(&Package::open(&cooked.join("Animations/AS_F3P_Unarmed.upk"))?, "AS_F3P_Unarmed")?;
-        let materials = slots(&mut pkgs, &pkg, &mesh, max_texture);
+        let mut materials = slots(&mut pkgs, &pkg, &mesh, max_texture);
+        // Her hair's instance leaves its colour map unset, so the game draws it its parent's
+        // grey placeholder (there it's only ever her shadow). Her package's shaded hair map is
+        // the one its low-res family takes (the face's, top's and trousers' are their
+        // `_C_shaded` maps).
+        if let Some(e) = pkg.exports.iter().find(|e| e.name == "Faith_Hair_C_shaded") {
+            if let Ok(t) = texture::read_texture_from(&pkg, e, max_texture, &mut |n| pkgs.raw(n)) {
+                for s in materials.iter_mut().filter(|s| s.material == "MI_Faith_Lowres_Hair") {
+                    s.diffuse = Some(t.clone());
+                }
+            }
+        }
         Ok(FaithArms { mesh, anims, materials, legs: None, morphs: vec![], cooked_pc: cooked })
     }
 

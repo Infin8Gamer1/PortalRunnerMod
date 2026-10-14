@@ -232,6 +232,46 @@ fn materials_have_normal_and_spec_maps() {
     assert!(bad * 100 < arms.mesh.vertices.len(), "{bad} of {}", arms.mesh.vertices.len());
 }
 
+/// Her bodies' tangent bases run as the game's normal maps are made (DirectX's): the bitangent
+/// (TangentY) down the image, +V, so the maps are read unflipped.
+#[test]
+fn bitangents_run_down_the_image() {
+    let Some(a) = arms() else { return };
+    let (mut along, mut n) = (0, 0);
+    for t in a.mesh.indices.chunks_exact(3) {
+        let v = |i: u32| &a.mesh.vertices[i as usize];
+        let (p0, p1, p2) = (Vec3::from(v(t[0]).position), Vec3::from(v(t[1]).position), Vec3::from(v(t[2]).position));
+        let (u0, u1, u2) = (v(t[0]).uv, v(t[1]).uv, v(t[2]).uv);
+        let (d1, d2) = ([u1[0] - u0[0], u1[1] - u0[1]], [u2[0] - u0[0], u2[1] - u0[1]]);
+        let det = d1[0] * d2[1] - d1[1] * d2[0];
+        if det.abs() < 1e-9 {
+            continue;
+        }
+        // (How the surface goes as V grows.)
+        let dpdv = ((p2 - p0) * d1[0] - (p1 - p0) * d2[0]) / det;
+        n += 1;
+        if Vec3::from(v(t[0]).bitangent).dot(dpdv) > 0.0 {
+            along += 1;
+        }
+    }
+    assert!(along * 100 >= n * 99, "{along} of {n}");
+}
+
+/// Her third-person body: its hair has a colour map (its own instance leaves it unset, which
+/// would be the engine's grey), dark; its lashes are a two-sided cut-out.
+#[test]
+fn third_person_hair_and_lashes() {
+    let Some(dir) = std::env::var_os("ME_INSTALL") else { return };
+    let body = FaithArms::load_body3p(Path::new(&dir), 512).unwrap();
+    let hair = body.materials.iter().find(|s| s.material == "MI_Faith_Lowres_Hair").expect("hair");
+    let t = hair.diffuse.as_ref().expect("its colour map");
+    assert!(t.width >= 256, "{}x{}", t.width, t.height);
+    let mean = t.pixels.chunks_exact(4).map(|c| c[0] as u32 + c[1] as u32 + c[2] as u32).sum::<u32>() as f32 / (t.pixels.len() / 4) as f32 / 3.0;
+    assert!(mean < 60.0, "hair this bright: {mean}");
+    let lashes = body.materials.iter().find(|s| s.material == "unlitAlpha").expect("lashes");
+    assert!(matches!(lashes.blend, Blend::Masked(_)) && lashes.two_sided);
+}
+
 #[test]
 #[ignore]
 fn list_sequences() {
