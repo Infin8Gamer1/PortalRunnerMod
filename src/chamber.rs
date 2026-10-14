@@ -1473,7 +1473,7 @@ pub fn scorches(
         *seen = Some(game.loads);
     }
     let dt = time.delta_secs();
-    let scale = if crate::raytrace::active() { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
+    let scale = crate::raytrace::EMISSIVE_SCALE;
     let mut alive: Vec<(Entity, f32, Handle<StandardMaterial>)> = Vec::new();
     for (e, mut s, mut tf) in &mut marks {
         s.age += dt;

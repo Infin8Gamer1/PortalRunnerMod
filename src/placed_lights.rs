@@ -15,17 +15,17 @@ use crate::Game;
 #[derive(Component)]
 pub struct PlacedLightPart;
 
-/// Spawn the level's lights when it loads, and their bulbs when the lighting's traced (made or
-/// taken away as it's switched).
+/// Spawn the level's lights when it loads, and their bulbs (what the traced light lights by: on
+/// a GPU that can't trace, the lights alone).
 pub fn spawn_for_level(
     mut commands: Commands,
     game: Res<Game>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     existing: Query<Entity, With<PlacedLightPart>>,
-    mut built: Local<Option<(u64, bool)>>,
+    mut built: Local<Option<u64>>,
 ) {
-    let want = (game.loads, crate::raytrace::active());
+    let want = game.loads;
     if *built == Some(want) {
         return;
     }
@@ -53,7 +53,7 @@ pub fn spawn_for_level(
                 ));
             }
         }
-        if !want.1 {
+        if !crate::raytrace::supported() {
             continue;
         }
         // The bulb: as much light, from glow. A sphere of radius r glowing L sends out

@@ -281,8 +281,8 @@ pub fn sync(
     // traced light has scaled already: it's scaled as that one is, not again.
     let mut same_glow = |from: &Handle<StandardMaterial>, to: &Handle<StandardMaterial>| {
         if let Some(s) = scaled.as_mut() {
-            if let Some(v) = s.0.get(&from.id()).copied() {
-                s.0.insert(to.id(), v);
+            if s.0.contains(&from.id()) {
+                s.0.insert(to.id());
             }
         }
     };
@@ -609,8 +609,7 @@ pub struct Bulb;
 
 /// Ray tracing lights by what glows, not by lights: under it, a bulb where each of the map's
 /// brighter lights is, in the traced scene only, not drawn (Portal's lights are often fill
-/// lights in mid-air). Made when a map loads or the lighting's switched to traced, gone when
-/// it's switched back.
+/// lights in mid-air). Made when a map loads (on a GPU that can't trace, the lights alone).
 pub fn bulbs(
     mut commands: Commands,
     game: Res<Game>,
@@ -619,7 +618,7 @@ pub fn bulbs(
     existing: Query<Entity, With<Bulb>>,
     mut built: Local<Option<Option<u64>>>,
 ) {
-    let want = crate::raytrace::active().then_some(game.loads);
+    let want = crate::raytrace::supported().then_some(game.loads);
     if *built == Some(want) {
         return;
     }

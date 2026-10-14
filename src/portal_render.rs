@@ -432,9 +432,9 @@ pub fn update(
     // Which levels are worth drawing, and where their cameras go.
     let mut active = [[false; MAX_DEPTH + 1]; 2];
     let mut cam_tf = [[Transform::default(); MAX_DEPTH + 1]; 2];
-    // With traced light, a first view keeps running a while after its portal leaves the
-    // screen: started again, it would have none of the light it had gathered (grainy).
-    let keep = if crate::raytrace::active() { KEEP_TRACED } else { 0.0 };
+    // A first view keeps running a while after its portal leaves the screen: started again,
+    // it would have none of the traced light it had gathered (grainy).
+    let keep = KEEP_TRACED;
     for c in PortalColor::BOTH {
         cam_tf[c.index()][0] = *main_tf;
         active[c.index()][0] = true;
@@ -456,11 +456,9 @@ pub fn update(
     if render.handoff.is_some_and(|(_, left)| left <= 0.0) || !linked {
         render.handoff = None;
     }
-    if crate::raytrace::active() {
-        for e in &sim.events {
-            if let aperture::SimEvent::Teleported { entered, .. } = *e {
-                render.handoff = Some((entered, HANDOFF));
-            }
+    for e in &sim.events {
+        if let aperture::SimEvent::Teleported { entered, .. } = *e {
+            render.handoff = Some((entered, HANDOFF));
         }
     }
     // Looking back at the portal she came out of, the stand-in can't show it right (its view

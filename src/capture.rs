@@ -90,8 +90,6 @@ enum Act {
     Edit(fn(&mut crate::editor::Editor, &mut crate::menu::Menu)),
     /// Work the mouse, as if by hand.
     Mouse(Hand),
-    /// Ray-traced lighting on or off (the setting, not saved).
-    RayTracing(bool),
     /// Change the settings.
     Set(fn(&mut crate::settings::Settings)),
     /// Load one of Portal's chambers (the game's copy of the map).
@@ -1818,68 +1816,6 @@ fn script(name: &str) -> Vec<Act> {
             Wait(30),
             Shot("view_05_lit_again"),
         ],
-        // Ray-traced lighting switched off and on again while playing: a chamber, a rooftop
-        // outdoors, one of Portal's maps.
-        "rtswitch" => {
-            let mut v = Vec::new();
-            let maps: [(usize, u32, [&'static str; 3]); 3] = [
-                (1, 120, ["rt_chamber_1_on", "rt_chamber_2_off", "rt_chamber_3_on_again"]),
-                (7, 120, ["rt_rooftop_1_on", "rt_rooftop_2_off", "rt_rooftop_3_on_again"]),
-                (11, 240, ["rt_portal_map_1_on", "rt_portal_map_2_off", "rt_portal_map_3_on_again"]),
-            ];
-            for (map, wait, [on, off, again]) in maps {
-                v.extend([Map(map), Wait(wait), Shot(on), RayTracing(false), Wait(90), Shot(off), RayTracing(true), Wait(150), Shot(again)]);
-            }
-            v
-        }
-        // The lighting before #3's work (no ray tracing, bloom, ambient occlusion or auto
-        // exposure), with today's raster look, and traced; in a chamber, on a rooftop, in one
-        // of Portal's maps. Then a portal pair: the view through blue, and the same view from
-        // just in front of orange (which it shows), traced and not.
-        "lighting3" => {
-            let before: fn(&mut crate::settings::Settings) = |s| {
-                s.ray_tracing = 0.0;
-                s.bloom = 0.0;
-                s.ssao = 0.0;
-                s.auto_exposure = 0.0;
-            };
-            let raster: fn(&mut crate::settings::Settings) = |s| {
-                let d = crate::settings::Settings::default();
-                (s.bloom, s.ssao, s.auto_exposure, s.ray_tracing) = (d.bloom, d.ssao, d.auto_exposure, 0.0);
-            };
-            let mut v = Vec::new();
-            let maps: [(usize, &'static str); 3] = [(1, "chamber"), (7, "rooftop"), (aperture::levels::all().len() + 11, "portal16")];
-            for (map, name) in maps {
-                let shot = |k: &str| Shot(Box::leak(format!("l3_{name}_{k}").into_boxed_str()));
-                v.extend([Set(before), Map(map), Wait(240), shot("1_before"), Set(raster), Wait(120), shot("2_raster"), RayTracing(true), Wait(240), shot("3_traced")]);
-            }
-            v.extend([
-                Map(0),
-                Wait(120),
-                Portal(PortalColor::Blue, Vec3::new(24.0, 1.2, 18.0), Vec3::NEG_X, Vec3::Y),
-                Portal(PortalColor::Orange, Vec3::new(-24.0, 1.2, 14.0), Vec3::X, Vec3::Y),
-                Teleport(Vec3::new(21.0, 0.0, 18.0)),
-                Launch(Vec3::ZERO),
-                Look(-90.0, 0.0),
-                Wait(240),
-                Shot("l3_portal_1_through_blue_traced"),
-                Teleport(Vec3::new(-23.6, 0.0, 14.0)),
-                Launch(Vec3::ZERO),
-                Look(-90.0, 0.0),
-                Wait(240),
-                Shot("l3_portal_2_from_orange_traced"),
-                RayTracing(false),
-                Wait(120),
-                Shot("l3_portal_4_from_orange_raster"),
-                Teleport(Vec3::new(21.0, 0.0, 18.0)),
-                Launch(Vec3::ZERO),
-                Look(-90.0, 0.0),
-                Wait(120),
-                Shot("l3_portal_3_through_blue_raster"),
-                Set(|s| s.ray_tracing = 1.0),
-            ]);
-            v
-        }
         // #25's gaps: a floor indicator strip in Chamber 00; the portal gun on Chamber 02's
         // turning pedestal.
         "gaps25" => {
@@ -1922,10 +1858,6 @@ fn script(name: &str) -> Vec<Act> {
             }),
             Wait(150),
             Shot("lights_1_room_traced"),
-            RayTracing(false),
-            Wait(90),
-            Shot("lights_2_room_not_traced"),
-            RayTracing(true),
             Wait(30),
             Edit(|ed, _| {
                 use aperture::doc::{Kind, LevelDoc, Object};
@@ -1945,10 +1877,6 @@ fn script(name: &str) -> Vec<Act> {
             }),
             Wait(150),
             Shot("lights_3_sun_traced"),
-            RayTracing(false),
-            Wait(90),
-            Shot("lights_4_sun_not_traced"),
-            RayTracing(true),
         ],
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
@@ -2308,7 +2236,6 @@ pub fn run(
         Act::Menu(screen) => menu.open_at(*screen),
         Act::Edit(f) => f(&mut editor, &mut menu),
         Act::Mouse(m) => mouse.act(*m, &editor),
-        Act::RayTracing(on) => settings.ray_tracing = if *on { 1.0 } else { 0.0 },
         Act::Set(f) => f(&mut settings),
         Act::AtLight(k, of) => {
             let lights = &game.sim.level.lights;
