@@ -378,9 +378,15 @@ fn section_material(
             _ => LinearRgba::BLACK,
         },
         base_color_texture: tex,
-        perceptual_roughness: if rough.is_some() { 1.0 } else { made_of.as_ref().map_or(0.8, |s| s.roughness) },
+        // (What a rule says it's made of over what its specular map says: the Shard's says
+        // little of its glass, which the game's cubemap made shine.)
+        perceptual_roughness: match (&made_of, &rough) {
+            (Some(s), _) => s.roughness,
+            (None, Some(_)) => 1.0,
+            (None, None) => 0.8,
+        },
         metallic: made_of.as_ref().map_or(0.0, |s| s.metallic),
-        metallic_roughness_texture: rough,
+        metallic_roughness_texture: if made_of.is_some() { None } else { rough },
         normal_map_texture: normal_map,
         alpha_mode,
         double_sided,

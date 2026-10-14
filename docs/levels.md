@@ -224,9 +224,9 @@ without a colour map takes its colour from its graph (its diffuse input's consta
 parameters, an instance's values first: a light blocker's black, a sky card's sky); a colour
 brighter than white is how much it glows (at most as much as a lamp; a sky or sun card, the
 sky the game baked in through a window or a door, as the sky does), its paint kept under white
-paint's. The table gives an untextured material its roughness and metalness too: the
-Shard's curtain wall, a cubemap's reflection in the game, is mirrored glass that reflects the
-world. What the game blends over its picture rather than draws as a surface (light shafts,
+paint's. The table gives an untextured material its roughness and metalness too (over what its
+specular map says): the Shard's curtain wall, a cubemap's reflection in the game, is smooth
+glass that reflects the world. What the game blends over its picture rather than draws as a surface (light shafts,
 glows, fake bloom, fog cones, sky domes) is left out, as are the BSP surfaces its editor marked
 removed. A see-through material whose opacity is wire and holes (a
 chain-link fence, barbed wire) is a cut-out, and a cut-out's mipmaps keep its wire's coverage
