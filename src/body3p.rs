@@ -16,7 +16,7 @@ use me_assets::{FaithArms, Skinner};
 
 use faith_anim::Rig;
 
-use crate::me_viewmodel::{candidates, image_from, normal_image, roughness_image};
+use crate::me_viewmodel::{body_material, candidates};
 use crate::Game;
 
 /// The third-person body's render layer.
@@ -69,6 +69,7 @@ pub fn setup(
     let through_layer = RenderLayers::layer(THROUGH_LAYER);
     let through = commands.spawn((Transform::default(), Visibility::Hidden, through_layer.clone())).id();
     let mut handles = vec![];
+    let mut made = std::collections::HashMap::new();
     for (k, sec) in body.mesh.sections.iter().enumerate() {
         let m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone())
@@ -77,22 +78,11 @@ pub fn setup(
             .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone())
             .with_inserted_indices(Indices::U32(section_indices(&body.mesh, k)));
         let h = meshes.add(m);
+        // (One material for the sections that share one. Lit the ordinary way: see
+        // `raytrace::CastsTracedShadow`.)
         let slot = body.materials.get(sec.material as usize);
-        let tex = slot.and_then(|s| s.diffuse.as_ref()).map(|t| images.add(image_from(t)));
-        let normal_map = slot.and_then(|s| s.normal.as_ref()).map(|t| images.add(normal_image(t)));
-        let rough = slot.and_then(|s| s.specular.as_ref()).map(|t| images.add(roughness_image(t)));
-        let mat = materials.add(StandardMaterial {
-            base_color: if tex.is_some() { Color::WHITE } else { Color::srgb(0.12, 0.12, 0.13) },
-            base_color_texture: tex,
-            perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
-            metallic: 0.0,
-            metallic_roughness_texture: rough,
-            normal_map_texture: normal_map,
-            reflectance: 0.3,
-            // Lit the ordinary way (see `raytrace::CastsTracedShadow`).
-            opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
-            ..default()
-        });
+        let key = slot.map_or(String::new(), |s| s.path.clone());
+        let mat = made.entry(key).or_insert_with(|| materials.add(body_material(slot, &mut images))).clone();
         for (parent, layer) in [(root, &layer), (through, &through_layer)] {
             let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat.clone()), Transform::default(), layer.clone(), crate::raytrace::CastsTracedShadow)).id();
             commands.entity(parent).add_child(e);

@@ -114,15 +114,6 @@ pub fn candidates() -> Vec<PathBuf> {
     v
 }
 
-pub(crate) fn image_from(t: &me_assets::Rgba) -> Image {
-    image_with(t, t.pixels.clone(), TextureFormat::Rgba8UnormSrgb)
-}
-
-/// Normal maps hold vectors, not colours: no sRGB curve.
-pub(crate) fn normal_image(t: &me_assets::Rgba) -> Image {
-    image_with(t, t.pixels.clone(), TextureFormat::Rgba8Unorm)
-}
-
 /// The game's specular map as Bevy's metallic/roughness texture: shinier
 /// where the spec map is bright (G = roughness, B = metallic = 0).
 pub(crate) fn roughness_image(t: &me_assets::Rgba) -> Image {
@@ -136,6 +127,40 @@ pub(crate) fn roughness_image(t: &me_assets::Rgba) -> Image {
         })
         .collect();
     image_with(t, px, TextureFormat::Rgba8Unorm)
+}
+
+/// One of Faith's materials (first or third person), her maps made as the levels' are
+/// (`me_remaster`): with mips, block-compressed, her colour's white kept under real paint's, her
+/// normal maps read as the game reads them, and a cut-out (her lashes) cut out. Skinned on the
+/// CPU every frame (no motion for traced light to follow): lit the ordinary way. (Her arms'
+/// emissive input is the game's stand-in for ambient light, from a hemisphere map it sets at
+/// runtime: left out, the lighting's real.)
+pub(crate) fn body_material(slot: Option<&MaterialSlot>, images: &mut Assets<Image>) -> StandardMaterial {
+    use crate::me_remaster::{color_map, compressed, plain, tamed, Map};
+    let tex = slot.and_then(|s| Some(images.add(plain(&tamed(s.diffuse.as_ref()?, s), color_map(s)))));
+    let normal_map = slot.and_then(|s| s.normal.as_ref()).map(|t| images.add(plain(t, Map::Normal)));
+    let rough = slot.and_then(|s| s.specular.as_ref()).map(|t| {
+        let px = roughness_image(t).data.unwrap_or_default();
+        images.add(compressed(t.width, t.height, px, Map::Data))
+    });
+    let two_sided = slot.is_some_and(|s| s.two_sided);
+    StandardMaterial {
+        base_color: if tex.is_some() { Color::WHITE } else { Color::srgb(0.12, 0.12, 0.13) },
+        base_color_texture: tex,
+        perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
+        metallic: 0.0,
+        metallic_roughness_texture: rough,
+        normal_map_texture: normal_map,
+        reflectance: 0.3,
+        alpha_mode: match slot.map(|s| s.blend) {
+            Some(me_assets::Blend::Masked(clip)) => AlphaMode::Mask(clip),
+            _ => AlphaMode::Opaque,
+        },
+        double_sided: two_sided,
+        cull_mode: if two_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
+        opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
+        ..default()
+    }
 }
 
 fn image_with(t: &me_assets::Rgba, pixels: Vec<u8>, format: TextureFormat) -> Image {
@@ -174,6 +199,7 @@ fn spawn_part(
     let root = commands.spawn((Transform::default(), Visibility::default(), layer.clone())).id();
     let mut handles = vec![];
     let mut sections = vec![];
+    let mut made = std::collections::HashMap::new();
     // Every section, the lower body's torso (Faith's top) included: it's what you see when you
     // look down. Hiding it left the open waist of the trousers in view.
     for (k, sec) in mesh.sections.iter().enumerate() {
@@ -184,23 +210,10 @@ fn spawn_part(
             .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone())
             .with_inserted_indices(Indices::U32(section_indices(mesh, k)));
         let h = meshes.add(m);
+        // (One material for the sections that share one.)
         let slot = slots.get(sec.material as usize);
-        let tex = slot.and_then(|s| s.diffuse.as_ref()).map(|t| images.add(image_from(t)));
-        let normal_map = slot.and_then(|s| s.normal.as_ref()).map(|t| images.add(normal_image(t)));
-        let rough = slot.and_then(|s| s.specular.as_ref()).map(|t| images.add(roughness_image(t)));
-        let mat = materials.add(StandardMaterial {
-            base_color: if tex.is_some() { Color::WHITE } else { Color::srgb(0.12, 0.12, 0.13) },
-            base_color_texture: tex,
-            perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
-            metallic: 0.0,
-            metallic_roughness_texture: rough,
-            normal_map_texture: normal_map,
-            reflectance: 0.3,
-            // Skinned on the CPU every frame (no motion for traced light to follow): lit the
-            // ordinary way, as the arms' overlay is anyway.
-            opaque_render_method: bevy::material::OpaqueRendererMethod::Forward,
-            ..default()
-        });
+        let key = slot.map_or(String::new(), |s| s.path.clone());
+        let mat = made.entry(key).or_insert_with(|| materials.add(body_material(slot, images))).clone();
         let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat), Transform::default(), layer.clone(), NotShadowCaster)).id();
         commands.entity(root).add_child(e);
         handles.push(h);

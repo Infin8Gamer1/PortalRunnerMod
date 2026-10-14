@@ -1155,6 +1155,43 @@ fn script(name: &str) -> Vec<Act> {
             Hold(MoveInput::default(), 12),
             Shot("b03_jumping"),
         ],
+        // Faith's own look (#107) on Training, in the sun on the start roof and in the shade by
+        // the board wall: her first-person arms and legs, standing (looking down) and running,
+        // then her third-person face, hair and lashes from a spectator a metre in front of her.
+        // PORTAL_FAITH_SUN / PORTAL_FAITH_SHADE (`x,y,z,yaw`) move those.
+        "faith" => {
+            let spot = |var: &str, default: [f32; 4]| -> [f32; 4] {
+                let f: Vec<f32> = std::env::var(var).unwrap_or_default().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if f.len() == 4 { [f[0], f[1], f[2], f[3]] } else { default }
+            };
+            let mut v = vec![Chamber(crate::LevelGroup::MirrorsEdge, "tutorial"), Wait(120)];
+            for (name, at) in [("sun", spot("PORTAL_FAITH_SUN", [-79.66, 57.6, 48.13, 90.0])), ("shade", spot("PORTAL_FAITH_SHADE", [-62.2, 42.24, 28.6, 180.0]))] {
+                let feet = Vec3::new(at[0], at[1], at[2]);
+                let yaw = at[3].to_radians();
+                let ahead = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+                v.extend([
+                    Teleport(feet),
+                    Look(at[3], -70.0),
+                    Wait(90),
+                    Shot(Box::leak(format!("f_{name}_down").into_boxed_str())),
+                    Look(at[3], -5.0),
+                ]);
+                // (A few frames through her stride: her hands come up into view and go again.)
+                for k in 0..4 {
+                    v.extend([Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), ..default() }, if k == 0 { 30 } else { 7 }), Shot(Box::leak(format!("f_{name}_run{k}").into_boxed_str()))]);
+                }
+                v.extend([
+                    Teleport(feet),
+                    Look(at[3], 0.0),
+                    Wait(60),
+                    Spectate(feet + ahead * 0.9 + Vec3::Y * 1.62, at[3] + 180.0, -4.0),
+                    Wait(30),
+                    Shot(Box::leak(format!("f_{name}_face").into_boxed_str())),
+                    Unspectate,
+                ]);
+            }
+            v
+        }
         // Running through a wall portal, a frame at a time: no frame should show black.
         "through" => vec![
             Map(0),
@@ -2358,8 +2395,10 @@ pub fn run(
             if let Some(h) = game.sim.held {
                 game.sim.props[h].pos += d;
             }
-            game.ctrl.feet = *p;
-            game.ctrl.state = MoveState::Air;
+            // (Her fall measured from here: dropped lower than she was, she'd land as if she'd
+            // fallen the difference.)
+            let (vel, yaw, pitch) = (game.ctrl.vel, game.ctrl.yaw, game.ctrl.pitch);
+            game.ctrl.teleport(*p, vel, yaw, pitch, false);
         }
     }
     cap.step += 1;
@@ -2430,31 +2469,49 @@ impl MouseHand<'_, '_> {
 }
 
 /// A check of which way up Bevy reads a normal map's green (`PORTAL_NORMAL_TEST=1`, with the
-/// `normaltest` script): a wall-facing quad, a dome bumped out of it by a normal map whose green
-/// points up the image, lit from above. Its top half lit means green is up the image.
+/// `normaltest` script): two wall-facing quads, each with a dome bumped out of it by a normal
+/// map, lit from above. On the left, Bevy's own tangents and a map whose green points up the
+/// image (OpenGL's); on the right, tangents as the game's meshes have them (the bitangent down
+/// the image) and a map whose green points down it (DirectX's, the game's), made the way the
+/// game's are (`me_remaster::plain`). Each one's top half lit means it's read the right way up.
 pub fn normal_test(mut commands: Commands, mut done: Local<bool>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>, mut images: ResMut<Assets<Image>>) {
     if *done || std::env::var_os("PORTAL_NORMAL_TEST").is_none() {
         return;
     }
     *done = true;
     let n = 256u32;
-    let mut px = Vec::with_capacity((n * n * 4) as usize);
-    for row in 0..n {
-        for col in 0..n {
-            let x = (col as f32 + 0.5) / n as f32 * 2.0 - 1.0;
-            let y_up = 1.0 - (row as f32 + 0.5) / n as f32 * 2.0;
-            let r2 = x * x + y_up * y_up;
-            let (nx, ny) = if r2 < 0.64 { (x, y_up) } else { (0.0, 0.0) };
-            let nz = (1.0f32 - nx * nx - ny * ny).max(0.0).sqrt();
-            px.extend_from_slice(&[((nx * 0.5 + 0.5) * 255.0) as u8, ((ny * 0.5 + 0.5) * 255.0) as u8, ((nz * 0.5 + 0.5) * 255.0) as u8, 255]);
+    let dome = |green_down: bool| {
+        let mut px = Vec::with_capacity((n * n * 4) as usize);
+        for row in 0..n {
+            for col in 0..n {
+                let x = (col as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+                let y_up = 1.0 - (row as f32 + 0.5) / n as f32 * 2.0;
+                let r2 = x * x + y_up * y_up;
+                let (nx, ny) = if r2 < 0.64 { (x, y_up) } else { (0.0, 0.0) };
+                let nz = (1.0f32 - nx * nx - ny * ny).max(0.0).sqrt();
+                let green = if green_down { -ny } else { ny };
+                px.extend_from_slice(&[((nx * 0.5 + 0.5) * 255.0) as u8, ((green * 0.5 + 0.5) * 255.0) as u8, ((nz * 0.5 + 0.5) * 255.0) as u8, 255]);
+            }
         }
-    }
-    let img = crate::me_remaster::with_mips(n, n, px, false);
+        me_assets::Rgba { width: n, height: n, pixels: px }
+    };
+    let opengl = dome(false);
+    let img = crate::me_remaster::with_mips(n, n, opengl.pixels, false);
     let mut mesh = Mesh::from(Rectangle::new(4.0, 4.0));
     let _ = mesh.generate_tangents();
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), normal_map_texture: Some(images.add(img)), perceptual_roughness: 0.9, ..default() })),
-        Transform::from_xyz(0.0, 3.0, -10.0),
+        Transform::from_xyz(-2.5, 3.0, -10.0),
+    ));
+    // (The rectangle's +V runs down it: with tangent +X and normal +Z, the bitangent,
+    // w × (normal ^ tangent), runs down it, as the game's do, for w = -1.)
+    let mut mesh = Mesh::from(Rectangle::new(4.0, 4.0));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, -1.0]; 4]);
+    let img = crate::me_remaster::plain(&dome(true), crate::me_remaster::Map::Normal);
+    commands.spawn((
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), normal_map_texture: Some(images.add(img)), perceptual_roughness: 0.9, ..default() })),
+        Transform::from_xyz(2.5, 3.0, -10.0),
     ));
 }
