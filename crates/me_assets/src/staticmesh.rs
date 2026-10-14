@@ -28,6 +28,9 @@ pub struct StaticMesh {
     /// TangentX, and in w the sign Unreal gives TangentY = cross(normal, TangentX) * w.
     pub tangents: Vec<[f32; 4]>,
     pub uvs: Vec<[f32; 2]>,
+    /// Every UV set it has, by its index (what a material's texture coordinates name): the
+    /// lightmap's too.
+    pub uv_sets: Vec<Vec<[f32; 2]>>,
     pub indices: Vec<u32>,
     pub sections: Vec<StaticSection>,
     /// Bounds: centre and half size (cm).
@@ -147,18 +150,26 @@ impl StaticMesh {
         let mut normals = Vec::with_capacity(nverts);
         let mut tangents = Vec::with_capacity(nverts);
         let mut uvs = Vec::with_capacity(nverts);
+        let sets = num_uv.min((usize_ - 12) / uv_bytes);
+        let mut uv_sets: Vec<Vec<[f32; 2]>> = vec![Vec::with_capacity(nverts); sets];
         for i in 0..nverts {
             let item = &pkg.data[uat + usize_ * i..uat + usize_ * (i + 1)];
             let [tx, ty, tz] = packed_normal(&item[0..4]);
             tangents.push([tx, ty, tz, if item[7] >= 128 { 1.0 } else { -1.0 }]);
             normals.push(packed_normal(&item[4..8]));
             // item[8..12]: vertex colour.
-            let uv = &item[12 + uv_set * uv_bytes..];
-            uvs.push(if full_precision {
-                [f32::from_le_bytes(uv[0..4].try_into().unwrap()), f32::from_le_bytes(uv[4..8].try_into().unwrap())]
-            } else {
-                [half(u16::from_le_bytes([uv[0], uv[1]])), half(u16::from_le_bytes([uv[2], uv[3]]))]
-            });
+            let read = |k: usize| {
+                let uv = &item[12 + k * uv_bytes..];
+                if full_precision {
+                    [f32::from_le_bytes(uv[0..4].try_into().unwrap()), f32::from_le_bytes(uv[4..8].try_into().unwrap())]
+                } else {
+                    [half(u16::from_le_bytes([uv[0], uv[1]])), half(u16::from_le_bytes([uv[2], uv[3]]))]
+                }
+            };
+            uvs.push(read(uv_set));
+            for (k, set) in uv_sets.iter_mut().enumerate() {
+                set.push(read(k));
+            }
         }
 
         // Shadow-volume stream, vertex count, then the indices.
@@ -182,7 +193,7 @@ impl StaticMesh {
                 return Err(Error::Format(format!("section past the indices ({} + {} x 3 > {})", s.first_index, s.triangles, indices.len())));
             }
         }
-        Ok(StaticMesh { name: name.to_string(), positions, normals, tangents, uvs, indices, sections, origin, extent })
+        Ok(StaticMesh { name: name.to_string(), positions, normals, tangents, uvs, uv_sets, indices, sections, origin, extent })
     }
 
     /// The triangles it collides with when it has no simple shapes (its kDOP tree's), in its

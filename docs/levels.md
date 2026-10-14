@@ -128,7 +128,8 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
 (Mall's).
 
 - Its meshes are **Mirror's Edge props**, standing, turned and scaled as the map has them (one
-  mirrored is drawn wound the other way round), drawn from the install.
+  mirrored is drawn wound the other way round; an actor's PrePivot moves its mesh back, scaled
+  and turned), drawn from the install.
 - Each prop collides with its mesh's own collision (**Collision: the mesh's own**), read from
   the game with the mesh: its convex hulls, or for a mesh that has none, its triangles, placed
   wherever the prop is moved (and not drawn as boxes). Nothing of it is in the file; without
@@ -157,12 +158,17 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
   (melee); a mover event fires as she gets on and off, and "Open Finished" once its matinee's
   done and its stay-open time has passed (a lift that goes back down).
 - Meshes the game hides but that collide (invisible blockers), and hidden ones its Kismet moves
-  or shows, are kept as hidden props: not drawn, colliding as their shapes.
+  or shows, are kept as hidden props: not drawn, colliding as their shapes. Not the cards for
+  its baked lighting (hidden, a quad to collide with and nothing for physics: they stand in
+  doorways), nor its light blockers' blank material.
+- What its physical material says breaks a fall (`bEnableSoftLanding`: the wrapped
+  construction packages, dumpsters, toolboxes) gets a **soft landing** over it: she lands soft
+  on it from any height.
 - Meshes from other packages (a prefab's) are read from those packages.
-- Its blocking volumes are **hulls** (clip: convex, invisible, only she and cubes bump into
+- Its blocking volumes are **hulls** (clip: convex, never drawn, only she and cubes bump into
   them); its barbed wire, ladders and drainpipes, zipline, swing poles and balance beam are
   ours, placed where the map's are (a ladder's foot found on the wall behind it, a beam on top
-  of what it is).
+  of what it is). The barbed wire's volume only hurts: its fence's own wire is what's drawn.
 - Its sun is the directional light its lightmaps were baked with (the level's shadows'), as
   bright as ours; its point, spot and area lights are lights. She starts at its start (a story
   chapter's default checkpoint), on the floor under it. A zipline sags as its spline does. A
@@ -174,15 +180,21 @@ Their materials are remastered for ray tracing (`assets/remaster/`, #101): each 
 game's own art and gets, from what it's made of (plaster, concrete, roof, painted or bare metal,
 wood, fabric...: `assets/remaster/me.ron`), a CC0 physically based detail layer at its real
 size, a roughness and a metalness, and mipmaps; whites are kept under real white paint's. A
-placed mesh's own materials (an orange catwalk, the adverts) replace its mesh's, colour variants
-are tinted as the game has them, and the game's normal maps are read the right way up (theirs
+placed mesh's own materials (an orange catwalk, the adverts) replace its mesh's, and are tinted
+as the game's graphs have them: its colour map times a colour parameter (an instance's value,
+else the parameter's own), only where it fades that in (a door's paint by its specular map, not
+its kick plate; a scaffold board's planks, by its UVs, not its brace), as much as a runner-vision
+highlight's strength lets it (none, at rest); a one-way door's red is on the triangles its
+lightmap UVs put it on. The game's normal maps are read the right way up (theirs
 are DirectX's: the `normaltest` capture, with `PORTAL_NORMAL_TEST=1`, shows how Bevy reads one).
 A material's colour map is tiled as its texture coordinates are (a chain-link fence's one link,
 thirty times over); a layered material's main layer is the one its own normal map belongs to,
 not a dirt layer's. A lamp's or a sign's material glows as the game's emissive input has it
 (its emissive map times its colour), so it lights the room in the traced light. What the game
 blends over its picture rather than draws as a surface (light shafts, glows, fake bloom, fog
-cones, sky domes) is left out. A light the game put inside its lamp is moved just out of it
+cones, sky domes) is left out. A see-through material whose opacity is wire and holes (a
+chain-link fence, barbed wire) is a cut-out, and a cut-out's mipmaps keep its wire's coverage
+(else a fence would fade away a few metres off). A light the game put inside its lamp is moved just out of it
 (the lamp would shut its light in). Indoors, the eye opens up by up to 3 stops (Portal's levels
 keep theirs). `portal_extract -- --audit-me <level>` lists a level's materials by how much
 of it they cover, and what was found for each (to find what's drawn wrong).

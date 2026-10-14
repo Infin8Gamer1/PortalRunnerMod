@@ -298,6 +298,32 @@ fn a_kicked_door_s_kismet_turns_its_collision_off() {
     assert!(r.c.feet.z < door.min.z - 0.5, "she didn't get through: {:?}", r.c.feet);
 }
 
+/// Training's red one-way door, from the alley: run into it, or stand and kick it, and it
+/// swings open and she goes through. (Its kick slab is a closing mechanism's mesh scaled up
+/// and moved back to the door by its actor's PrePivot.)
+#[test]
+fn training_one_way_door_opens_to_a_kick() {
+    let Some(l) = level("tutorial") else { return };
+    let door = l.me_logic.iter().find(|o| o.op == "SeqEvent_TakeDamage" && o.name.contains("OnewayDoor")).expect("the door's event").regions[0];
+    assert!((door.center().y - 43.5).abs() < 1.0, "its kick slab isn't at the door: {door:?}");
+    for kick in [false, true] {
+        let start = Vec3::new(door.center().x, 42.25, door.center().z - if kick { 1.1 } else { 4.0 });
+        let mut r = Run::new(l.clone(), start, yaw_to(Vec3::Z));
+        r.run(0.5, |_| Input::default());
+        let before = r.sim.me.as_ref().unwrap().poses.clone();
+        if kick {
+            r.run(DT, |_| Input { melee_pressed: true, ..Default::default() });
+            r.run(1.5, |_| Input::default());
+        }
+        r.run(2.0, |_| forward());
+        let after = r.sim.me.as_ref().unwrap().poses.clone();
+        let near: Vec<usize> = r.sim.level.me_movers.iter().enumerate().filter(|(_, m)| m.pivot.distance(door.center()) < 2.5).map(|(k, _)| k).collect();
+        let moved = near.iter().filter(|&&k| after[k].0.distance(before[k].0) > 0.05 || after[k].1.angle_between(before[k].1) > 0.05).count();
+        assert!(moved > 0, "kick {kick}: the door didn't open ({} movers by it)", near.len());
+        assert!(r.c.feet.z > door.max.z + 0.5, "kick {kick}: she didn't get through: {:?}", r.c.feet);
+    }
+}
+
 /// Hidden blockers (#113): the game's invisible meshes that collide are kept (not drawn).
 #[test]
 fn hidden_blockers_are_kept() {
@@ -305,4 +331,45 @@ fn hidden_blockers_are_kept() {
     let hidden = l.me_props.iter().filter(|p| p.hidden).count();
     eprintln!("escape: {hidden} hidden props");
     assert!(hidden > 0);
+}
+
+/// Running from Training's start down its first roof, over its litter and the plank pile, she
+/// keeps her speed and her feet: no catching on a scrap and stopping dead.
+#[test]
+fn training_first_roof_keeps_her_speed() {
+    let Some(l) = level("tutorial") else { return };
+    let cp = l.checkpoints[0].clone();
+    let mut r = Run::new(l, cp.spawn, cp.yaw);
+    let mut slowest = f32::MAX;
+    for k in 0..300 {
+        r.run(DT, |_| forward());
+        // (Up to speed by 2.5 s; through the litter by 5.)
+        if k >= 150 {
+            assert!(r.c.state == State::Ground, "off her feet at {:?}: {:?}", r.c.feet, r.c.state);
+            slowest = slowest.min(Vec3::new(r.c.vel.x, 0.0, r.c.vel.z).length());
+        }
+    }
+    assert!(slowest > 6.0, "slowed to {slowest} m/s");
+    assert_eq!(r.deaths, 0);
+}
+
+/// Training's board wall (the orange one by the red door), come at from the alley and jumped
+/// at: a wallrun along it, not a vault over it.
+#[test]
+fn training_board_wall_takes_a_wallrun() {
+    let Some(l) = level("tutorial") else { return };
+    let dir = Vec3::new(0.3, 0.0, 1.0).normalize();
+    let mut r = Run::new(l, Vec3::new(-62.2, 42.24, 28.6), yaw_to(dir));
+    r.c.vel = dir * 6.0;
+    let (mut jumped, mut ran) = (false, 0);
+    for _ in 0..150 {
+        let near = r.c.feet.x > -61.75;
+        let i = Input { move_axis: Vec2::new(0.0, 1.0), jump_pressed: near && !jumped, jump_held: near, ..Default::default() };
+        jumped |= near;
+        r.sim.step_player(&mut r.c, &i, DT);
+        r.sim.step(DT, &mut r.c);
+        assert!(!matches!(r.c.state, State::Vault(_)), "vaulted it at {:?}", r.c.feet);
+        ran += matches!(r.c.state, State::WallRun { .. }) as usize;
+    }
+    assert!(ran as f32 * DT > 0.8, "wallran {} s", ran as f32 * DT);
 }

@@ -742,6 +742,8 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
             continue;
         }
         match s.owner {
+            // A player clip (a Mirror's Edge blocking volume): felt, never seen.
+            Owner::Level(_) if s.mat == Mat::Clip => {}
             Owner::Level(_) if matches!(s.mat, Mat::White | Mat::Black) => {
                 // Floor tiles on top, panels on the sides and underneath.
                 let (side, top) = if s.mat == Mat::White { (&m.white, &m.white_floor) } else { (&m.black, &m.black_floor) };
@@ -811,7 +813,8 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
                         Transform::from_translation(Vec3::new(size.x * 0.5, size.y * 0.5, 0.0)),
                     ));
             }
-            Fixture::BarbedWire { b } => {
+            // (A Mirror's Edge level's wire is its fence's own: the volume only hurts.)
+            Fixture::BarbedWire { b } if !l.me_art => {
                 geom(commands, meshes.add(box_mesh(&b)), m.metal.clone(), Transform::default());
             }
             _ => {}
@@ -929,9 +932,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &ChamberMats
         }
     }
     // A hand-built chamber's movers: their boxes, moving together. (A Portal map's that have
-    // no model of their own, a cube dropper's hatch, are drawn by their props.)
+    // no model of their own, a cube dropper's hatch, are drawn by their props; a Mirror's Edge
+    // mover's, a door or a lift, by the props it carries.)
     for (i, mv) in sim.movers.iter().enumerate() {
-        if mv.def.model != aperture::level::NO_MODEL || i < sim.map_movers {
+        if mv.def.model != aperture::level::NO_MODEL || i < sim.map_movers || l.me_movers.iter().any(|m| m.sim == i) {
             continue;
         }
         for b in &mv.def.boxes {

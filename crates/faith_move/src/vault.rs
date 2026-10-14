@@ -66,7 +66,7 @@ pub const VAULT_TYPES: [VaultType; 6] = [
 ];
 
 /// TdMove_SpeedVault.MaxTimeToLedge and VaultClearObjectHeight.
-const MAX_TIME_TO_LEDGE: f32 = 0.4;
+pub(crate) const MAX_TIME_TO_LEDGE: f32 = 0.4;
 const CLEAR_OBJECT_HEIGHT: f32 = uu(35.0);
 
 /// A vault in progress. Positions are feet positions.

@@ -1,4 +1,5 @@
 target/
+reference/
 
 # Decompiled Mirror's Edge script and unpacked game packages: never commit these.
 *.uc

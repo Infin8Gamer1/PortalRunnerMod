@@ -42,7 +42,8 @@
         (match: ["b_bd_", "b_materials.m_bd"], surface: Some("far_building")),
         (match: ["cardboard"], surface: Some("cardboard")),
         (match: ["tarp", "plasticcover", "housecover", "tent", "cover", "fabric", "cloth", "sack"], surface: Some("fabric")),
-        (match: ["wood", "plank", "pallet", "crate", "runnerobjects"], surface: Some("wood")),
+        // (A scaffold's board walls are painted plywood, braced: its steel is scaffolding_02.)
+        (match: ["wood", "plank", "pallet", "crate", "runnerobjects", "scaffolding_01"], surface: Some("wood")),
         (match: ["plastic", "barrel", "bin_", "bucket"], surface: Some("plastic")),
         // Galvanised and bare steel: scaffolding, wire, fences, grates.
         (match: ["scaffold", "fence", "wire", "razor", "barbed", "grate", "metalstack", "steel", "chain", "zipline"], surface: Some("bare_metal")),

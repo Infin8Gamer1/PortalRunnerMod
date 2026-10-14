@@ -186,7 +186,7 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
                     }
                 }
                 for c in &carries {
-                    let entry = (c.name.clone(), tidy(ue(c.location)), format!("{pname}.{}", c.name));
+                    let entry = (c.name.clone(), tidy(ue(c.origin())), format!("{pname}.{}", c.name));
                     if !carried.contains(&entry) {
                         carried.push(entry);
                     }
@@ -213,12 +213,12 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
         for a in n.op.vars.iter().flat_map(|(_, v)| v.iter()).filter(|&&a| a > 0).map(|&a| a as usize - 1) {
             if let Some(p) = m.meshes.iter().find(|p| p.export == a) {
                 let name = format!("{pname}.{}", p.name);
-                let entry = (p.name.clone(), tidy(ue(p.location)), name.clone());
+                let entry = (p.name.clone(), tidy(ue(p.origin())), name.clone());
                 if !carried.contains(&entry) {
                     carried.push(entry);
                 }
                 if !bodies.iter().any(|b| b.0 == name) {
-                    bodies.push((name.clone(), tidy(ue(p.location))));
+                    bodies.push((name.clone(), tidy(ue(p.origin()))));
                 }
                 targets.entry(k).or_default().push(name);
             } else if m.volumes.iter().any(|v| v.export == a) || m.others.iter().any(|o| o.export == a) {
@@ -260,13 +260,13 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
                 let (mut a, mut b) = (Vec3::MAX, Vec3::MIN);
                 for k in 0..8 {
                     let c = Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z });
-                    let w = ue(p.location) + q * (c * s);
+                    let w = ue(p.origin()) + q * (c * s);
                     a = a.min(w);
                     b = b.max(w);
                 }
                 faith_move::Aabb::new(a, b)
             });
-            region_of.push((p.export, placed.or_else(|| mesh_region(doc, pname, &p.name, tidy(ue(p.location))))));
+            region_of.push((p.export, placed.or_else(|| mesh_region(doc, pname, &p.name, tidy(ue(p.origin()))))));
         }
         for o in &m.others {
             // (A trigger: its cylinder, as a box.)

@@ -32,6 +32,23 @@ pub struct Placed {
     /// A mesh from another package (an import): that package's name (then `mesh` is
     /// `usize::MAX`, and `mesh_name` its name there).
     pub import: Option<String>,
+    /// The component's physical material, in place of its mesh's (0: none).
+    pub phys: i32,
+    /// The actor's PrePivot: its mesh drawn this far back from where it stands (in the mesh's
+    /// own space, before it's scaled and turned).
+    pub pre_pivot: [f32; 3],
+    /// Whether physics collides with it (its component's BlockRigidBody).
+    pub rigid: bool,
+}
+
+impl Placed {
+    /// Where its mesh's origin is: where it stands, less its PrePivot scaled and turned (a
+    /// door's kick slab, a closer mesh scaled up 28 times, is at the door).
+    pub fn origin(&self) -> [f32; 3] {
+        let p = [-self.pre_pivot[0] * self.scale[0], -self.pre_pivot[1] * self.scale[1], -self.pre_pivot[2] * self.scale[2]];
+        let r = rotate(self.rotation, p);
+        [self.location[0] + r[0], self.location[1] + r[1], self.location[2] + r[2]]
+    }
 }
 
 /// A volume (`BlockingVolume`, `TdLadderVolume`, ...): its brush's polygons, placed.
@@ -249,6 +266,9 @@ pub fn read(pkg: &Package) -> Map {
                 materials: c.objects("Materials"),
                 export: i,
                 import,
+                phys: c.object("PhysMaterialOverride").unwrap_or(0),
+                pre_pivot: a.vec3("PrePivot").unwrap_or_default(),
+                rigid: c.bool("BlockRigidBody").unwrap_or(true),
             });
         } else if class.ends_with("Volume") || class == "Brush" {
             // (Its brush is a model inside it, the polygons inside that.)
