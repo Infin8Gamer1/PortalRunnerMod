@@ -50,7 +50,9 @@ one: a white room with lamps and a start.
   lights by what glows: each light is also a glowing bulb only the traced light sees (a spot
   light's in a short black tube that shapes its cone), kept out of the walls round it, smaller
   where it has to be (what's inside a bulb sees nothing past it: a black disc on the wall a
-  lamp's light is up against). The light itself lights the deeper portal views, which aren't
+  lamp's light is up against); one that's in something (a lamp's light in its wall, a lift's in
+  its roof: the game's lights went through walls) is moved just out of it, to the side or down
+  before up. The light itself lights the deeper portal views, which aren't
   traced.
 - **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
   coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
