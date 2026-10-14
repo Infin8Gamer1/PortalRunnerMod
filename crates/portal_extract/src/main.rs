@@ -499,6 +499,53 @@ fn main() {
         }
         return;
     }
+    // `--dump-texture <vtf path> <png>`: a texture, decoded.
+    if let Some(i) = args.iter().position(|a| a == "--dump-texture") {
+        let (Some(path), Some(png)) = (args.get(i + 1), args.get(i + 2)) else { return };
+        match read_any(path).map(|b| decode_vtf(&b)) {
+            Some(Ok(img)) => println!("{path}: {}x{} -> {png}: {:?}", img.width(), img.height(), img.save(png)),
+            Some(Err(e)) => println!("{path}: {e}"),
+            None => println!("{path}: not found"),
+        }
+        return;
+    }
+    // `--show-materials <mdl path>...`: each of a model's materials (by its first skin), as its
+    // VMT says (and what it includes).
+    if let Some(i) = args.iter().position(|a| a == "--show-materials") {
+        for path in &args[i + 1..] {
+            let stem = path.trim_end_matches(".mdl");
+            let (Some(mdl), Some(vvd), Some(vtx)) = (read_any(path), read_any(&format!("{stem}.vvd")), read_any(&format!("{stem}.dx90.vtx"))) else {
+                println!("{path}: not found");
+                continue;
+            };
+            let model = match (vmdl::Mdl::read(&mdl), vmdl::Vtx::read(&vtx), vmdl::Vvd::read(&vvd)) {
+                (Ok(m), Ok(t), Ok(v)) => vmdl::Model::from_parts(m, t, v),
+                _ => {
+                    println!("{path}: unreadable");
+                    continue;
+                }
+            };
+            let Some(skin) = model.skin_tables().next() else { continue };
+            for m in 0..model.textures().len() as i32 {
+                let Some(info) = skin.texture_info(m) else { continue };
+                let name = info.name.replace('\\', "/").to_ascii_lowercase();
+                for sp in info.search_paths.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()) {
+                    let vmt = format!("materials/{sp}{name}.vmt").replace("//", "/");
+                    if let Some(text) = read_any(&vmt) {
+                        println!("== {path}: {vmt}\n{}", String::from_utf8_lossy(&text));
+                        let t = String::from_utf8_lossy(&text).into_owned();
+                        if let Some(inc) = vmt_value(&t, "include") {
+                            if let Some(b) = read_any(&inc.replace('\\', "/").to_ascii_lowercase()) {
+                                println!("  (includes {inc})\n{}", String::from_utf8_lossy(&b));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        return;
+    }
     // `--check-props`: why any of the props library's materials have no texture.
     if args.iter().any(|a| a == "--check-props") {
         check_props(&games);
@@ -1223,7 +1270,9 @@ fn convert_point(p: [f32; 3]) -> [f32; 3] {
 }
 
 /// A material's look, from its VMT: the base texture (following `include`s, for Portal 2's
-/// patch materials) and whether it's see-through.
+/// patch materials), whether it's see-through, what glows, and its surface from its bump map
+/// and shine (`shine`, #16). (Not Portal with RTX's maps for a model's texture: they're made
+/// for its own meshes, and on Portal's elevator its normal maps came out as noise.)
 fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_paths: &[String]) -> glb::Material {
     let mut vmt_text = None;
     for sp in search_paths.iter().map(|s| s.replace('\\', "/").to_ascii_lowercase()).chain(std::iter::once(String::new())) {
@@ -1263,7 +1312,26 @@ fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_path
             texture_png = Some(png);
         }
     }
-    let emissive_png = texture_png.clone().filter(|_| additive);
+    // What glows: an additive material all of it; a self-lit one ($selfillum) its colour where
+    // its base texture's alpha says (which isn't how see-through it is, then).
+    let mut emissive_png = texture_png.clone().filter(|_| additive);
+    let selfillum = flag("$selfillum") && !additive;
+    if selfillum {
+        if let Some((_, img)) = base_image(read, &text, name) {
+            let glow = image::RgbaImage::from_fn(img.width(), img.height(), |x, y| {
+                let p = img.get_pixel(x, y);
+                let k = p[3] as u32;
+                image::Rgba([(p[0] as u32 * k / 255) as u8, (p[1] as u32 * k / 255) as u8, (p[2] as u32 * k / 255) as u8, 255])
+            });
+            let opaque = image::RgbaImage::from_fn(img.width(), img.height(), |x, y| {
+                let p = img.get_pixel(x, y);
+                image::Rgba([p[0], p[1], p[2], 255])
+            });
+            emissive_png = png_of(glow);
+            texture_png = png_of(opaque);
+        }
+    }
+    let (normal_png, metallic_roughness_png, roughness) = shine(read, &text);
     // Without a texture: glass (a refracting material) is see-through, tinted as it tints;
     // a black one is black.
     let (color, glass) = match (texture_png.is_some(), vmt_shader(&text).as_str()) {
@@ -1274,7 +1342,75 @@ fn read_material(read: &dyn Fn(&str) -> Option<Vec<u8>>, name: &str, search_path
         (false, "black") => (Some([0.0, 0.0, 0.0, 1.0]), false),
         _ => (None, false),
     };
-    glb::Material { texture_png, color, blend: flag("$translucent") || additive || glass, mask: flag("$alphatest"), emissive_png, emissive_strength: 1.0, ..Default::default() }
+    glb::Material { texture_png, color, blend: flag("$translucent") || additive || glass, mask: flag("$alphatest"), emissive_png, emissive_strength: 1.0, normal_png, metallic_roughness_png, roughness }
+}
+
+fn png_of(img: image::RgbaImage) -> Option<Vec<u8>> {
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok().map(|_| png)
+}
+
+/// A VMT texture key's image, decoded.
+fn vmt_image(read: &dyn Fn(&str) -> Option<Vec<u8>>, text: &str, key: &str) -> Option<image::RgbaImage> {
+    let path = vmt_value(text, key)?.replace('\\', "/").to_ascii_lowercase();
+    decode_vtf(&read(&format!("materials/{path}.vtf"))?).ok()
+}
+
+/// How a perceptual roughness follows from a Phong exponent `n` (Blinn-Phong to GGX: alpha =
+/// sqrt(2 / (n + 2)), roughness its square root).
+fn roughness_of_exponent(n: f32) -> f32 {
+    (2.0 / (n.max(1.0) + 2.0)).sqrt().sqrt()
+}
+
+/// A Source material's surface as glTF's (#16): its bump map, when it isn't flat (Source's are
+/// green-down, DirectX's way: flipped for glTF's), and how rough it is from its shine (Phong):
+/// shinier where its mask says it shines (its bump map's alpha, or its base texture's with
+/// `$basemapalphaphongmask`, times `$phongboost`), as smooth as its exponent (`$phongexponent`,
+/// or its exponent texture's red, 1 to 150). A metallic-roughness map where either varies, else
+/// one roughness; without shine, dull.
+fn shine(read: &dyn Fn(&str) -> Option<Vec<u8>>, text: &str) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<f32>) {
+    const DULL: f32 = 0.9;
+    let bump = vmt_image(read, text, "$bumpmap");
+    // (A flat one only carries the shine's mask in its alpha.)
+    let flat = bump.as_ref().is_none_or(|b| {
+        let first = b.get_pixel(0, 0);
+        b.pixels().all(|p| (0..3).all(|c| (p[c] as i32 - first[c] as i32).abs() <= 2))
+    });
+    let normal_png = bump.as_ref().filter(|_| !flat).and_then(|b| {
+        let n = image::RgbaImage::from_fn(b.width(), b.height(), |x, y| {
+            let p = b.get_pixel(x, y);
+            image::Rgba([p[0], 255 - p[1], p[2], 255])
+        });
+        png_of(n)
+    });
+    let flag = |k: &str| vmt_value(text, k).is_some_and(|v| v.trim() == "1");
+    if !flag("$phong") {
+        return (normal_png, None, Some(DULL));
+    }
+    let number = |k: &str| vmt_value(text, k).and_then(|v| v.trim().parse::<f32>().ok());
+    let boost = number("$phongboost").unwrap_or(1.0);
+    let exponent = number("$phongexponent").unwrap_or(5.0);
+    let exponent_map = vmt_image(read, text, "$phongexponenttexture");
+    let mask_map = if flag("$basemapalphaphongmask") { vmt_image(read, text, "$basetexture") } else { bump };
+    let at = |x: f32, y: f32| -> f32 {
+        let n = exponent_map.as_ref().map_or(exponent, |e| {
+            let p = e.get_pixel(((x * e.width() as f32) as u32).min(e.width() - 1), ((y * e.height() as f32) as u32).min(e.height() - 1));
+            1.0 + 149.0 * p[0] as f32 / 255.0
+        });
+        let mask = mask_map.as_ref().map_or(1.0, |m| m.get_pixel(((x * m.width() as f32) as u32).min(m.width() - 1), ((y * m.height() as f32) as u32).min(m.height() - 1))[3] as f32 / 255.0);
+        let s = (mask * boost).clamp(0.0, 1.0);
+        DULL + (roughness_of_exponent(n) - DULL) * s
+    };
+    let size = [exponent_map.as_ref().map(|e| e.dimensions()), mask_map.as_ref().map(|m| m.dimensions())].into_iter().flatten().max_by_key(|(w, h)| w * h);
+    let Some((w, h)) = size else { return (normal_png, None, Some(at(0.5, 0.5))) };
+    let rough: Vec<f32> = (0..w * h).map(|i| at(((i % w) as f32 + 0.5) / w as f32, ((i / w) as f32 + 0.5) / h as f32)).collect();
+    let (lo, hi) = rough.iter().fold((f32::MAX, f32::MIN), |(a, b), r| (a.min(*r), b.max(*r)));
+    if hi - lo < 0.02 {
+        return (normal_png, None, Some((lo + hi) * 0.5));
+    }
+    // (glTF's layout: roughness in green, metalness in blue, none.)
+    let mr = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([0, (rough[(y * w + x) as usize] * 255.0 + 0.5) as u8, 0, 255]));
+    (normal_png, png_of(mr), None)
 }
 
 /// A material's shader (the VMT's first word, lower-case).
@@ -1536,4 +1672,75 @@ fn convert_model_bounds(game: &Game, all: &[Game], mdl_path: &str, skin: usize, 
     }
     let looks = (materials.iter().filter(|m| m.texture_png.is_some() || m.color.is_some()).count(), materials.len());
     Ok((glb::write(&out, &materials, &clips), lo, hi, looks))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vtf_rgba(w: u32, h: u32, px: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+        // A version 7.2 VTF of one uncompressed RGBA8888 image, no mips or thumbnail.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"VTF\0");
+        v.extend_from_slice(&7u32.to_le_bytes());
+        v.extend_from_slice(&2u32.to_le_bytes());
+        v.extend_from_slice(&80u32.to_le_bytes());
+        v.extend_from_slice(&(w as u16).to_le_bytes());
+        v.extend_from_slice(&(h as u16).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(&[0; 4]);
+        v.extend_from_slice(&[0; 12]);
+        v.extend_from_slice(&[0; 4]);
+        v.extend_from_slice(&1.0f32.to_le_bytes());
+        v.extend_from_slice(&0i32.to_le_bytes());
+        v.push(1);
+        v.extend_from_slice(&(-1i32).to_le_bytes());
+        v.push(0);
+        v.push(0);
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.resize(80, 0);
+        for y in 0..h {
+            for x in 0..w {
+                v.extend_from_slice(&px(x, y));
+            }
+        }
+        v
+    }
+
+    /// Shine to roughness (#16): a high Phong exponent is smooth, a low one rough; where the mask
+    /// says there's no shine, dull; even all over, one roughness rather than a map.
+    #[test]
+    fn shine_becomes_roughness() {
+        assert!(roughness_of_exponent(100.0) < 0.4 && roughness_of_exponent(5.0) > 0.7);
+        let bump = vtf_rgba(4, 4, |x, _| [128, 128, 255, if x < 2 { 0 } else { 255 }]);
+        let read = |p: &str| (p == "materials/t/bump.vtf").then(|| bump.clone());
+        // Masked half and half: a map, dull where masked off, smooth where it shines.
+        let (normal, mr, rough) = shine(&read, "VertexLitGeneric\n{\n$bumpmap \"t/bump\"\n$phong 1\n$phongexponent 100\n}");
+        assert!(normal.is_none(), "a flat bump map isn't kept");
+        assert!(rough.is_none());
+        let mr = image::load_from_memory(&mr.expect("a roughness map")).unwrap().to_rgba8();
+        let (dull, shiny) = (mr.get_pixel(0, 0)[1] as f32 / 255.0, mr.get_pixel(3, 0)[1] as f32 / 255.0);
+        assert!(dull > 0.85 && shiny < 0.4, "{dull} {shiny}");
+        // No shine: dull, one roughness.
+        assert_eq!(shine(&read, "VertexLitGeneric\n{\n$basetexture \"x\"\n}").2, Some(0.9));
+    }
+
+    /// What's self-lit glows where its base texture's alpha says, and its colour's opaque.
+    #[test]
+    fn selfillum_glows_by_its_alpha() {
+        let base = vtf_rgba(2, 1, |x, _| [200, 50, 50, if x == 0 { 255 } else { 0 }]);
+        let read = |p: &str| match p {
+            "materials/m.vmt" => Some(b"VertexLitGeneric\n{\n$basetexture \"m\"\n$selfillum 1\n}".to_vec()),
+            "materials/m.vtf" => Some(base.clone()),
+            _ => None,
+        };
+        let m = read_material(&read, "m", &[String::new()]);
+        let glow = image::load_from_memory(&m.emissive_png.expect("it glows")).unwrap().to_rgba8();
+        assert_eq!(glow.get_pixel(0, 0).0, [200, 50, 50, 255]);
+        assert_eq!(glow.get_pixel(1, 0).0, [0, 0, 0, 255]);
+        let colour = image::load_from_memory(&m.texture_png.unwrap()).unwrap().to_rgba8();
+        assert_eq!(colour.get_pixel(1, 0)[3], 255);
+    }
 }

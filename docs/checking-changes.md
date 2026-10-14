@@ -41,6 +41,7 @@ The scripts are in `src/capture.rs`. Some of them:
 | `p1` | Portal's chambers' starts (`PORTAL_FIRST_MAP` / `PORTAL_LAST_MAP` pick them; `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from) |
 | `views` | Map `PORTAL_FIRST_MAP` from each place in `PORTAL_TP="x,y,z,yaw,pitch;..."` (where she'd stand, and which way to look): a spectator camera there, so nothing falls or drowns. `PORTAL_HOLD` frames before each shot, `PORTAL_SHOTS` shots of each; `PORTAL_TRACK=pellet` keeps the view on the pellet; `PORTAL_PLACE=1` puts her there instead |
 | `spectate` | The spectator camera over Chamber 08's goo, following the pellet, then back to her. A spectator sees her as others do: her third-person body |
+| `beamlight` | The light from a laser (the floor beside it) and a light bridge (down into its pit), on the Proving Grounds |
 | `lit` | Runner vision on Training: the runner ramp at rest, then lit once the first challenge (a jump, a crouch, a walk) is done |
 | `faith` | Faith on Training, in the sun and the shade: her first-person arms and legs, standing and through a stride, and her face from a spectator in front of her (`PORTAL_FAITH_SUN` / `PORTAL_FAITH_SHADE` = `x,y,z,yaw` move the spots) |
 | `normaltest` | With `PORTAL_NORMAL_TEST=1`: a bump on Bevy's own tangents and one on the game's, lit from above: both lit on top means normal maps are read the right way up |

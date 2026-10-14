@@ -19,6 +19,8 @@ pub struct Material {
     pub metallic_roughness_png: Option<Vec<u8>>,
     pub emissive_png: Option<Vec<u8>>,
     pub emissive_strength: f32,
+    /// Without a metallic-roughness map: how rough it is all over (else 0.6).
+    pub roughness: Option<f32>,
 }
 
 /// One rigid piece of a model, named after the bone that moves it.
@@ -59,7 +61,7 @@ pub fn write(parts: &[Part], mats: &[Material], clips: &[Clip]) -> Vec<u8> {
     let mut nodes: Vec<Value> = vec![json!({"name": "root", "children": (1..=parts.len()).collect::<Vec<_>>()})];
 
     for m in mats {
-        let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 0.6});
+        let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": m.roughness.unwrap_or(0.6)});
         let mut texture = |bin: &mut Vec<u8>, png: &[u8]| -> usize {
             pad4(bin, 0);
             let start = bin.len();
