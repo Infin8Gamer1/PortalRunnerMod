@@ -1374,7 +1374,8 @@ fn script(name: &str) -> Vec<Act> {
         }
         // A tour of a Mirror's Edge level (PORTAL_ME_LEVEL, a time trial's best: its course):
         // from its start and each checkpoint, a look along the way to the next, from a little
-        // above and behind (`tour_00`, ...).
+        // above and behind (`tour_00`, ...); with PORTAL_ME_CLOSE, also from where she'd stand,
+        // down at what's round her feet (`tour_00_near`: for an art pass, #101).
         "metour" => {
             let file = std::env::var("PORTAL_ME_LEVEL").unwrap_or_else(|_| "tt_tutorial_a01".into());
             let path = crate::editor::levels_dir().join("me").join(format!("{file}.ron"));
@@ -1399,6 +1400,11 @@ fn script(name: &str) -> Vec<Act> {
                 let yaw = (-d.x).atan2(-d.z).to_degrees();
                 let name: &'static str = Box::leak(format!("tour_{k:02}").into_boxed_str());
                 v.extend([Spectate(eye, yaw, -12.0), Wait(45), Shot(name)]);
+                // (And close: where she'd stand, at her eye, what's round her feet ahead.)
+                if std::env::var_os("PORTAL_ME_CLOSE").is_some() {
+                    let near: &'static str = Box::leak(format!("tour_{k:02}_near").into_boxed_str());
+                    v.extend([Spectate(w[0] + Vec3::Y * 1.7, yaw, -28.0), Wait(45), Shot(near)]);
+                }
             }
             v
         }

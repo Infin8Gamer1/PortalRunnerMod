@@ -259,6 +259,22 @@ fn bitangents_run_down_the_image() {
 
 /// Her third-person body: its hair has a colour map (its own instance leaves it unset, which
 /// would be the engine's grey), dark; its lashes are a two-sided cut-out.
+/// An untextured material's colour, worked out from its diffuse input: a light blocker's is
+/// black (a black constant, not "none"), a sky card's its colour parameter (an instance's).
+#[test]
+fn plain_colours_from_their_graphs() {
+    let Some(dir) = std::env::var_os("ME_INSTALL") else { return };
+    let mut pkgs = Packages::new(&Path::new(&dir).join("TdGame/CookedPC"));
+    let colour = |pkgs: &mut Packages, package: &str, mesh: &str, material: &str| {
+        let (_, slots) = load_static_mesh_with(pkgs, package, mesh, &[material.to_string()], 64).unwrap();
+        println!("{material}: {:?}", slots[0].color);
+        slots[0].color
+    };
+    assert_eq!(colour(&mut pkgs, "Stormdrain_Std", "S_LightSquare_01", "I_Light.LightMaterials.M_BakeBlack"), Some([0.0; 3]));
+    let sky = colour(&mut pkgs, "Stormdrain_All-std_Slc", "S_LightSquare_01", "I_Light.LightMaterials.MI_Light_SKY").expect("a sky card's colour");
+    assert!(sky.iter().any(|&c| c > 0.0), "{sky:?}");
+}
+
 #[test]
 fn third_person_hair_and_lashes() {
     let Some(dir) = std::env::var_os("ME_INSTALL") else { return };

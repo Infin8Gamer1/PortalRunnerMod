@@ -743,10 +743,11 @@ pub fn audit(cooked: &Path, file: &str) {
         return;
     };
     let mut pkgs = Packages::new(cooked);
-    // (package, mesh, overrides) -> (instances, area scale sum)
+    // (package, mesh, overrides) -> (instances, area scale sum): what's drawn (not the hidden
+    // blockers).
     let mut uses: BTreeMap<(String, String, Vec<String>), (usize, f32)> = BTreeMap::new();
     for o in &doc.objects {
-        if let Kind::MeProp { package, mesh, scale, materials, .. } = &o.kind {
+        if let Kind::MeProp { package, mesh, scale, materials, hidden: false, .. } = &o.kind {
             let s = scale.abs();
             let e = uses.entry((package.clone(), mesh.clone(), materials.clone())).or_default();
             e.0 += 1;
@@ -767,6 +768,14 @@ pub fn audit(cooked: &Path, file: &str) {
                 Some(d) => format!("colour map {}x{} x{:?}", d.width, d.height, slot.uv_scale),
                 None => format!("no colour map: {:?}", slot.color),
             };
+            // (`PORT_ME_AUDIT_MAT=<words>`: the meshes a material whose path has them is on, and
+            // where they stand.)
+            if let Ok(want) = std::env::var("PORT_ME_AUDIT_MAT") {
+                if slot.path.to_ascii_lowercase().contains(&want.to_ascii_lowercase()) {
+                    let at: Vec<String> = doc.objects.iter().filter(|o| matches!(&o.kind, Kind::MeProp { package: p, mesh: me, .. } if p == package && me == mesh)).take(4).map(|o| format!("({:.0}, {:.0}, {:.0})", o.at.x, o.at.y, o.at.z)).collect();
+                    println!("   {} on {package}.{mesh} ({n}): {}", slot.path, at.join(" "));
+                }
+            }
             let e = mats.entry(if slot.path.is_empty() { slot.material.clone() } else { slot.path.clone() }).or_insert((0.0, 0, String::new()));
             e.0 += area * scale2;
             e.1 += n;

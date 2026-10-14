@@ -42,6 +42,15 @@ fn main() {
         }
     }
     println!("normals: {agree} agree, {against} opposite, of {}", mesh.indices.len() / 3);
+    // (What a ray tracer can't light from: triangles with no area, vertices with no normal or
+    // tangent.)
+    let flat = mesh.indices.chunks_exact(3).filter(|t| {
+        let p = |k: usize| glam::Vec3::from(mesh.positions[t[k] as usize]);
+        (p(1) - p(0)).cross(p(2) - p(0)).length() < 1e-6
+    }).count();
+    let no_normal = mesh.normals.iter().filter(|n| glam::Vec3::from(**n).length() < 1e-3).count();
+    let no_tangent = mesh.tangents.iter().filter(|t| glam::Vec3::new(t[0], t[1], t[2]).length() < 1e-3).count();
+    println!("no area: {flat} triangles; no normal: {no_normal}, no tangent: {no_tangent} vertices");
     for (s, slot) in mesh.sections.iter().zip(&slots) {
         let size = |t: &Option<me_assets::Rgba>| t.as_ref().map(|t| format!("{}x{}", t.width, t.height));
         println!("  {} tris: {} diffuse {:?} normal {:?} spec {:?} uv x{:?} {:?} two-sided {}", s.triangles, slot.material, size(&slot.diffuse), size(&slot.normal), size(&slot.specular), slot.uv_scale, slot.blend, slot.two_sided);

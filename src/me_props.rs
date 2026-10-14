@@ -160,14 +160,19 @@ fn effect(slot: &MaterialSlot) -> bool {
     let name = slot.path.to_ascii_lowercase();
     // (A fake shadow under a car: the traced light casts its own.)
     let fake_shadow = ["dropshadow", "blobshadow", "fakeshadow"].iter().any(|w| name.contains(w));
-    // (A light blocker's: there for the game's baked shadows, never seen.)
-    let blocker = name.ends_with(".blankbsp");
+    // (A light blocker's: there for the game's baked shadows, never seen. And a surface the
+    // editor's marked removed.)
+    let blocker = name.ends_with(".blankbsp") || name.ends_with("removesurfacematerial");
     blocker || fake_shadow || slot.blend == me_assets::Blend::Additive || slot.blend == me_assets::Blend::Translucent && WORDS.iter().any(|w| name.contains(w))
 }
 
 /// The most a lamp's glow is (its colour's brightest channel): a few of the game's are far
 /// brighter than its bloom ever let them look.
 const GLOW_MOST: f32 = 12.0;
+
+/// How brightly a sky or sun card glows (its colour's brightest channel): about as the sky
+/// does.
+const SKY_CARD_MOST: f32 = 1.0;
 
 /// What a material glows, if it's a lamp's or a sign's (its emissive input, as the game has
 /// it). Others' emissive inputs aren't glows: the far city's and its water's are how they're
@@ -346,16 +351,35 @@ fn section_material(
         let px = r.data.clone().unwrap_or_default();
         images.add(crate::me_remaster::compressed(t.width, t.height, px, crate::me_remaster::Map::Data))
     });
-    // Without a texture: its constant colour (glowing, if it's a light's), else grey.
-    let plain = slot.color.map(|[r, g, b]| Color::linear_rgb(r, g, b));
+    // Without a texture: its constant colour (glowing, if it's a light's), else grey; what it's
+    // made of, if a rule says (a tower's mirrored glass, its reflection a cubemap in the game).
+    // (A colour brighter than white, as a sky card's is, is how much it glows: as paint it's
+    // kept under real white's, which reflects less than what lands on it; its glow under a
+    // lamp's most.)
+    let under = |c: [f32; 3], most: f32| {
+        let top = c[0].max(c[1]).max(c[2]);
+        c.map(|v| if top > most { v * most / top } else { v })
+    };
+    let plain = slot.color.map(|c| under(c, crate::me_remaster::WHITEST)).map(|[r, g, b]| Color::linear_rgb(r, g, b));
+    let made_of = if tex.is_none() { crate::me_remaster::surface_of(&slot.path) } else { None };
     let mat = materials.add(StandardMaterial {
         base_color: if tex.is_some() { Color::WHITE } else { plain.unwrap_or(Color::srgb(0.55, 0.55, 0.56)) },
-        emissive: match (plain, slot.emissive) {
-            (Some(c), true) => c.to_linear() * 4.0,
+        emissive: match (slot.color, slot.emissive) {
+            // (A sky or sun card, the sky and sun the game baked in through a window or a
+            // door: as bright as the sky, not a lamp. The traced light has its own sun.)
+            (Some(c), true) if ["light_sky", "light_sun"].iter().any(|w| slot.path.to_ascii_lowercase().contains(w)) => {
+                let [r, g, b] = under(c, SKY_CARD_MOST);
+                LinearRgba::rgb(r, g, b)
+            }
+            (Some(c), true) => {
+                let [r, g, b] = under(c.map(|v| v * 4.0), GLOW_MOST);
+                LinearRgba::rgb(r, g, b)
+            }
             _ => LinearRgba::BLACK,
         },
         base_color_texture: tex,
-        perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
+        perceptual_roughness: if rough.is_some() { 1.0 } else { made_of.as_ref().map_or(0.8, |s| s.roughness) },
+        metallic: made_of.as_ref().map_or(0.0, |s| s.metallic),
         metallic_roughness_texture: rough,
         normal_map_texture: normal_map,
         alpha_mode,

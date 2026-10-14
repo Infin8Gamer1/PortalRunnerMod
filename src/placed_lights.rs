@@ -7,6 +7,7 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::solari::prelude::RaytracingMesh3d;
+use faith_move::{Aabb, World};
 
 use crate::chamber::ChamberGeom;
 use crate::Game;
@@ -35,6 +36,7 @@ pub fn spawn_for_level(
     }
     // The world, her own legs, and her third-person body (seen through portals): as the lamps.
     let layers = RenderLayers::from_layers(&[0, crate::portal_render::PLAYER_LAYER, crate::body3p::BODY_LAYER, crate::body3p::THROUGH_LAYER]);
+    let world = game.sim.player_world();
     for l in &game.sim.level.placed_lights {
         let color = Color::srgb(l.color.x, l.color.y, l.color.z);
         let at = Transform::from_translation(l.at);
@@ -59,7 +61,13 @@ pub fn spawn_for_level(
         // The bulb: as much light, from glow. A sphere of radius r glowing L sends out
         // 4 pi^2 r^2 L lumens; a disc facing the way it shines, as much straight ahead. (The
         // glow is set in what shows on screen: the traced light scales it to physical units.)
-        let r = l.radius.max(0.03);
+        // It's kept out of the walls round it, smaller where it has to be: what's inside a bulb
+        // sees nothing past it, a black disc on the wall a Mirror's Edge area light is up
+        // against.
+        let mut r = l.radius.max(0.03);
+        while r > 0.03 && world.overlaps(&Aabb::from_center_size(l.at, Vec3::splat(2.0 * r))) {
+            r = (r * 0.7).max(0.03);
+        }
         let glow = l.intensity / (4.0 * std::f32::consts::PI * std::f32::consts::PI * r * r) / crate::raytrace::EMISSIVE_SCALE;
         let c = color.to_linear();
         let material = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::rgb(c.red * glow, c.green * glow, c.blue * glow), ..default() });

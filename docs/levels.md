@@ -48,8 +48,10 @@ one: a white room with lamps and a start.
   colour, brightness in lux, and the way it faces: where it stands doesn't matter). The
   level's settings (nothing selected) can set its own ambient (fill) light. The traced light
   lights by what glows: each light is also a glowing bulb only the traced light sees (a spot
-  light's in a short black tube that shapes its cone). The light itself lights the deeper
-  portal views, which aren't traced.
+  light's in a short black tube that shapes its cone), kept out of the walls round it, smaller
+  where it has to be (what's inside a bulb sees nothing past it: a black disc on the wall a
+  lamp's light is up against). The light itself lights the deeper portal views, which aren't
+  traced.
 - **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
   coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
   unlit.
@@ -215,14 +217,24 @@ image; Bevy's own run up it, for OpenGL's maps). The `normaltest` capture, with
 A material's colour map is tiled as its texture coordinates are (a chain-link fence's one link,
 thirty times over); a layered material's main layer is the one its own normal map belongs to,
 not a dirt layer's. A lamp's or a sign's material glows as the game's emissive input has it
-(its emissive map times its colour), so it lights the room in the traced light. What the game
-blends over its picture rather than draws as a surface (light shafts, glows, fake bloom, fog
-cones, sky domes) is left out. A see-through material whose opacity is wire and holes (a
+(its emissive map times its colour), so it lights the room in the traced light. A material
+without a colour map takes its colour from its graph (its diffuse input's constants and colour
+parameters, an instance's values first: a light blocker's black, a sky card's sky); a colour
+brighter than white is how much it glows (at most as much as a lamp; a sky or sun card, the
+sky the game baked in through a window or a door, as the sky does), its paint kept under white
+paint's. The table gives an untextured material its roughness and metalness too: the
+Shard's curtain wall, a cubemap's reflection in the game, is mirrored glass that reflects the
+world. What the game blends over its picture rather than draws as a surface (light shafts,
+glows, fake bloom, fog cones, sky domes) is left out, as are the BSP surfaces its editor marked
+removed. A see-through material whose opacity is wire and holes (a
 chain-link fence, barbed wire) is a cut-out, and a cut-out's mipmaps keep its wire's coverage
 (else a fence would fade away a few metres off). A light the game put inside its lamp is moved just out of it
 (the lamp would shut its light in). Indoors, the eye opens up by up to 3 stops (Portal's levels
 keep theirs). `portal_extract -- --audit-me <level>` lists a level's materials by how much
-of it they cover, and what was found for each (to find what's drawn wrong).
+of it they cover, and what was found for each (to find what's drawn wrong; with
+`PORT_ME_AUDIT_MAT=<words>`, also the meshes a material whose path has them is on, and where).
+For an art pass, `PORTAL_ME_LEVEL=<level> PORTAL_ME_CLOSE=1 PORTAL_SCRIPT=metour` photographs a
+level from each checkpoint, from above and at her eye (`tour_NN`, `tour_NN_near`).
 Textures are read at up to 1024 square, their big mips from the packages they come from (a
 cooked map keeps only their small ones), and block-compressed for the GPU (BC1/BC3/BC5); backlit
 adverts glow in their colour. Materials are drawn as the game has them: cut out where its
