@@ -226,10 +226,32 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             }
         }
     }
+    // (Training's movement challenges, #118: its own game runs them; a time trial on its map
+    // doesn't.)
+    let tutorial = !read.iter().any(|(n, _, _)| n.to_ascii_lowercase().starts_with("tt_"));
+    // What runner vision lights up (#118): the props its ops name.
+    for (k, n) in nodes.iter().enumerate() {
+        if !matches!(n.op.class.as_str(), "SeqAct_ActivateLOI" | "SeqAct_DeactivateLOI") {
+            continue;
+        }
+        let (pname, _, m) = &read[n.pkg];
+        for a in n.op.vars.iter().flat_map(|(_, v)| v.iter()).filter(|&&a| a > 0).map(|&a| a as usize - 1) {
+            if let Some(p) = m.meshes.iter().find(|p| p.export == a) {
+                let name = format!("{pname}.{}", p.name);
+                let entry = (p.name.clone(), tidy(ue(p.origin())), name.clone());
+                if !carried.contains(&entry) {
+                    carried.push(entry);
+                }
+                targets.entry(k).or_default().push(name);
+            }
+        }
+    }
     // The ops that matter: those that lead (in any number of steps) to a matinee with a mover,
-    // or to switching something.
+    // to switching or lighting up something, or to starting one of Training's movement
+    // challenges (what its runner vision follows).
     let mut keep = vec![false; nodes.len()];
-    let mut stack: Vec<usize> = interp_movers.keys().chain(targets.keys()).copied().collect();
+    let starts = (0..nodes.len()).filter(|&k| tutorial && nodes[k].op.class == "SeqAct_TdStartMovementChallenge");
+    let mut stack: Vec<usize> = interp_movers.keys().chain(targets.keys()).copied().chain(starts).collect();
     let mut into: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for (k, l) in links.iter().enumerate() {
         for &(_, t, _, _) in l {
@@ -246,6 +268,9 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
     // What sets each event off: the actors that generate it (their GeneratedEvents).
     let mut originators: HashMap<usize, Vec<faith_move::Aabb>> = HashMap::new();
     let mut origin_names: HashMap<usize, String> = HashMap::new();
+    // Training's movement challenges (#118): their checkpoints, each passed by going through
+    // it (its touch volume, else its cylinder), in its track's order.
+    let mut checkpoints: Vec<Object> = Vec::new();
     for (pi, (pname, pkg, m)) in read.iter().enumerate() {
         let mut region_of: Vec<(usize, Option<faith_move::Aabb>)> = Vec::new();
         for v in &m.volumes {
@@ -277,6 +302,38 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             region_of.push((o.export, Some(faith_move::Aabb::from_center_size(ue(o.location), Vec3::new(r * 2.0, h * 2.0, r * 2.0)))));
         }
         let regions: HashMap<usize, faith_move::Aabb> = region_of.into_iter().filter_map(|(e, b)| Some((e, b?))).collect();
+        for o in m.others.iter().filter(|o| o.class == "TdTutorialCheckpoint" && tutorial) {
+            let Ok(props) = Props::read_object(pkg, &pkg.exports[o.export]) else { continue };
+            let touch = map::Chain::new(pkg, o.export).object("TouchVolume").filter(|&v| v > 0).map(|v| v as usize - 1);
+            let Some(r) = touch.and_then(|v| regions.get(&v)).or_else(|| regions.get(&o.export)) else { continue };
+            // (Each track it's on: its challenge, its place in it, whether it can be missed.)
+            let tracks: Vec<(String, String)> = props
+                .struct_array(pkg, "BelongToTracks")
+                .iter()
+                .filter_map(|t| {
+                    let track = t.name(pkg, "TrackIndex")?;
+                    let order = t.i32(pkg, "OrderIndex").unwrap_or(0);
+                    let optional = t.get("bIsOptional").is_some_and(|b| b.bool_value);
+                    // (What she must be doing going through it: one of its moves or tutorial
+                    // events, MOVE_Jump, ETE_SkillRoll...; none, anything.)
+                    let needs: Vec<String> = t
+                        .struct_array(pkg, "CompletionCriteria")
+                        .iter()
+                        .flat_map(|c| [c.name(pkg, "MovementCriteria"), c.name(pkg, "TutorialCriteria")])
+                        .flatten()
+                        .filter(|n| n != "MOVE_None" && n != "ETE_None")
+                        .collect();
+                    let needs = if needs.is_empty() { String::new() } else { format!(" needs {}", needs.join(",")) };
+                    Some(("track".to_string(), format!("{track} {order}{}{needs}", if optional { " optional" } else { "" })))
+                })
+                .collect();
+            if tracks.is_empty() {
+                continue;
+            }
+            let mut c = Object::sized(Kind::MeLogic { op: "TdTutorialCheckpoint".into(), params: tracks }, tidy(r.center()), tidy(r.size()));
+            c.name = format!("{pname}.{}", o.name);
+            checkpoints.push(c);
+        }
         for (&export, &b) in &regions {
             for e in kismet::events_of(pkg, export) {
                 if let Some(&k) = id.get(&(pi, e)) {
@@ -347,6 +404,13 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
                 for m in interp_movers.get(&k).into_iter().flatten() {
                     set("mover", m.clone());
                 }
+                // (How long it plays, a camera's too, and what it sets off partway through.)
+                if let Some((length, events)) = kismet::interp_timing(pkg, n.op) {
+                    set("length", format!("{}", round(length, 1e4)));
+                    for (name, t) in events {
+                        set("event", format!("{} {name}", round(t, 1e4)));
+                    }
+                }
                 if flag(pkg, n.op, "bRewindOnPlay") == Some(true) {
                     set("rewind_on_play", "true".into());
                 }
@@ -354,6 +418,12 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             // (How long its mover stays open before it's "Open Finished": UE3's default 1.5 s.)
             "SeqEvent_Mover" => set("stay_open", format!("{}", num(pkg, n.op, "StayOpenTime").unwrap_or(1.5))),
             "SeqAct_Delay" => set("duration", format!("{}", num(pkg, n.op, "Duration").or_else(|| num(pkg, n.op, "DefaultDuration")).unwrap_or(1.0))),
+            // (Which movement challenge: Training's, #118.)
+            "SeqAct_TdStartMovementChallenge" => set("challenge", name_of(pkg, n.op, "MovementChallege").or_else(|| name_of(pkg, n.op, "MovementChallenge")).unwrap_or_default()),
+            "SeqEvt_TdMovementChallengeStarted" | "SeqEvt_TdMovementChallengeCompleted" | "SeqEvt_TdMovementChallengeReset" => set("challenge", name_of(pkg, n.op, "MovementChallenge").unwrap_or_default()),
+            // (How fast its highlight fades in or out, a second: the game's defaults 1 and 4.)
+            "SeqAct_ActivateLOI" => set("fade", format!("{}", num(pkg, n.op, "FadeInSpeed").unwrap_or(1.0))),
+            "SeqAct_DeactivateLOI" => set("fade", format!("{}", num(pkg, n.op, "FadeOutSpeed").unwrap_or(4.0))),
             "SeqAct_Gate" => {
                 if flag(pkg, n.op, "bOpen") == Some(false) {
                     set("open", "false".into());
@@ -416,6 +486,10 @@ pub fn port(read: &[(String, Rc<Package>, map::Map)], doc: &mut LevelDoc, report
             movers.push(o);
         }
     }
-    report.push_str(&format!("  {} movers, {kept} Kismet ops driving them\n", movers.len()));
+    report.push_str(&format!("  {} movers, {kept} Kismet ops driving them and what they switch or light up\n", movers.len()));
+    if !checkpoints.is_empty() {
+        report.push_str(&format!("  {} movement challenge checkpoints\n", checkpoints.len()));
+        doc.objects.extend(checkpoints);
+    }
     doc.objects.extend(movers);
 }

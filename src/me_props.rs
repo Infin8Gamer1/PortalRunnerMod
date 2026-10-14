@@ -85,6 +85,8 @@ pub struct MePropCache {
     occluders: std::collections::HashSet<AssetId<StandardMaterial>>,
     /// Remastered materials (#101), by material and how many times their detail tiles.
     remastered: HashMap<(String, u32), Handle<StandardMaterial>>,
+    /// Materials runner vision can light up (#118), and how.
+    lois: HashMap<AssetId<StandardMaterial>, me_assets::Loi>,
     /// The same, wound the other way round, for where a level mirrors a mesh (scales it by
     /// a negative amount an odd number of times): mirrored, its faces would face inwards.
     mirrored: HashMap<(&'static str, &'static str), Parts>,
@@ -201,6 +203,7 @@ fn build(
     images: &mut Assets<Image>,
     remastered: &mut HashMap<(String, u32), Handle<StandardMaterial>>,
     occluders: &mut std::collections::HashSet<AssetId<StandardMaterial>>,
+    lois: &mut HashMap<AssetId<StandardMaterial>, me_assets::Loi>,
 ) -> Parts {
     let positions: Vec<[f32; 3]> = mesh.positions.iter().map(|&p| ue(p)).collect();
     let normals: Vec<[f32; 3]> = mesh.normals.iter().map(|&n| ue_dir(n)).collect();
@@ -222,6 +225,9 @@ fn build(
         let region = slot.region.as_ref().map(|(c, _)| *c);
         let (tinted, plain): (Vec<&[u32]>, Vec<&[u32]>) = tris.iter().partition(|t| region.is_some() && in_region(t).is_some());
         let mat = section_material(mesh, s, slot, materials, images, remastered, occluders);
+        if let Some(l) = slot.loi {
+            lois.insert(mat.id(), l);
+        }
         let scale = Vec2::from(slot.uv_scale);
         let make = |tris: &[&[u32]]| {
             // Only the points its triangles use (a level's BSP is one mesh of many materials:
@@ -265,6 +271,9 @@ fn build(
                     m
                 }
             };
+            if let Some(l) = slot.loi {
+                lois.insert(red.id(), l);
+            }
             parts.push((meshes.add(make(&tinted)), red));
         }
     }
@@ -409,7 +418,7 @@ fn get(
                     }
                 }
                 cache.looks.insert(format!("{}.{}", key.0, key.1), looks);
-                Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders))
+                Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders, &mut cache.lois))
             }
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{}: {e}", key.0, key.1);
@@ -446,7 +455,7 @@ fn get_with(
     if !cache.overridden.contains_key(&k) {
         let names: Vec<String> = overrides.iter().map(|o| o.to_string()).collect();
         let made = match me_assets::load_static_mesh_with(&mut pkgs.0, key.0, key.1, &names, me_texture()) {
-            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders)),
+            Ok((mesh, slots)) => Some(build(&mesh, &slots, meshes, materials, images, &mut cache.remastered, &mut cache.occluders, &mut cache.lois)),
             Err(e) => {
                 warn!("Mirror's Edge prop {}.{} with its own materials: {e}", key.0, key.1);
                 None
@@ -539,6 +548,66 @@ pub fn show_hidden(game: Res<Game>, mut seen: Local<(u64, u32)>, mut props: Quer
     }
 }
 
+/// The materials of the props runner vision lights up (#118): each prop's own copies, how
+/// they look at rest (their colour), how they light up, and how lit they were last drawn.
+#[derive(Resource, Default)]
+pub struct LitMats(Vec<LitMat>);
+
+struct LitMat {
+    prop: usize,
+    mat: Handle<StandardMaterial>,
+    rest: LinearRgba,
+    loi: me_assets::Loi,
+    drawn: f32,
+}
+
+impl LitMats {
+    /// A prop's parts, with its own copy of each material that runner vision can light up
+    /// (glowing its colour map, when it glows).
+    fn own(&mut self, prop: usize, parts: &Parts, lois: &HashMap<AssetId<StandardMaterial>, me_assets::Loi>, materials: &mut Assets<StandardMaterial>) -> Parts {
+        parts
+            .iter()
+            .map(|(mesh, mat)| {
+                let (Some(&loi), Some(m)) = (lois.get(&mat.id()), materials.get(mat).cloned()) else { return (mesh.clone(), mat.clone()) };
+                let rest = m.base_color.to_linear();
+                let own = materials.add(StandardMaterial { emissive_texture: m.base_color_texture.clone(), emissive: LinearRgba::BLACK, ..m });
+                self.0.push(LitMat { prop, mat: own.clone(), rest, loi, drawn: 0.0 });
+                (mesh.clone(), own)
+            })
+            .collect()
+    }
+}
+
+/// Runner vision (#118): the props the level's Kismet lights up fade to their highlight (their
+/// materials' `LOI_Strength`): their colour times the highlight's, glowing a little of it.
+pub fn light_up_lit(game: Res<Game>, lit: Option<ResMut<LitMats>>, mut materials: ResMut<Assets<StandardMaterial>>, scaled: Option<ResMut<crate::raytrace::ScaledEmissive>>) {
+    let (Some(me), Some(mut lit)) = (game.sim.me.as_ref(), lit) else { return };
+    // (Its glow set here, in the units the lighting wants: not scaled again.)
+    if let Some(mut scaled) = scaled {
+        for l in &lit.0 {
+            scaled.0.entry(l.mat.id()).or_insert((1.0, 1.0));
+        }
+    }
+    let units = if crate::raytrace::active() { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
+    for l in lit.0.iter_mut() {
+        let s = me.lit(l.prop);
+        if (s - l.drawn).abs() < 1e-3 {
+            continue;
+        }
+        l.drawn = s;
+        let Some(mut m) = materials.get_mut(&l.mat) else { continue };
+        let [r, g, b] = l.loi.color;
+        let c = if l.loi.absolute {
+            LinearRgba::new(l.rest.red + (r - l.rest.red) * s, l.rest.green + (g - l.rest.green) * s, l.rest.blue + (b - l.rest.blue) * s, l.rest.alpha)
+        } else {
+            LinearRgba::new(l.rest.red * (1.0 + (r - 1.0) * s), l.rest.green * (1.0 + (g - 1.0) * s), l.rest.blue * (1.0 + (b - 1.0) * s), l.rest.alpha)
+        };
+        m.base_color = Color::LinearRgba(c);
+        let k = l.loi.glow * s * units;
+        m.emissive = LinearRgba::rgb(c.red * k, c.green * k, c.blue * k);
+    }
+}
+
 /// Carried props go where their movers are.
 pub fn follow_movers(game: Res<Game>, mut carried: Query<(&Carried, &mut Transform)>) {
     let Some(me) = game.sim.me.as_ref() else { return };
@@ -587,9 +656,14 @@ pub fn spawn_for_level(
                 carried_by.insert(k, mv.sim);
             }
         }
+        // (Which props runner vision lights up: each gets its own copies of its materials that
+        // can be, to light.)
+        let to_light: std::collections::HashSet<usize> = level.me_logic.iter().filter(|o| o.op == "SeqAct_ActivateLOI").flat_map(|o| o.props.iter().copied()).collect();
+        let mut lit = LitMats::default();
         for (k, p) in level.me_props.iter().enumerate() {
             if let Some(parts) = get_with((p.package, p.mesh), &p.materials, cache, &mut pkgs, &mut meshes, &mut materials, &mut images) {
                 let parts = if p.scale.x * p.scale.y * p.scale.z < 0.0 { mirrored((p.package, p.mesh), &parts, cache, &mut meshes) } else { parts };
+                let parts = if to_light.contains(&k) { lit.own(k, &parts, &cache.lois, &mut materials) } else { parts };
                 let tf = Transform::from_translation(p.at).with_rotation(p.turn).with_scale(p.scale);
                 let e = place(&mut commands, &parts, tf, &cache.occluders);
                 commands.entity(e).insert(PropIndex(k));
@@ -603,6 +677,7 @@ pub fn spawn_for_level(
                 cache.drawn[k] = true;
             }
         }
+        commands.insert_resource(lit);
         if !level.me_props.is_empty() {
             info!("Mirror's Edge props: {} drawn in {:.1} s", level.me_props.len(), started.elapsed().as_secs_f32());
             if std::env::var_os("PORTAL_ME_MEMORY").is_some() {

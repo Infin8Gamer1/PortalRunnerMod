@@ -373,3 +373,32 @@ fn training_board_wall_takes_a_wallrun() {
     }
     assert!(ran as f32 * DT > 0.8, "wallran {} s", ran as f32 * DT);
 }
+
+/// Runner vision follows Training's movement challenges (#118): after the opening pan, the
+/// first asks for a jump, a crouch and a walk on the start roof; done, the next starts, and
+/// the runner ramp it points to fades up at the game's rate (in over a second), not before.
+#[test]
+fn training_runner_vision_follows_its_challenges() {
+    let Some(l) = level("tutorial") else { return };
+    let ramp = l.me_logic.iter().filter(|o| o.op == "SeqAct_ActivateLOI").flat_map(|o| o.props.iter().copied()).find(|&p| l.me_props[p].mesh == "S_RunnerRamp_01").expect("a runner ramp lit");
+    let cp = l.checkpoints[0].clone();
+    let mut r = Run::new(l, cp.spawn, cp.yaw);
+    let challenge = |r: &Run| r.sim.me.as_ref().and_then(|m| m.challenge.clone()).map(|c| c.0);
+    let lit = |r: &Run| r.sim.me.as_ref().map_or(0.0, |m| m.lit(ramp));
+    // The pan (15 s), then the button test.
+    r.run(16.5, |_| Input::default());
+    assert_eq!(challenge(&r).as_deref(), Some("EMC_ButtonTest"));
+    // (Standing about does nothing.)
+    r.run(2.0, |_| Input::default());
+    assert_eq!(challenge(&r).as_deref(), Some("EMC_ButtonTest"));
+    assert_eq!(lit(&r), 0.0);
+    // Jump, crouch, walk.
+    let mut first = true;
+    r.run(1.2, |_| Input { jump_pressed: std::mem::take(&mut first), jump_held: true, ..Default::default() });
+    r.run(0.5, |_| Input { crouch_held: true, ..Default::default() });
+    r.run(0.3, |_| forward());
+    assert_eq!(challenge(&r).as_deref(), Some("EMC_JumpTimingOne"));
+    let soon = lit(&r);
+    r.run(1.2, |_| Input::default());
+    assert!(soon > 0.0 && soon < 0.5 && lit(&r) == 1.0, "lit {soon} then {}", lit(&r));
+}

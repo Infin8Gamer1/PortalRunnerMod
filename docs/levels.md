@@ -146,7 +146,7 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
   attached to them). The Kismet that plays them is **Kismet ops** (`MeLogic`: an event, a
   delay, a gate, a switch, a matinee...), each with its outputs leading to the others' inputs
   and, for an event, the region that sets it off (a trigger's volume, a door's box): only the
-  ops that lead to a mover are kept, remote events and sub-sequences joined up. In play, an op
+  ops that lead to a mover (or switch, light up, or start a challenge) are kept, remote events and sub-sequences joined up. In play, an op
   runs as the game's does: the level loading, her walking into a trigger or standing on a
   mover, running into a door (a kick) set events off; delays wait, gates and switches choose; a
   matinee plays, reverses, stops; anything else passes its input on. What a mover carries is
@@ -156,7 +156,20 @@ name it isn't shipped as is found by its parts (`_Pt1`, `_Pt2`...) or under the 
   trigger volume touchable or not), `ToggleHidden` hides and shows props; a use event fires when
   she presses use looking at it in reach; a door is kicked open by running into it or kicking it
   (melee); a mover event fires as she gets on and off, and "Open Finished" once its matinee's
-  done and its stay-open time has passed (a lift that goes back down).
+  done and its stay-open time has passed (a lift that goes back down). A matinee plays for its
+  length (a camera's too) and fires its event tracks' outputs as it passes them.
+- **Runner vision** (#118): Kismet lights props up (`SeqAct_ActivateLOI`, and
+  `SeqAct_DeactivateLOI` puts them out), at the game's fade speeds (in over a second, out over
+  a quarter, on for half a second at least). A lit prop's materials fade to their graph's
+  highlight (`LOI_Strength` from 0 to 1: their colour times `LOI_Color`, runner-vision red,
+  glowing a tenth of it). Only Training uses it, and its Kismet follows Training's **movement
+  challenges**: each one started by name (`SeqAct_TdStartMovementChallenge`) is passed through
+  its checkpoints in order (`TdTutorialCheckpoint` ops: each its touch volume, and per
+  challenge, its place, whether it can be missed, and what she must be doing there: a jump, a
+  crouch, a wallrun, a slide, a zipline...); past the last, it's completed, which starts the
+  next and switches the highlights. What she can't do here (show the objectives, look at a
+  point, a fight's disarms) counts as done. `me_challenges` (aperture example) plays them all
+  a checkpoint at a time; the `lit` capture shows the first highlight.
 - Meshes the game hides but that collide (invisible blockers), and hidden ones its Kismet moves
   or shows, are kept as hidden props: not drawn, colliding as their shapes. Not the cards for
   its baked lighting (hidden, a quad to collide with and nothing for physics: they stand in

@@ -26,6 +26,19 @@ struct Play {
 /// How fast she has to be going into a door for it to be a kick (m/s).
 const KICK_SPEED: f32 = 3.0;
 
+/// A highlight's least time on before it fades out (`TdLOIAddOnObject.MinDuration`), seconds.
+const LIT_AT_LEAST: f32 = 0.5;
+
+/// A prop's runner-vision highlight (#118): how strong it is (its materials' `LOI_Strength`,
+/// 0 to 1), what it's fading to, how fast (a second), and when it was last switched on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lit {
+    pub level: f32,
+    goal: f32,
+    speed: f32,
+    since: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeLogic {
     time: f32,
@@ -53,9 +66,22 @@ pub struct MeLogic {
     untouchable: std::collections::HashSet<String>,
     pub hidden: std::collections::HashMap<usize, bool>,
     pub hidden_changes: u32,
+    /// Props runner vision lights up (#118), by their index.
+    pub lit: std::collections::HashMap<usize, Lit>,
+    /// Training's movement challenge under way (#118), and how many of its checkpoints'
+    /// places she's passed.
+    pub challenge: Option<(String, usize)>,
+    /// Each challenge's checkpoints, a place at a time in order: whether that place can be
+    /// missed, and its checkpoints (ops) with what she must be doing going through each.
+    tracks: std::collections::HashMap<String, Vec<(bool, Vec<(usize, Vec<String>)>)>>,
 }
 
 impl MeLogic {
+    /// How strongly runner vision lights up a prop now (0: not at all).
+    pub fn lit(&self, prop: usize) -> f32 {
+        self.lit.get(&prop).map_or(0.0, |l| l.level)
+    }
+
     /// Where a body (a sim mover) is: its pivot, how far it's moved and turned.
     pub fn body(&self, level: &Level, sim: usize) -> Option<(Vec3, Vec3, Quat)> {
         let &(m, d, q) = self.bodies.get(&sim)?;
@@ -84,7 +110,26 @@ impl MeLogic {
             untouchable: Default::default(),
             hidden: Default::default(),
             hidden_changes: 0,
+            lit: Default::default(),
+            challenge: None,
+            tracks: Default::default(),
         };
+        // (A track's places by their order: those of the same order are one place, to be
+        // passed through any of them; a place can be missed if all its checkpoints can.)
+        let mut places: std::collections::HashMap<String, std::collections::BTreeMap<i32, (bool, Vec<(usize, Vec<String>)>)>> = Default::default();
+        for (k, op) in level.me_logic.iter().enumerate().filter(|(_, o)| o.op == "TdTutorialCheckpoint") {
+            // (`track order [optional] [needs MOVE_Jump,ETE_SkillRoll]`.)
+            for (_, t) in op.params.iter().filter(|(n, _)| n == "track") {
+                let w: Vec<&str> = t.split_whitespace().collect();
+                let (Some(track), Some(order)) = (w.first(), w.get(1).and_then(|o| o.parse::<i32>().ok())) else { continue };
+                let optional = w.contains(&"optional");
+                let needs = w.iter().position(|x| *x == "needs").and_then(|i| w.get(i + 1)).map_or(Vec::new(), |n| n.split(',').map(str::to_string).collect());
+                let place = places.entry(track.to_string()).or_default().entry(order).or_insert((true, Vec::new()));
+                place.0 &= optional;
+                place.1.push((k, needs));
+            }
+        }
+        me.tracks = places.into_iter().map(|(t, p)| (t, p.into_values().collect())).collect();
         me.poses = level.me_movers.iter().map(|m| m.at(0.0)).collect();
         me
     }
@@ -187,6 +232,8 @@ impl MeLogic {
                 _ => {}
             }
         }
+        // A movement challenge's checkpoints, gone through.
+        self.challenge_step(level, ctrl);
         // Events' outputs that are due.
         let due: Vec<(f32, usize, usize)> = self.later.iter().copied().filter(|p| p.0 <= self.time).collect();
         self.later.retain(|p| p.0 > self.time);
@@ -215,7 +262,20 @@ impl MeLogic {
             let op = &level.me_logic[k];
             let length = op.movers.iter().map(|&m| level.me_movers[m].length).fold(0.0f32, f32::max).max(op.num("length", 0.0));
             let rate = op.movers.first().map_or(1.0, |&m| level.me_movers[m].rate);
+            let before = p.t;
             p.t += dt * rate * p.dir;
+            // (Its event tracks' outputs, as it plays past them.)
+            if p.dir > 0.0 {
+                for (_, e) in op.params.iter().filter(|(n, _)| n == "event") {
+                    let Some((at, name)) = e.split_once(' ') else { continue };
+                    let Ok(at) = at.parse::<f32>() else { continue };
+                    if at > before.min(length) && at <= p.t.min(length) || at == 0.0 && before == 0.0 {
+                        if let Some(out) = op.param("outputs").and_then(|o| o.split('|').position(|n| n.eq_ignore_ascii_case(name))) {
+                            self.fire(level, k, out);
+                        }
+                    }
+                }
+            }
             let looping = op.movers.first().is_some_and(|&m| level.me_movers[m].looping);
             if p.dir > 0.0 && p.t >= length {
                 if looping && length > 0.0 {
@@ -249,6 +309,15 @@ impl MeLogic {
                 self.bodies.insert(level.me_movers[m].sim, (m, d, q));
             }
         }
+        // Highlights fade in or out (one switched off holds its least time first).
+        let now = self.time;
+        for l in self.lit.values_mut() {
+            if l.goal < l.level && now - l.since < LIT_AT_LEAST {
+                continue;
+            }
+            let step = l.speed * dt;
+            l.level = if l.goal > l.level { (l.level + step).min(l.goal) } else { (l.level - step).max(l.goal) };
+        }
         // The sim's movers go where the bodies are; switched off, they're passed through.
         for (&sim, &(_, d, q)) in &self.bodies {
             if let Some(mv) = movers.get_mut(sim) {
@@ -260,6 +329,45 @@ impl MeLogic {
             if let Some(mv) = movers.get_mut(def.sim) {
                 mv.present = !self.passable.contains(&def.sim);
             }
+        }
+    }
+
+    /// The events of a kind (`op`) for a movement challenge (`challenge`) happen.
+    fn challenge_events(&mut self, level: &Level, op: &str, challenge: &str) {
+        for e in 0..level.me_logic.len() {
+            if level.me_logic[e].op == op && level.me_logic[e].param("challenge").is_some_and(|c| c.eq_ignore_ascii_case(challenge)) {
+                self.event(level, e, 0);
+            }
+        }
+    }
+
+    /// The challenge under way: she passes its next place (or one after only places that can
+    /// be missed) when she's in one of its checkpoints doing what it wants (a place a frame);
+    /// past its last, it's completed.
+    fn challenge_step(&mut self, level: &Level, ctrl: &Controller) {
+        let Some((name, passed)) = self.challenge.clone() else { return };
+        let Some(places) = self.tracks.get(&name) else { return };
+        let mut through = None;
+        for (at, place) in places.iter().enumerate().skip(passed) {
+            if let Some(&(k, _)) = place.1.iter().find(|(k, needs)| self.inside[*k] && (needs.is_empty() || needs.iter().any(|n| doing(n, ctrl)))) {
+                through = Some((at, k));
+                break;
+            }
+            if !place.0 {
+                break;
+            }
+        }
+        let Some((at, k)) = through else { return };
+        let done = at + 1 == places.len();
+        self.challenge = (!done).then(|| (name.clone(), at + 1));
+        let me = level.me_logic[k].name.as_str();
+        for e in 0..level.me_logic.len() {
+            if level.me_logic[e].op == "SeqEvt_TdTutorialCheckpointCompleted" && level.me_logic[e].param("originator") == Some(me) {
+                self.event(level, e, 0);
+            }
+        }
+        if done {
+            self.challenge_events(level, "SeqEvt_TdMovementChallengeCompleted", &name);
         }
     }
 
@@ -382,11 +490,69 @@ impl MeLogic {
                 self.hidden_changes += 1;
                 self.fire(level, k, 0);
             }
+            // A movement challenge starts (#118): its checkpoints are to be gone through from
+            // the first.
+            // (Where there's no such challenge, a time trial on Training's map: nothing.)
+            "SeqAct_TdStartMovementChallenge" => {
+                let name = op.param("challenge").unwrap_or("").to_string();
+                if self.tracks.contains_key(&name) {
+                    self.challenge = Some((name.clone(), 0));
+                    self.challenge_events(level, "SeqEvt_TdMovementChallengeStarted", &name);
+                }
+                self.fire(level, k, 0);
+            }
+            // Runner vision on or off for the props it names (#118), fading at its speed.
+            "SeqAct_ActivateLOI" | "SeqAct_DeactivateLOI" => {
+                let on = op.op == "SeqAct_ActivateLOI";
+                let speed = op.num("fade", if on { 1.0 } else { 4.0 }).max(0.01);
+                for &p in &op.props {
+                    let l = self.lit.entry(p).or_insert(Lit { level: 0.0, goal: 0.0, speed, since: self.time });
+                    l.goal = if on { 1.0 } else { 0.0 };
+                    l.speed = speed;
+                    if on {
+                        l.since = self.time;
+                    }
+                }
+                self.fire(level, k, 0);
+            }
             // Events set off by others: a remote event's call, a sub-sequence's input.
             c if c.starts_with("SeqEvent") || c.starts_with("SeqEvt") => self.event(level, k, 0),
             // Anything else: goes on.
             _ => self.fire(level, k, 0),
         }
+    }
+}
+
+/// Whether she's doing what a movement challenge's checkpoint wants (#118): one of the game's
+/// moves (`MOVE_*`, its TdMove classes, as hers are) or tutorial events (`ETE_*`). What she has
+/// no way to do here (show the objectives, look at a point, a fight's disarms and reaction
+/// time: Training's fights have no one to fight) counts as done.
+fn doing(need: &str, c: &Controller) -> bool {
+    use faith_move::State as S;
+    let ground = matches!(c.state, S::Ground);
+    match need {
+        "MOVE_Walking" => ground && !c.crouched,
+        "MOVE_Crouch" => ground && c.crouched,
+        "MOVE_Jump" => c.jumped() == Some(false),
+        "MOVE_WallRunJump" => c.jumped() == Some(true),
+        "MOVE_Coil" => c.coiled(),
+        "MOVE_Slide" => matches!(c.state, S::Slide { .. }),
+        "MOVE_Landing" => ground || matches!(c.state, S::Roll { .. } | S::SoftLand { .. }),
+        "MOVE_WallRun" | "MOVE_WallRunningLeft" | "MOVE_WallRunningRight" => matches!(c.state, S::WallRun { .. }),
+        "MOVE_IntoClimb" | "MOVE_Climb" => matches!(c.state, S::IntoClimb { .. } | S::Climb { .. } | S::ClimbExit { .. }),
+        "MOVE_Grabbing" => matches!(c.state, S::LedgeHang { .. } | S::GrabTransfer { .. }),
+        "MOVE_GrabPullUp" => matches!(c.state, S::Traverse(t) if t.kind == faith_move::TraverseKind::PullUp),
+        "MOVE_SpringBoarding" => matches!(c.state, S::Traverse(t) if t.kind == faith_move::TraverseKind::SpringBoard),
+        "MOVE_VaultOver" | "MOVE_SpeedVaulting" | "ETE_SpeedVault" => matches!(c.state, S::Vault(_)) || matches!(c.state, S::Traverse(t) if t.kind == faith_move::TraverseKind::Vault),
+        "MOVE_Swing" => matches!(c.state, S::Swing { .. } | S::SwingJump { .. }),
+        "MOVE_ZipLine" => matches!(c.state, S::ZipLine { .. }),
+        "MOVE_LedgeWalk" => matches!(c.state, S::Balance { .. }) || ground,
+        "ETE_SkillRoll" => matches!(c.state, S::Roll { .. }),
+        "ETE_MeleeAttack" | "ETE_SpeedVaultAttack" => c.melee.is_some(),
+        "ETE_JumpKickAttack" => c.melee.is_some() && matches!(c.state, S::Air),
+        "ETE_SlideKickAttack" => c.melee.is_some() && matches!(c.state, S::Slide { .. }),
+        "ETE_LowMeleeAttack" => c.melee.is_some() && c.crouched,
+        _ => true,
     }
 }
 
@@ -455,6 +621,44 @@ mod tests {
             t += dt;
         }
         sim.me.as_ref().map_or(0.0, |m| m.poses[0].0.y)
+    }
+
+    /// A highlight (#118) fades in at its speed; switched off soon after, it holds its least
+    /// time on, then fades out at its own speed.
+    #[test]
+    fn a_highlight_fades_in_and_out_at_its_speeds() {
+        let mut d = LevelDoc::new("lit");
+        d.objects.push(Object::sized(Kind::Block { mat: crate::Mat::Concrete }, Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 1.0, 40.0)));
+        d.objects.push(Object::new(Kind::Spawn { gravity: None }, Vec3::new(0.0, 0.0, 6.0)));
+        let mut board = Object::new(Kind::MeProp { package: "P".into(), mesh: "S_Board".into(), scale: Vec3::ONE, bounds: None, solid: false, own_shape: false, materials: vec![], hidden: false }, Vec3::new(3.0, 0.0, 0.0));
+        board.name = "P.board".into();
+        d.objects.push(board);
+        for (name, op, fade) in [("on", "SeqAct_ActivateLOI", "1"), ("off", "SeqAct_DeactivateLOI", "4")] {
+            let mut o = Object::new(Kind::MeLogic { op: op.into(), params: vec![("target".into(), "P.board".into()), ("fade".into(), fade.into())] }, Vec3::ZERO);
+            o.name = name.into();
+            d.objects.push(o);
+        }
+        let l = d.build();
+        let (on, off) = (l.me_logic.iter().position(|o| o.name == "on").unwrap(), l.me_logic.iter().position(|o| o.name == "off").unwrap());
+        let p = l.me_logic[on].props[0];
+        let mut me = super::MeLogic::new(&l);
+        let c = Controller::new(crate::tuning(5.3, 15.0), Vec3::new(0.0, 0.0, 6.0), 0.0);
+        let dt = 1.0 / 60.0;
+        let run = |me: &mut super::MeLogic, secs: f32| {
+            for _ in 0..(secs / dt).round() as usize {
+                me.step(&l, &mut [], &c, None, dt);
+            }
+        };
+        run(&mut me, 0.1);
+        me.input(&l, on, 0);
+        run(&mut me, 0.3);
+        let up = me.lit(p);
+        assert!((up - 0.3).abs() < 0.03, "{up}");
+        me.input(&l, off, 0);
+        run(&mut me, 0.15);
+        assert!((me.lit(p) - up).abs() < 1e-4, "held {}", me.lit(p));
+        run(&mut me, 0.15);
+        assert_eq!(me.lit(p), 0.0);
     }
 
     #[test]
