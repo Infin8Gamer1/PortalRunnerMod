@@ -151,13 +151,16 @@ fn metres_per_uv(mesh: &StaticMesh, first: usize, tris: usize, scale: Vec2) -> f
 
 /// A material that's an effect the game blends over its picture, not a surface: what's added
 /// over it (light shafts, glows, fake bloom), see-through fog, haze, sky domes and the like,
-/// and the fake shadows under cars. Traced, they'd be sheets of white or grey hanging in the air: they're left out.
+/// the fake shadows under cars, and the light blockers' blank material. Traced, they'd be
+/// sheets of white or grey hanging in the air: they're left out.
 fn effect(slot: &MaterialSlot) -> bool {
     const WORDS: [&str; 11] = ["fog", "bloom", "glow", "skydome", "lightshaft", "light_shaft", "trail", "haze", "blocker", "levelfx", "beam"];
     let name = slot.path.to_ascii_lowercase();
     // (A fake shadow under a car: the traced light casts its own.)
     let fake_shadow = ["dropshadow", "blobshadow", "fakeshadow"].iter().any(|w| name.contains(w));
-    fake_shadow || slot.blend == me_assets::Blend::Additive || slot.blend == me_assets::Blend::Translucent && WORDS.iter().any(|w| name.contains(w))
+    // (A light blocker's: there for the game's baked shadows, never seen.)
+    let blocker = name.ends_with(".blankbsp");
+    blocker || fake_shadow || slot.blend == me_assets::Blend::Additive || slot.blend == me_assets::Blend::Translucent && WORDS.iter().any(|w| name.contains(w))
 }
 
 /// The most a lamp's glow is (its colour's brightest channel): a few of the game's are far
@@ -207,18 +210,27 @@ fn build(
         let d = ue_dir([t[0], t[1], t[2]]);
         [d[0], d[1], d[2], -t[3]]
     }).collect();
-    mesh.sections
-        .iter()
-        .zip(slots)
-        .filter(|(s, slot)| s.triangles > 0 && !effect(slot))
-        .map(|(s, slot)| {
-            let first = s.first_index as usize;
+    let mut parts = Parts::new();
+    for (s, slot) in mesh.sections.iter().zip(slots).filter(|(s, slot)| s.triangles > 0 && !effect(slot)) {
+        let first = s.first_index as usize;
+        let tris: Vec<&[u32]> = mesh.indices[first..first + 3 * s.triangles as usize].chunks_exact(3).collect();
+        // (A colour only where its UVs put it, a one-way door's red: those triangles apart.)
+        let in_region = |t: &[u32]| {
+            let sets: Vec<[f32; 2]> = mesh.uv_sets.iter().map(|set| t.iter().fold([0.0; 2], |a, &i| [a[0] + set[i as usize][0] / 3.0, a[1] + set[i as usize][1] / 3.0])).collect();
+            slot.region_at(&sets)
+        };
+        let region = slot.region.as_ref().map(|(c, _)| *c);
+        let (tinted, plain): (Vec<&[u32]>, Vec<&[u32]>) = tris.iter().partition(|t| region.is_some() && in_region(t).is_some());
+        let mat = section_material(mesh, s, slot, materials, images, remastered, occluders);
+        let scale = Vec2::from(slot.uv_scale);
+        let make = |tris: &[&[u32]]| {
             // Only the points its triangles use (a level's BSP is one mesh of many materials:
             // each with all of its points would be many times what's drawn).
             let mut remap: HashMap<u32, u32> = HashMap::new();
             let mut used: Vec<usize> = Vec::new();
-            let indices: Vec<u32> = mesh.indices[first..first + 3 * s.triangles as usize]
+            let indices: Vec<u32> = tris
                 .iter()
+                .flat_map(|t| t.iter())
                 .map(|&i| {
                     *remap.entry(i).or_insert_with(|| {
                         used.push(i as usize);
@@ -228,108 +240,140 @@ fn build(
                 .collect();
             let pick = |v: &[[f32; 3]]| -> Vec<[f32; 3]> { used.iter().map(|&i| v[i]).collect() };
             // (Its UVs as its material tiles them.)
-            let scale = Vec2::from(slot.uv_scale);
             let uvs: Vec<[f32; 2]> = used.iter().map(|&i| (Vec2::from(mesh.uvs[i]) * scale).to_array()).collect();
-            let m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
                 .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pick(&positions))
                 .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, pick(&normals))
                 .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, used.iter().map(|&i| tangents[i]).collect::<Vec<_>>())
-                .with_inserted_indices(Indices::U32(indices));
-            // Cut-outs (fences, grilles) where the diffuse map's alpha says so.
-            // How it's drawn: as the game's material has it (cut out, see-through, from both
-            // sides).
-            let (alpha_mode, double_sided) = drawn_as(slot);
-            let cull_mode = if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) };
-            let glass = slot.blend == me_assets::Blend::Translucent;
-            // Remastered (#101): what it's made of, its detail tiled at its real size (one
-            // material for every mesh with it at that size).
-            // (Once per material: its detail's tiling from the first mesh that has it.)
-            if let Some(surface) = slot.diffuse.as_ref().and(crate::me_remaster::surface_of(&slot.path)) {
-                let reps = crate::me_remaster::repeats(&surface, metres_per_uv(mesh, first, s.triangles as usize, scale));
-                let key = (slot.path.clone(), 1);
-                let mat = match remastered.get(&key) {
-                    Some(m) => Some(m.clone()),
-                    None => crate::me_remaster::bake_kept(slot, &surface, reps).map(|b| {
-                        let color = images.add(b.color);
-                        // (A backlit sign glows its colour.)
-                        let glows = surface.glow > 0.0;
-                        let m = materials.add(StandardMaterial {
-                            emissive: if glows { LinearRgba::WHITE * surface.glow } else { LinearRgba::BLACK },
-                            emissive_texture: glows.then(|| color.clone()),
-                            base_color_texture: Some(color),
-                            normal_map_texture: Some(images.add(b.normal)),
-                            metallic_roughness_texture: Some(images.add(b.metal_rough)),
-                            // (The map's: these scale it.)
-                            perceptual_roughness: 1.0,
-                            metallic: 1.0,
-                            // (A mask from the colour map: opaque, its alpha isn't opacity.)
-                            alpha_mode: if surface.mask { AlphaMode::Opaque } else { alpha_mode },
-                            double_sided,
-                            cull_mode,
-                            ..default()
-                        });
-                        light_up(slot, &m, materials, images);
-                        remastered.insert(key, m.clone());
-                        m
-                    }),
-                };
-                if let Some(mat) = mat {
-                    return (meshes.add(m), mat);
+                .with_inserted_indices(Indices::U32(indices))
+        };
+        if !plain.is_empty() {
+            parts.push((meshes.add(make(&plain)), mat.clone()));
+        }
+        if let (Some(c), false) = (region, tinted.is_empty()) {
+            // (Its material in that colour: one for every mesh with it.)
+            let key = (slot.path.clone(), 2);
+            let red = match remastered.get(&key) {
+                Some(m) => m.clone(),
+                None => {
+                    let mut m = materials.get(&mat).cloned().unwrap_or_default();
+                    let b = m.base_color.to_linear();
+                    m.base_color = Color::LinearRgba(LinearRgba::new(b.red * c[0], b.green * c[1], b.blue * c[2], b.alpha));
+                    let m = materials.add(m);
+                    remastered.insert(key, m.clone());
+                    m
                 }
-            }
-            // Else the game's own maps, with mips, its white kept under real paint's (one
-            // material for every mesh with it).
-            let key = (slot.path.clone(), 0);
-            if let Some(mat) = remastered.get(&key).filter(|_| !slot.path.is_empty()) {
-                return (meshes.add(m), mat.clone());
-            }
-            let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t, slot.tint), crate::me_remaster::Map::Color)));
-            let normal_map = slot.normal.as_ref().map(|t| images.add(crate::me_remaster::plain(t, crate::me_remaster::Map::Normal)));
-            let rough = slot.specular.as_ref().map(|t| {
-                let r = roughness_image(t);
-                let px = r.data.clone().unwrap_or_default();
-                images.add(crate::me_remaster::compressed(t.width, t.height, px, crate::me_remaster::Map::Data))
-            });
-            // Without a texture: its constant colour (glowing, if it's a light's), else grey.
-            let plain = slot.color.map(|[r, g, b]| Color::linear_rgb(r, g, b));
-            let mat = materials.add(StandardMaterial {
-                base_color: if tex.is_some() { Color::WHITE } else { plain.unwrap_or(Color::srgb(0.55, 0.55, 0.56)) },
-                emissive: match (plain, slot.emissive) {
-                    (Some(c), true) => c.to_linear() * 4.0,
-                    _ => LinearRgba::BLACK,
-                },
-                base_color_texture: tex,
-                perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
-                metallic_roughness_texture: rough,
-                normal_map_texture: normal_map,
-                alpha_mode,
-                double_sided,
-                cull_mode,
-                reflectance: if glass { 0.5 } else { 0.3 },
-                ..default()
-            });
-            // Glass: clear and smooth, its colour a tint (what it has of an opacity is its
-            // alpha; else mostly clear). A building's (its windows) still shades what's behind it
-            // in the traced light, as the rooms behind them would.
-            if glass && slot.path.starts_with("B_") {
-                occluders.insert(mat.id());
-            }
-            if glass {
-                if let Some(mut g) = materials.get_mut(&mat) {
-                    g.perceptual_roughness = 0.05;
-                    g.metallic_roughness_texture = None;
-                    let opaque = slot.diffuse.as_ref().is_none_or(|t| t.pixels.chunks_exact(4).all(|c| c[3] > 250));
-                    g.base_color = g.base_color.with_alpha(if opaque { 0.25 } else { 1.0 });
-                }
-            }
-            light_up(slot, &mat, materials, images);
-            if !slot.path.is_empty() {
-                remastered.insert(key, mat.clone());
-            }
-            (meshes.add(m), mat)
-        })
-        .collect()
+            };
+            parts.push((meshes.add(make(&tinted)), red));
+        }
+    }
+    parts
+}
+
+/// A section's material: remastered where the table says what it's made of, else the game's
+/// own maps (one for every mesh with it).
+fn section_material(
+    mesh: &StaticMesh,
+    s: &me_assets::StaticSection,
+    slot: &MaterialSlot,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    remastered: &mut HashMap<(String, u32), Handle<StandardMaterial>>,
+    occluders: &mut std::collections::HashSet<AssetId<StandardMaterial>>,
+) -> Handle<StandardMaterial> {
+    let first = s.first_index as usize;
+    let scale = Vec2::from(slot.uv_scale);
+    // How it's drawn: as the game's material has it (cut out, see-through, from both sides).
+    let (alpha_mode, double_sided) = drawn_as(slot);
+    let cull_mode = if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) };
+    let glass = slot.blend == me_assets::Blend::Translucent;
+    // Remastered (#101): what it's made of, its detail tiled at its real size (one material
+    // for every mesh with it at that size).
+    // (Once per material: its detail's tiling from the first mesh that has it.)
+    if let Some(surface) = slot.diffuse.as_ref().and(crate::me_remaster::surface_of(&slot.path)) {
+        let reps = crate::me_remaster::repeats(&surface, metres_per_uv(mesh, first, s.triangles as usize, scale));
+        let key = (slot.path.clone(), 1);
+        let mat = match remastered.get(&key) {
+            Some(m) => Some(m.clone()),
+            None => crate::me_remaster::bake_kept(slot, &surface, reps).map(|b| {
+                let color = images.add(b.color);
+                // (A backlit sign glows its colour.)
+                let glows = surface.glow > 0.0;
+                let m = materials.add(StandardMaterial {
+                    emissive: if glows { LinearRgba::WHITE * surface.glow } else { LinearRgba::BLACK },
+                    emissive_texture: glows.then(|| color.clone()),
+                    base_color_texture: Some(color),
+                    normal_map_texture: Some(images.add(b.normal)),
+                    metallic_roughness_texture: Some(images.add(b.metal_rough)),
+                    // (The map's: these scale it.)
+                    perceptual_roughness: 1.0,
+                    metallic: 1.0,
+                    // (A mask from the colour map: opaque, its alpha isn't opacity.)
+                    alpha_mode: if surface.mask { AlphaMode::Opaque } else { alpha_mode },
+                    double_sided,
+                    cull_mode,
+                    ..default()
+                });
+                light_up(slot, &m, materials, images);
+                remastered.insert(key, m.clone());
+                m
+            }),
+        };
+        if let Some(mat) = mat {
+            return mat;
+        }
+    }
+    // Else the game's own maps, with mips, its white kept under real paint's (one material
+    // for every mesh with it).
+    let key = (slot.path.clone(), 0);
+    if let Some(mat) = remastered.get(&key).filter(|_| !slot.path.is_empty()) {
+        return mat.clone();
+    }
+    let tex = slot.diffuse.as_ref().map(|t| images.add(crate::me_remaster::plain(&crate::me_remaster::tamed(t, slot), crate::me_remaster::color_map(slot))));
+    let normal_map = slot.normal.as_ref().map(|t| images.add(crate::me_remaster::plain(t, crate::me_remaster::Map::Normal)));
+    let rough = slot.specular.as_ref().map(|t| {
+        let r = roughness_image(t);
+        let px = r.data.clone().unwrap_or_default();
+        images.add(crate::me_remaster::compressed(t.width, t.height, px, crate::me_remaster::Map::Data))
+    });
+    // Without a texture: its constant colour (glowing, if it's a light's), else grey.
+    let plain = slot.color.map(|[r, g, b]| Color::linear_rgb(r, g, b));
+    let mat = materials.add(StandardMaterial {
+        base_color: if tex.is_some() { Color::WHITE } else { plain.unwrap_or(Color::srgb(0.55, 0.55, 0.56)) },
+        emissive: match (plain, slot.emissive) {
+            (Some(c), true) => c.to_linear() * 4.0,
+            _ => LinearRgba::BLACK,
+        },
+        base_color_texture: tex,
+        perceptual_roughness: if rough.is_some() { 1.0 } else { 0.8 },
+        metallic_roughness_texture: rough,
+        normal_map_texture: normal_map,
+        alpha_mode,
+        double_sided,
+        cull_mode,
+        reflectance: if glass { 0.5 } else { 0.3 },
+        ..default()
+    });
+    // Glass: clear and smooth, its colour a tint (what it has of an opacity is its alpha; else
+    // mostly clear). A building's (its windows) still shades what's behind it in the traced
+    // light, as the rooms behind them would.
+    if glass && slot.path.starts_with("B_") {
+        occluders.insert(mat.id());
+    }
+    if glass {
+        if let Some(mut g) = materials.get_mut(&mat) {
+            g.perceptual_roughness = 0.05;
+            g.metallic_roughness_texture = None;
+            let opaque = slot.diffuse.as_ref().is_none_or(|t| t.pixels.chunks_exact(4).all(|c| c[3] > 250));
+            g.base_color = g.base_color.with_alpha(if opaque { 0.25 } else { 1.0 });
+        }
+    }
+    light_up(slot, &mat, materials, images);
+    if !slot.path.is_empty() {
+        remastered.insert(key, mat.clone());
+    }
+    mat
 }
 
 fn get(

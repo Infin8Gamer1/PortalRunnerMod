@@ -208,8 +208,10 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
     let mut course: Vec<(bool, String, Vec3, Option<String>)> = vec![];
     let mut story: Vec<(String, String, Vec3, f32)> = vec![];
     let mut lights = 0;
-    for (name, pkg, m) in &read {
-        let pkg: &Package = pkg;
+    let mut soft: HashMap<(String, usize, Vec<i32>, i32), bool> = HashMap::new();
+    let mut pads = 0;
+    for (name, pkg_rc, m) in &read {
+        let pkg: &Package = pkg_rc;
         let mut seen: HashMap<(String, usize), (bool, bool, Option<(Vec3, Vec3)>)> = HashMap::new();
         let (mut props, mut solid) = (0, 0);
         for p in &m.meshes {
@@ -222,32 +224,40 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                     (other.clone(), Some(h), i)
                 }
             };
-            let Some(home) = home else { continue };
-            let home: &Package = &home;
+            let Some(home_rc) = home else { continue };
+            let home: &Package = &home_rc;
             // (The sky is a dome round the city, the sun's flare a card drawn over the sun:
             // ray traced, the dome would shut the sun out. The game's own sky stands in.)
             let path = home.path(mesh as i32 + 1);
             // (Nor are its effects' meshes, light shafts and the like: glows the game blends
             // over the picture, nothing to stand on.)
-            // (A hidden one is kept if it collides (an invisible blocker) or its Kismet moves
-            // or shows it (an InterpActor): not drawn (#113).)
-            let kept_hidden = p.hidden && (p.blocks || p.class != "StaticMeshActor");
-            if p.hidden && !kept_hidden || path.starts_with("L_Sun") || path.starts_with("L_Sky") || path.starts_with("FX_") {
-                continue;
-            }
             // (What it collides with isn't kept: the game reads it with the mesh. Only whether
             // it has anything, and whether that's only triangles.)
             let (shaped, tris_only, bounds) = *seen.entry((home_name.clone(), mesh)).or_insert_with(|| {
                 let shape = MeShape::from_game(&map::mesh_collision(home, mesh));
                 (!shape.is_empty(), shape.hulls.is_empty(), mesh_box(home, mesh))
             });
-            let at = tidy(ue(p.location));
+            // (A hidden one is kept if it collides (an invisible blocker) or its Kismet moves
+            // or shows it (an InterpActor): not drawn (#113). Not a card for the game's baked
+            // lighting, though: hidden, a quad to collide with and nothing for physics, it
+            // stands in doorways she runs through.)
+            let card = p.hidden && tris_only && !p.rigid;
+            let kept_hidden = p.hidden && !card && (p.blocks || p.class != "StaticMeshActor");
+            if p.hidden && !kept_hidden || path.starts_with("L_Sun") || path.starts_with("L_Sky") || path.starts_with("FX_") {
+                continue;
+            }
+            let at = tidy(ue(p.origin()));
             // (Where it stands, roughly: its box's size round its point.)
             let reach = bounds.map_or(1.0, |(lo, hi)| (hi - lo).length() * p.scale.iter().fold(0.0f32, |m, s| m.max(s.abs())));
             let shaped = shaped && !(tris_only && !places.is_empty() && !near(at - reach, at + reach) && {
                 far += 1;
                 true
             });
+            // (`PORT_ME_WHY=1`: why each big one she doesn't collide with doesn't.)
+            if std::env::var("PORT_ME_WHY").is_ok() && !(p.blocks && shaped) && !p.hidden && reach > 4.0 {
+                let why = if !p.blocks { "the game has it not collide" } else if tris_only { "only triangles, out of her way" } else { "nothing to collide with" };
+                eprintln!("WHY {name} {} {} at {at} ({reach:.0} m): {why}", p.name, p.mesh_name);
+            }
             let mut o = Object::new(
                 Kind::MeProp { package: home_name.clone(), mesh: p.mesh_name.clone(), scale: tidy(scale(p.scale)), bounds, solid: p.blocks && shaped, own_shape: true, materials: if p.import.is_none() { overrides(pkg, &p.materials) } else { Vec::new() }, hidden: p.hidden },
                 at,
@@ -258,6 +268,19 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
                 solid += 1;
                 if let Some((lo, hi)) = bounds {
                     low = low.min(at.y + lo.y.min(hi.y) * p.scale[2].abs().max(0.01));
+                }
+            }
+            // Something that breaks her fall (a wrapped construction package): a soft landing
+            // over it, as its physical material says.
+            if p.blocks && shaped && !p.hidden {
+                let key = (home_name.clone(), mesh, p.materials.clone(), p.phys);
+                let is_soft = *soft.entry(key).or_insert_with(|| me_assets::soft_landing(pkgs, pkg_rc, p.phys, &p.materials, &home_rc, mesh));
+                if is_soft {
+                    let b = o.bounds();
+                    let mut pad = Object::sized(Kind::SoftPad { solid: false }, tidy(b.center() + Vec3::Y * 0.05), tidy(b.size() + Vec3::Y * 0.1));
+                    pad.name = format!("{} soft", p.name);
+                    doc.objects.push(pad);
+                    pads += 1;
                 }
             }
             props += 1;
@@ -495,6 +518,7 @@ pub fn port_level(pkgs: &mut Packages, persistent: &str, title: &str, report: &m
         report.push_str(&format!("  {} checkpoints\n", story.len()));
     }
     report.push_str(&format!("  {lights} lights\n"));
+    report.push_str(&format!("  {pads} soft landings\n"));
     starts.sort_by_key(|s| s.0);
     if let Some(&(_, at, yaw)) = starts.first() {
         let mut o = Object::new(Kind::Spawn { gravity: None }, tidy(at - Vec3::Y * HALF_HEIGHT));
@@ -747,12 +771,23 @@ pub fn audit(cooked: &Path, file: &str) {
             e.0 += area * scale2;
             e.1 += n;
             let glow = slot.glow.as_ref().map_or(String::new(), |(m, c)| format!(" glows {c:?}{}", if m.is_some() { " (mapped)" } else { "" }));
-            e.2 = format!("{found} {:?}{glow}", slot.blend);
+            let tint = slot.tint.map_or(String::new(), |t| {
+                let w = match &slot.tint_where {
+                    me_assets::TintWhere::All => String::new(),
+                    me_assets::TintWhere::Above(a, at) => format!(" where uv{a} > {at}"),
+                    me_assets::TintWhere::Mask(_, ch) => format!(" by a mask's channel {ch}"),
+                };
+                format!(" tint {t:?}{w}")
+            });
+            let region = slot.region.as_ref().map_or(String::new(), |(c, _)| format!(" {c:?} where its UVs say"));
+            e.2 = format!("{found} {:?}{glow}{tint}{region}", slot.blend);
         }
     }
     let mut list: Vec<_> = mats.into_iter().collect();
     list.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
-    for (m, (area, n, found)) in list.iter().take(60) {
+    // (`PORT_ME_AUDIT_ALL=1`: every material, not the biggest.)
+    let most = if std::env::var("PORT_ME_AUDIT_ALL").is_ok() { usize::MAX } else { 60 };
+    for (m, (area, n, found)) in list.iter().take(most) {
         println!("{area:>10.0} m² {n:>5}  {m}: {found}");
     }
     println!("-- plain or tiled under 1:");

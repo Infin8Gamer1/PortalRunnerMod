@@ -1286,19 +1286,32 @@ fn script(name: &str) -> Vec<Act> {
         // Start, run two seconds, quit (for what starting and quitting leave behind: the GPU's
         // memory).
         "quit" => vec![Wait(120)],
-        // A walk in a Mirror's Edge level (#109): she's put at PORTAL_ME_AT (x,y,z,yaw), runs
+        // A walk in a Mirror's Edge level (#109): she's put at PORTAL_ME_AT (x,y,z,yaw[,pitch]), runs
         // forward PORTAL_ME_RUN frames (90 unless said), a shot every 15 (`walk_00`, ...).
         "mewalk" => {
             let file: &'static str = Box::leak(std::env::var("PORTAL_ME_LEVEL").unwrap_or_else(|_| "escape".into()).into_boxed_str());
             let f: Vec<f32> = std::env::var("PORTAL_ME_AT").unwrap_or_default().split(',').filter_map(|x| x.trim().parse().ok()).collect();
             let frames: u32 = std::env::var("PORTAL_ME_RUN").ok().and_then(|v| v.parse().ok()).unwrap_or(90);
             let mut v = vec![Chamber(crate::LevelGroup::MirrorsEdge, file), Wait(120)];
-            if f.len() == 4 {
-                v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Look(f[3], -5.0), Wait(60)]);
+            if f.len() >= 4 {
+                v.extend([Teleport(Vec3::new(f[0], f[1], f[2])), Look(f[3], f.get(4).copied().unwrap_or(-5.0)), Wait(60)]);
             }
             for k in 0..=frames / 15 {
                 v.push(Shot(Box::leak(format!("walk_{k:02}").into_boxed_str())));
                 v.push(Hold(MoveInput { move_axis: Vec2::new(0.0, 1.0), ..default() }, 15));
+            }
+            v
+        }
+        // Views of a Mirror's Edge level from a spectator's camera: PORTAL_ME_EYES, eyes
+        // `x,y,z,yaw,pitch` split by `;`, a shot from each (`spec_00`, ...).
+        "mespec" => {
+            let file: &'static str = Box::leak(std::env::var("PORTAL_ME_LEVEL").unwrap_or_else(|_| "tutorial".into()).into_boxed_str());
+            let mut v = vec![Chamber(crate::LevelGroup::MirrorsEdge, file), Wait(120)];
+            for (k, eye) in std::env::var("PORTAL_ME_EYES").unwrap_or_default().split(';').enumerate() {
+                let f: Vec<f32> = eye.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if f.len() == 5 {
+                    v.extend([Spectate(Vec3::new(f[0], f[1], f[2]), f[3], f[4]), Wait(90), Shot(Box::leak(format!("spec_{k:02}").into_boxed_str()))]);
+                }
             }
             v
         }

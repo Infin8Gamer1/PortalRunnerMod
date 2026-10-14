@@ -571,6 +571,10 @@ pub struct Controller {
 
 const SUBSTEP: f32 = 1.0 / 120.0;
 
+/// How high above her feet a wall she comes at shallowly must go for her to run along it
+/// rather than vault it from a jump.
+const ALONGSIDE_HEIGHT: f32 = 1.5;
+
 pub(crate) fn forward(yaw: f32) -> Vec3 {
     Vec3::new(-yaw.sin(), 0.0, -yaw.cos())
 }
@@ -1104,6 +1108,16 @@ impl Controller {
         !world.is_free(&region)
     }
 
+    /// Perched on an edge: something under the very rim of her feet (her full width, where
+    /// [`Self::grounded`] looks a little inside it), holding her up. Walking off a scrap of
+    /// litter she stays on her feet, and steps down off it as she goes, as the game's walking
+    /// does, rather than falling the last centimetre and catching on the next scrap.
+    fn perched(&self, world: &dyn World) -> bool {
+        let hw = self.tuning.half_width - 0.001;
+        let region = Aabb::new(self.feet + Vec3::new(-hw, -0.05, -hw), self.feet + Vec3::new(hw, -0.001, hw));
+        !world.is_free(&region)
+    }
+
     fn try_stand(&mut self, world: &dyn World) -> bool {
         if !self.crouched {
             return true;
@@ -1223,7 +1237,7 @@ impl Controller {
 
     fn ground(&mut self, dt: f32, input: &Input, world: &dyn World) {
         let tu = self.tuning.clone();
-        if !self.grounded(world) {
+        if !self.grounded(world) && !self.perched(world) {
             self.state = State::Air;
             self.air_time = 0.0;
             self.jumped_since_ground = false;
@@ -1621,9 +1635,62 @@ impl Controller {
             return true;
         }
 
+        // Wallrun (TdMove_WallRun.CanDoMove): at least WallRunningMinSpeed, not moving
+        // backwards relative to the view, and a wall from FindWallSide/FindWallForward. Before
+        // the vault: a wall she comes at that shallowly is one to run along, not to vault over
+        // (a board wall low enough to reach the top of, Training's).
+        if speed >= tu.wallrun_min_speed
+            && h.dot(fwd) >= 0.0
+            && input.move_axis.y > 0.3
+            && self.vel.y > -tu.wallrun_stop_fall_speed
+            && !self.crouched
+            && !self.coiled
+        {
+            if let Some(WallHit { n, gap, .. }) = self.find_wallrun(input, world) {
+                self.feet += -n * gap;
+                // TdMove_WallRun.StartMove. A wallrun straight out of the last one's jump-off
+                // is chained: it gets no lift, and pulls harder the more of them in a row.
+                let chained = self.takeoff == Takeoff::WallJump;
+                self.chain_wallruns = if chained { self.chain_wallruns + 1 } else { 0 };
+                let accel = tu.wallrun_accel * (1 + self.chain_wallruns) as f32;
+                // Entry speed is what you came in with (ReachedWall), at least
+                // WallRunningVelocityStartLimit if you're still rising.
+                let begin = if self.vel.y > 0.0 { speed.max(tu.wallrun_max_start_up) } else { speed };
+                // Rising: lift you to WallRunningHorisontalInitialZHeight above where you jumped
+                // (less any ceiling), with the wallrun's own gravity. Falling: keep falling.
+                let vy = if self.vel.y > 0.0 && !chained {
+                    let rise = self.headroom(world, tu.wallrun_rise_height) - (self.feet.y - self.last_jump_at.y);
+                    (2.0 * rise.max(0.0) * accel).sqrt()
+                } else {
+                    self.vel.y
+                };
+                let along = (h - n * h.dot(n)).normalize_or_zero();
+                self.vel = along * begin + Vec3::Y * vy;
+                self.state = State::WallRun { normal: n, t: 0.0 };
+                self.wall_turned = false;
+                self.jump_buffer = 0.0;
+                self.last_wall_normal = Some(n);
+                // TdMove_WallRun.StartMove: a box (the cylinder's radius, 10 uu high) from 30 uu
+                // over her head, WallRunningStrafeCheckDistance (50 uu) into the wall.
+                let over = self.feet + Vec3::Y * (self.height() + uu(30.0) + uu(10.0));
+                let half = Vec3::new(tu.half_width, uu(10.0), tu.half_width);
+                self.wallrun_wall_above = world.sweep(half, over, -n * uu(50.0)).is_some();
+                self.events.push(Event::WallRunStart);
+                self.integrate(SUBSTEP, world, false);
+                return true;
+            }
+        }
+        // (Coming at a wall shallowly enough to run along it, one tall enough to: she runs along
+        // it once she's there, not vaults it from out here. Training's board wall is just low
+        // enough to reach the top of from a jump.)
+        let vault_reach = vault::MAX_TIME_TO_LEDGE * speed.max(uu(300.0));
+        let alongside = trace_wall(world, body, self.feet, fwd, vault_reach, body.height * 0.5).is_some_and(|w| {
+            -w.n.dot(fwd) <= (90.0 - tu.wallrun_max_approach_deg).to_radians().cos() && trace_wall(world, body, self.feet, fwd, vault_reach, ALONGSIDE_HEIGHT).is_some()
+        });
+
         // TdMove_Jump / TdMove_Falling bCheckForVaultOver: holding forward (MoveActionHint "up",
         // the stick past 0.8), vault or step up onto whatever's ahead.
-        if input.move_axis.y > 0.8 {
+        if input.move_axis.y > 0.8 && !alongside {
             let view = fwd * self.pitch.cos() + Vec3::Y * self.pitch.sin();
             if let Some(v) = vault::plan(world, &tu, body, self.feet, self.vel, fwd, view) {
                 self.coiled = false;
@@ -1690,49 +1757,6 @@ impl Controller {
             }
         }
 
-        // Wallrun (TdMove_WallRun.CanDoMove): at least WallRunningMinSpeed, not moving
-        // backwards relative to the view, and a wall from FindWallSide/FindWallForward.
-        if speed >= tu.wallrun_min_speed
-            && h.dot(fwd) >= 0.0
-            && input.move_axis.y > 0.3
-            && self.vel.y > -tu.wallrun_stop_fall_speed
-            && !self.crouched
-            && !self.coiled
-        {
-            if let Some(WallHit { n, gap, .. }) = self.find_wallrun(input, world) {
-                self.feet += -n * gap;
-                // TdMove_WallRun.StartMove. A wallrun straight out of the last one's jump-off
-                // is chained: it gets no lift, and pulls harder the more of them in a row.
-                let chained = self.takeoff == Takeoff::WallJump;
-                self.chain_wallruns = if chained { self.chain_wallruns + 1 } else { 0 };
-                let accel = tu.wallrun_accel * (1 + self.chain_wallruns) as f32;
-                // Entry speed is what you came in with (ReachedWall), at least
-                // WallRunningVelocityStartLimit if you're still rising.
-                let begin = if self.vel.y > 0.0 { speed.max(tu.wallrun_max_start_up) } else { speed };
-                // Rising: lift you to WallRunningHorisontalInitialZHeight above where you jumped
-                // (less any ceiling), with the wallrun's own gravity. Falling: keep falling.
-                let vy = if self.vel.y > 0.0 && !chained {
-                    let rise = self.headroom(world, tu.wallrun_rise_height) - (self.feet.y - self.last_jump_at.y);
-                    (2.0 * rise.max(0.0) * accel).sqrt()
-                } else {
-                    self.vel.y
-                };
-                let along = (h - n * h.dot(n)).normalize_or_zero();
-                self.vel = along * begin + Vec3::Y * vy;
-                self.state = State::WallRun { normal: n, t: 0.0 };
-                self.wall_turned = false;
-                self.jump_buffer = 0.0;
-                self.last_wall_normal = Some(n);
-                // TdMove_WallRun.StartMove: a box (the cylinder's radius, 10 uu high) from 30 uu
-                // over her head, WallRunningStrafeCheckDistance (50 uu) into the wall.
-                let over = self.feet + Vec3::Y * (self.height() + uu(30.0) + uu(10.0));
-                let half = Vec3::new(tu.half_width, uu(10.0), tu.half_width);
-                self.wallrun_wall_above = world.sweep(half, over, -n * uu(50.0)).is_some();
-                self.events.push(Event::WallRunStart);
-                self.integrate(SUBSTEP, world, false);
-                return true;
-            }
-        }
         false
     }
 
@@ -1841,7 +1865,9 @@ impl Controller {
         let fall = self.fall_peak - self.body_y();
         self.uncoil_on_ground(world);
 
-        if fall >= tu.lethal_fall_height {
+        // (Something soft under her breaks a fall that would kill her: what the game's fall
+        // breakers, its wrapped construction packages, are for.)
+        if fall >= tu.lethal_fall_height && !self.soft_below(world, 0.1) {
             self.events.push(Event::Death);
             if tu.respawn_on_death {
                 self.respawn();

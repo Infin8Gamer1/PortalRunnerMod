@@ -209,6 +209,25 @@ fn wallrun_along_wall() {
     assert!(max_air_z_travel > 5.0, "wallran {max_air_z_travel} m");
 }
 
+/// A wall just low enough to reach the top of from a jump (Training's board wall, 2.9 m),
+/// come at shallowly: she runs along it, not vaults it from out there.
+#[test]
+fn wallrun_along_a_low_wall_not_vault_it() {
+    let mut w = floor();
+    w.add(Aabb::new(Vec3::new(1.0, 0.16, -40.0), Vec3::new(1.04, 2.87, -3.0)));
+    // Running at it 17 degrees in from along it, jumping 1.2 m out (her middle).
+    let mut c = ctrl_at(Vec3::new(-1.2, 0.0, 0.0));
+    c.yaw = -17f32.to_radians();
+    let mut pressed = false;
+    let ev = run(&mut c, &w, 3.0, |_, c| {
+        let jump = !pressed && c.feet.x > -0.2 && c.feet.z < -3.0;
+        pressed |= jump;
+        Input { jump_pressed: jump, ..fwd() }
+    });
+    assert!(has(&ev, Event::WallRunStart), "{ev:?}");
+    assert!(!has(&ev, Event::Vault) && !has(&ev, Event::Mantle), "{ev:?}");
+}
+
 #[test]
 fn wallrun_jump_off() {
     let mut w = floor();
@@ -1232,6 +1251,43 @@ fn soft_landing_on_a_mattress() {
     });
     assert!(has(&ev, Event::SoftLand) && !has(&ev, Event::HardLand), "{ev:?}");
     assert!(braced, "braced for it in the air");
+}
+
+/// Running off a scrap of litter with its edge under the rim of her feet, she steps down
+/// off it and over the next scrap at full speed: she doesn't fall the last centimetre and
+/// catch on it (Training's first roof).
+#[test]
+fn running_off_litter_keeps_her_speed() {
+    let tu = Tuning::default();
+    let mut w = floor();
+    // (Behind her, its front edge 5 mm under the back of her feet; and a scrap ahead.)
+    w.add(Aabb::new(Vec3::new(-2.0, 0.0, tu.half_width - 0.005), Vec3::new(2.0, 0.066, 2.0)));
+    w.add(Aabb::new(Vec3::new(-2.0, 0.0, -0.6), Vec3::new(2.0, 0.05, -0.5)));
+    let mut c = Controller::new(tu.clone(), Vec3::new(0.0, 0.066, 0.0), 0.0);
+    c.state = State::Ground;
+    c.vel = Vec3::new(0.0, 0.0, -6.5);
+    c.sprint_charge = 1.0;
+    let mut slowest = f32::MAX;
+    run(&mut c, &w, 0.5, |_, c| {
+        assert_eq!(c.state, State::Ground, "at {:?}", c.feet);
+        slowest = slowest.min(Vec3::new(c.vel.x, 0.0, c.vel.z).length());
+        fwd()
+    });
+    assert!(slowest > 6.0, "slowed to {slowest}");
+    assert!(c.feet.z < -2.0, "{:?}", c.feet);
+}
+
+/// A fall breaker (a wrapped construction package) takes a fall that would kill her.
+#[test]
+fn a_fall_breaker_takes_a_lethal_fall() {
+    let mut w = floor();
+    w.add(Aabb::new(Vec3::new(-2.0, 0.0, -2.0), Vec3::new(2.0, 1.0, 2.0)));
+    w.fixtures.push(Fixture::SoftPad { b: Aabb::new(Vec3::new(-2.0, 0.0, -2.0), Vec3::new(2.0, 1.1, 2.0)) });
+    let high = Tuning::default().lethal_fall_height + 4.0;
+    let mut c = Controller::new(Tuning::default(), Vec3::new(0.0, high, 0.0), 0.0);
+    c.spawn = Vec3::new(0.0, high, 0.0);
+    let ev = run(&mut c, &w, 4.0, |_, _| Input::default());
+    assert!(has(&ev, Event::SoftLand) && !has(&ev, Event::Death), "{ev:?}");
 }
 
 /// TdMove_LayOnGround.GetUpBack: on your back, pull back (S) to roll backwards into a crouch.

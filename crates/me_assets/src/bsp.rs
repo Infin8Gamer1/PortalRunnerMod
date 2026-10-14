@@ -151,6 +151,7 @@ impl Bsp {
             normals: vec![],
             tangents: vec![],
             uvs: vec![],
+            uv_sets: vec![],
             indices: vec![],
             sections: vec![],
             origin: [0.0; 3],

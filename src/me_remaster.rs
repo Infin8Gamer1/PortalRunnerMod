@@ -212,14 +212,18 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
     // (Tinted as the material instance has it: an orange catwalk; or as the surface says, by
     // a parameter of its own. A mask goes from near-black up to the tint.)
     let named = surface.tint.as_ref().and_then(|n| slot.vectors.iter().find(|(v, _)| v.eq_ignore_ascii_case(n)).map(|(_, c)| *c));
-    let tint = named.or(slot.tint).unwrap_or([1.0; 3]);
+    // (Else as its material tints it, where on its map it does.)
+    let (bw, bh) = (base.width.max(1), base.height.max(1));
+    let tint_at = |i: usize| named.unwrap_or_else(|| slot.tint_at((i as u32 % bw) as f32 / bw as f32 + 0.5 / bw as f32, (i as u32 / bw) as f32 / bh as f32 + 0.5 / bh as f32));
     // (A packed colour map: grey from its red, specular from its blue.)
     let grey_r = surface.pack.as_deref() == Some("grey_r_spec_b");
     let packed_spec: Option<Rgba> = grey_r.then(|| Rgba { width: base.width, height: base.height, pixels: base.pixels.chunks_exact(4).flat_map(|c| [c[2], c[2], c[2], 255]).collect() });
     let base_lin: Vec<[f32; 4]> = to_lin(base)
         .into_iter()
         .map(|c| if grey_r { [c[0], c[0], c[0], c[3]] } else { c })
-        .map(|c| {
+        .enumerate()
+        .map(|(i, c)| {
+            let tint = tint_at(i);
             if surface.mask {
                 let m = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
                 let k = |t: f32| lerp(0.02, t, m);
@@ -302,7 +306,7 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
         }
     });
     Some(Baked {
-        color: compressed(w, h, color, Map::Color),
+        color: compressed(w, h, color, if surface.mask { Map::Color } else { color_map(slot) }),
         normal: compressed(w, h, normal, Map::Normal),
         metal_rough: compressed(w, h, mr, Map::Data),
     })
@@ -310,7 +314,7 @@ pub fn bake(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Bake
 
 /// The baked maps kept on disk (`assets/extracted/me_remaster/`), so a level's materials are
 /// baked once: by the material, its tiling, its surface, the table and this.
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 3;
 
 fn cache_path(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
@@ -319,7 +323,9 @@ fn cache_path(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option<Pa
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // (What its maps hold, sampled: a material whose maps are read differently is baked again.)
     let sampled = |m: &Option<me_assets::Rgba>| m.as_ref().map(|d| (d.width, d.height, d.pixels.iter().step_by(4099).copied().collect::<Vec<u8>>()));
-    (CACHE_VERSION, &slot.path, repeats, format!("{surface:?}"), table, sampled(&slot.diffuse), sampled(&slot.normal), slot.tint.map(|t| t.map(f32::to_bits))).hash(&mut h);
+    // (Its tint, where it is: sampled across its map.)
+    let tints: Vec<[u32; 3]> = (0..64).map(|k| slot.tint_at((k % 8) as f32 / 8.0 + 0.06, (k / 8) as f32 / 8.0 + 0.06).map(f32::to_bits)).collect();
+    (CACHE_VERSION, &slot.path, repeats, format!("{surface:?}"), table, sampled(&slot.diffuse), sampled(&slot.normal), tints).hash(&mut h);
     Some(dir.join(format!("{:016x}.bin", h.finish())))
 }
 
@@ -391,11 +397,20 @@ pub fn bake_kept(slot: &MaterialSlot, surface: &Surface, repeats: u32) -> Option
     Some(b)
 }
 
-/// What a map holds, for how it's compressed: a colour (sRGB), a normal (its X and Y), or data
-/// (roughness and metalness, linear).
+/// How a material's colour map is kept: a cut-out's with its clip.
+pub fn color_map(slot: &MaterialSlot) -> Map {
+    match slot.blend {
+        me_assets::Blend::Masked(clip) => Map::Cutout(clip.clamp(0.01, 0.99)),
+        _ => Map::Color,
+    }
+}
+
+/// What a map holds, for how it's compressed: a colour (sRGB), a cut-out's colour (its alpha
+/// cut at this), a normal (its X and Y), or data (roughness and metalness, linear).
 #[derive(Clone, Copy, PartialEq)]
 pub enum Map {
     Color,
+    Cutout(f32),
     Normal,
     Data,
 }
@@ -403,9 +418,22 @@ pub enum Map {
 /// Whether the GPU takes block-compressed textures (BC1-7): it's asked at startup.
 pub static BC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// An alpha scaled by `k`.
+fn scaled(a: u8, k: f32) -> u8 {
+    (a as f32 * k + 0.5).min(255.0) as u8
+}
+
+/// How much of a map's alpha is at or over `clip`, its alpha scaled by `k`.
+fn coverage(pixels: &[u8], clip: f32, k: f32) -> f32 {
+    let n = (pixels.len() / 4).max(1);
+    pixels.chunks_exact(4).filter(|c| scaled(c[3], k) as f32 / 255.0 >= clip).count() as f32 / n as f32
+}
+
 /// A map's mip chain, from itself down to a pixel (box-filtered; a colour map's in linear
-/// light).
-fn mip_levels(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Vec<(u32, u32, Vec<u8>)> {
+/// light). A cut-out's (`clip`) covers as much at each size as at its own: averaged, thin wire
+/// would fade under its clip and the fence vanish a few metres off.
+fn mip_levels(w: u32, h: u32, pixels: Vec<u8>, srgb: bool, clip: Option<f32>) -> Vec<(u32, u32, Vec<u8>)> {
+    let covered = clip.map(|c| coverage(&pixels, c, 1.0));
     let mut levels = vec![(w, h, pixels)];
     loop {
         let (cw, ch, cur) = levels.last().unwrap();
@@ -426,6 +454,21 @@ fn mip_levels(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Vec<(u32, u32, Vec
                         ((px.iter().map(|&p| p as u32).sum::<u32>() + 2) / 4) as u8
                     };
                 }
+            }
+        }
+        if let (Some(clip), Some(want)) = (clip, covered) {
+            // (The scale of its alpha that covers nearest the same: found by halves, then the
+            // nearer of just under and just over. Where its alpha's even, a small mip's, that's
+            // all of it or none: a wire fence a little covered is none at a distance, not a
+            // sheet.)
+            let (mut lo, mut hi) = (0.0f32, 8.0f32);
+            for _ in 0..12 {
+                let k = (lo + hi) * 0.5;
+                if coverage(&next, clip, k) < want { lo = k } else { hi = k }
+            }
+            let k = if want - coverage(&next, clip, lo) < coverage(&next, clip, hi) - want { lo } else { hi };
+            for c in next.chunks_exact_mut(4) {
+                c[3] = scaled(c[3], k);
             }
         }
         levels.push((nw, nh, next));
@@ -450,7 +493,11 @@ fn sampled(mut img: Image, levels: u32) -> Image {
 /// An image with its mip chain, uncompressed (RGBA), repeating, and filtered across mips and at
 /// a slant (anisotropic).
 pub fn with_mips(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Image {
-    let levels = mip_levels(w, h, pixels, srgb);
+    with_mips_cut(w, h, pixels, srgb, None)
+}
+
+fn with_mips_cut(w: u32, h: u32, pixels: Vec<u8>, srgb: bool, clip: Option<f32>) -> Image {
+    let levels = mip_levels(w, h, pixels, srgb, clip);
     let n = levels.len() as u32;
     let data: Vec<u8> = levels.into_iter().flat_map(|(_, _, p)| p).collect();
     let img = Image::new(
@@ -467,19 +514,23 @@ pub fn with_mips(w: u32, h: u32, pixels: Vec<u8>, srgb: bool) -> Image {
 /// BC1 (BC3 if it has any see-through), a normal as BC5 (X and Y; the shader works out Z), data
 /// as BC1.
 pub fn compressed(w: u32, h: u32, pixels: Vec<u8>, map: Map) -> Image {
-    let srgb = map == Map::Color;
+    let srgb = matches!(map, Map::Color | Map::Cutout(_));
+    let clip = match map {
+        Map::Cutout(c) => Some(c),
+        _ => None,
+    };
     if !BC.load(std::sync::atomic::Ordering::Relaxed) || w % 4 != 0 || h % 4 != 0 {
-        return with_mips(w, h, pixels, srgb);
+        return with_mips_cut(w, h, pixels, srgb, clip);
     }
-    let alpha = map == Map::Color && pixels.chunks_exact(4).any(|c| c[3] < 250);
+    let alpha = srgb && pixels.chunks_exact(4).any(|c| c[3] < 250);
     let (format, wgpu) = match map {
-        Map::Color if alpha => (texpresso::Format::Bc3, TextureFormat::Bc3RgbaUnormSrgb),
-        Map::Color => (texpresso::Format::Bc1, TextureFormat::Bc1RgbaUnormSrgb),
+        Map::Color | Map::Cutout(_) if alpha => (texpresso::Format::Bc3, TextureFormat::Bc3RgbaUnormSrgb),
+        Map::Color | Map::Cutout(_) => (texpresso::Format::Bc1, TextureFormat::Bc1RgbaUnormSrgb),
         Map::Normal => (texpresso::Format::Bc5, TextureFormat::Bc5RgUnorm),
         Map::Data => (texpresso::Format::Bc1, TextureFormat::Bc1RgbaUnorm),
     };
     let params = texpresso::Params { algorithm: texpresso::Algorithm::RangeFit, ..default() };
-    let levels = mip_levels(w, h, pixels, srgb);
+    let levels = mip_levels(w, h, pixels, srgb, clip);
     let n = levels.len() as u32;
     let mut data = Vec::new();
     for (lw, lh, px) in &levels {
@@ -508,13 +559,16 @@ pub fn plain(t: &Rgba, map: Map) -> Image {
     compressed(t.width, t.height, px, map)
 }
 
-/// The game's colour map tinted (`tint`, linear) and its white kept under real paint's.
-pub fn tamed(t: &Rgba, tint: Option<[f32; 3]>) -> Rgba {
-    let k = tint.unwrap_or([1.0; 3]);
+/// The game's colour map tinted as its material tints it (`slot`'s tint, where it has it) and
+/// its white kept under real paint's.
+pub fn tamed(t: &Rgba, slot: &MaterialSlot) -> Rgba {
+    let (w, h) = (t.width.max(1), t.height.max(1));
     let pixels = t
         .pixels
         .chunks_exact(4)
-        .flat_map(|c| {
+        .enumerate()
+        .flat_map(|(i, c)| {
+            let k = slot.tint_at((i as u32 % w) as f32 / w as f32 + 0.5 / w as f32, (i as u32 / w) as f32 / h as f32 + 0.5 / h as f32);
             let rgb = [srgb_to_linear(c[0]) * k[0], srgb_to_linear(c[1]) * k[1], srgb_to_linear(c[2]) * k[2]];
             let top = rgb[0].max(rgb[1]).max(rgb[2]);
             let f = if top > WHITEST { WHITEST / top } else { 1.0 };
@@ -586,5 +640,24 @@ mod tests {
         assert_eq!(data.len(), (16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1) * 4);
         let last = &data[data.len() - 4..];
         assert!((185..=191).contains(&last[0]), "{last:?}");
+    }
+
+    /// A cut-out's wire stays at every size: averaged, a line a pixel wide is half as opaque a
+    /// mip down, under its clip.
+    #[test]
+    fn cut_out_wire_stays_in_mips() {
+        // A wire every other column: half of it covered.
+        let px: Vec<u8> = (0..16 * 16).flat_map(|i| if i % 2 == 0 { [200, 200, 200, 255] } else { [0, 0, 0, 0] }).collect();
+        let plain = mip_levels(16, 16, px.clone(), true, None);
+        assert_eq!(coverage(&plain[1].2, 0.6, 1.0), 0.0);
+        let kept = mip_levels(16, 16, px, true, Some(0.6));
+        for (w, _, l) in &kept[1..] {
+            assert!(coverage(l, 0.6, 1.0) >= 0.5, "{w}: {}", coverage(l, 0.6, 1.0));
+        }
+        // A strand in sixteen rows (barbed wire): not a sheet when it's a pixel.
+        let px: Vec<u8> = (0..16 * 16).flat_map(|i| if i / 16 == 8 { [200, 200, 200, 255] } else { [0, 0, 0, 0] }).collect();
+        let kept = mip_levels(16, 16, px, true, Some(0.5));
+        assert!(coverage(&kept[1].2, 0.5, 1.0) > 0.0);
+        assert_eq!(coverage(&kept.last().unwrap().2, 0.5, 1.0), 0.0);
     }
 }
