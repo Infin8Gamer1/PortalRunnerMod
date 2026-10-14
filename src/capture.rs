@@ -1881,6 +1881,34 @@ fn script(name: &str) -> Vec<Act> {
         // The gun, standing and looking about.
         "gun" => vec![Map(0), Wait(90), Look(0.0, 0.0), Wait(10), Shot("gun_ahead"), Look(0.0, -40.0), Wait(10), Shot("gun_down"), Fire(PortalColor::Blue), Wait(3), Shot("gun_fire")],
         // The Proving Grounds' stations.
+        // The light from a laser and a light bridge (#16), on the Proving Grounds: the floor beside
+        // the laser from above, and down past the bridge into its pit.
+        "beamlight" => vec![
+            Map(0),
+            Wait(120),
+            Spectate(Vec3::new(20.0, 1.4, 5.6), 0.0, -50.0),
+            Wait(90),
+            Shot("beam_01_laser_floor"),
+            Unspectate,
+            // (The bridge comes on once the laser reaches its catcher: the redirection cube from
+            // its dropper, set in the beam, as `stations` does.)
+            Teleport(Vec3::new(18.0, 0.0, 19.6)),
+            Look(0.0, -40.0),
+            Wait(20),
+            Use,
+            Wait(20),
+            Teleport(Vec3::new(17.0, 0.0, 2.0)),
+            Look(180.0, -20.0),
+            Wait(40),
+            Use,
+            Wait(60),
+            Spectate(Vec3::new(16.6, 0.9, -15.0), 120.0, -45.0),
+            Wait(90),
+            Shot("beam_02_bridge_pit"),
+            Spectate(Vec3::new(14.0, 3.0, -5.0), 0.0, -25.0),
+            Wait(90),
+            Shot("beam_03_bridge_far"),
+        ],
         "stations" => vec![
             Map(0),
             Wait(60),

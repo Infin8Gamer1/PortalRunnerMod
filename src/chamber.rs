@@ -10,6 +10,7 @@ use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::solari::prelude::RaytracingMesh3d;
 
 use aperture::gel::{GelMap, CELL};
 use aperture::sim::{Owner, BRIDGE_HALF_WIDTH, BUTTON_TOP, CUBE_HALF, PLATE_HALF, PLATE_TOP};
@@ -61,6 +62,10 @@ pub struct GelVis(Paint);
 /// the gun and the spark where a stray shot lands show (s).
 /// A pellet's light (lumens: the ordinary path's; ray traced, its core lights the room).
 pub const PELLET_LIGHT: f32 = 250_000.0;
+/// How brightly a laser's core glows, lighting the room red round it, and a light bridge,
+/// lighting what's under and round it blue (what shows on screen: the traced light scales it).
+const LASER_LIGHT: LinearRgba = LinearRgba::rgb(12.0, 0.6, 0.4);
+const BRIDGE_LIGHT: LinearRgba = LinearRgba::rgb(0.2, 0.6, 1.1);
 const BULLET_SPEED: f32 = 120.0;
 const BULLET_STREAK: f32 = 1.2;
 const FLASH_TIME: f32 = 0.04;
@@ -74,6 +79,9 @@ pub struct Pools {
     glows: Vec<Entity>,
     bridges: Vec<Entity>,
     blobs: Vec<Entity>,
+    /// Each bridge piece's light (`ChamberMats::bridge_light`), and whether it's in the traced
+    /// scene (the traced scene takes every one that's there, shown or not).
+    bridge_lights: Vec<(Entity, bool)>,
     /// High energy pellets (each a glowing ball with its light).
     pellets: Vec<Entity>,
     /// Turrets' shots in flight (each a streak), and their muzzle flashes and sparks.
@@ -123,6 +131,9 @@ pub struct ChamberMats {
     pub bridge: Handle<StandardMaterial>,
     pub laser: Handle<StandardMaterial>,
     pub laser_glow: Handle<StandardMaterial>,
+    /// What a light bridge lights the room with, ray traced (its look is `bridge`, see-through
+    /// and so not traced): a glowing slab only the traced light sees.
+    pub bridge_light: Handle<StandardMaterial>,
     pub lens_off: Handle<StandardMaterial>,
     pub lens_on: Handle<StandardMaterial>,
     pub paint: [Handle<StandardMaterial>; 3],
@@ -155,6 +166,8 @@ pub struct ChamberMats {
     pub metal: Handle<StandardMaterial>,
     pub cube_mesh: Handle<Mesh>,
     pub unit_cube: Handle<Mesh>,
+    /// The same, ready to trace (`bridge_light`'s).
+    pub traced_cube: Handle<Mesh>,
     pub beam: Handle<Mesh>,
     pub glow: Handle<Mesh>,
     pub blob: Handle<Mesh>,
@@ -477,8 +490,10 @@ pub fn setup(
         ],
         fizzler: materials.add(glow(LinearRgba::rgb(0.25, 0.55, 1.1), 0.15)),
         bridge: materials.add(glow(LinearRgba::rgb(0.25, 0.75, 1.3), 0.45)),
-        laser: materials.add(glow(LinearRgba::rgb(6.0, 0.3, 0.2), 1.0)),
+        // (Glowing, not unlit: so it's in the traced light, and lights the room red.)
+        laser: materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LASER_LIGHT, double_sided: true, cull_mode: None, ..default() }),
         laser_glow: materials.add(glow(LinearRgba::rgb(1.2, 0.05, 0.03), 0.3)),
+        bridge_light: materials.add(StandardMaterial { base_color: Color::BLACK, emissive: BRIDGE_LIGHT, cull_mode: None, ..default() }),
         lens_off: materials.add(std(Color::srgb(0.25, 0.08, 0.06), None, 0.2, 0.0)),
         lens_on: materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.4, 0.2), emissive: LinearRgba::rgb(5.0, 1.2, 0.4), ..default() }),
         paint: paint.clone().map(|p| materials.add(p)),
@@ -567,6 +582,11 @@ pub fn setup(
         metal: materials.add(std(Color::srgb(0.18, 0.19, 0.21), None, 0.4, 0.8)),
         cube_mesh: meshes.add(cube_mesh(CUBE_HALF)),
         unit_cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        traced_cube: {
+            let mut c = Mesh::from(Cuboid::new(1.0, 1.0, 1.0));
+            crate::raytrace::make_ready(&mut c);
+            meshes.add(c)
+        },
         beam: meshes.add(Cylinder::new(0.025, 1.0)),
         glow: meshes.add(Cylinder::new(0.08, 1.0)),
         blob: meshes.add(Sphere::new(1.0).mesh().ico(1).unwrap()),
@@ -1358,6 +1378,30 @@ pub fn update(
         match segs.get(i) {
             Some(s) => set(*e, Some(Transform::from_translation(s.center()).with_scale(s.size())), None),
             None => set(*e, None, None),
+        }
+    }
+    // Each bridge piece lights the room, in the traced light.
+    if crate::raytrace::supported() {
+        while pools.bridge_lights.len() < segs.len() {
+            let e = commands.spawn((ChamberGeom, MeshMaterial3d(m.bridge_light.clone()), Transform::default())).id();
+            pools.bridge_lights.push((e, false));
+        }
+        for (i, (e, traced)) in pools.bridge_lights.iter_mut().enumerate() {
+            match segs.get(i) {
+                Some(s) => {
+                    let mut ec = commands.entity(*e);
+                    ec.insert(Transform::from_translation(s.center()).with_scale(s.size()));
+                    if !*traced {
+                        ec.insert(RaytracingMesh3d(m.traced_cube.clone()));
+                        *traced = true;
+                    }
+                }
+                None if *traced => {
+                    commands.entity(*e).remove::<RaytracingMesh3d>();
+                    *traced = false;
+                }
+                None => {}
+            }
         }
     }
     for (i, e) in pools.tracers.iter().enumerate() {

@@ -135,6 +135,7 @@ fn gltf_material(remix: &Remix, m: &Material) -> Result<glb::Material, String> {
         metallic_roughness_png: baked.metallic_roughness.as_ref().map(png).transpose()?,
         emissive_png: baked.emissive.as_ref().map(png).transpose()?,
         emissive_strength: m.emissive_intensity.unwrap_or(1.0).max(1.0),
+        roughness: None,
     })
 }
 

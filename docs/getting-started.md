@@ -44,7 +44,11 @@ extracted. If Portal with RTX is installed, its remaster is used where it has on
 physically based materials for walls and floors, its toxic water for goo, and Portal's own
 cube, buttons, dropper, round door and grill emitters in place of Portal 2's. (Portal 2's
 own mechanics, such as lasers, light bridges, faith plates, gel and the reflection cube, have
-no Portal version and stay Portal 2's.)
+no Portal version and stay Portal 2's.) Every model's materials take what their own files say
+of their surface: how rough they are from their shine (Source's Phong: its exponent, its
+mask and boost), their bump maps where they aren't flat, and what glows (`$selfillum`: the
+lenses and lamps on emitters, catchers, sockets and faith plates). A laser's beam and a light
+bridge light the room round them, red and blue, in the traced light.
 
 **Mirror's Edge** is found in the usual Steam folders too, including under Proton. Otherwise,
 set `FAITH_ME_DIR` to where it's installed, or put that path in `me_path.txt`.
