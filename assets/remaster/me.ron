@@ -28,6 +28,8 @@
         "cardboard": (detail: None, size: 1.0, roughness: 0.9, metallic: 0.0, strength: 0.0),
         "glass": (detail: None, size: 1.0, roughness: 0.05, metallic: 0.0, strength: 0.0),
         "plastic": (detail: None, size: 1.0, roughness: 0.5, metallic: 0.0, strength: 0.0),
+        // Glazed tiles indoors (a subway station's walls, a training hall's floor).
+        "tile": (detail: None, size: 1.0, roughness: 0.3, metallic: 0.0, strength: 0.0),
         // The far city's buildings: their colour map's red is their grey, its blue their windows'
         // shine.
         "far_building": (detail: Some("plaster"), size: 1.0, roughness: 0.8, metallic: 0.0, strength: 0.2, pack: Some("grey_r_spec_b")),
@@ -35,22 +37,30 @@
         "advert": (detail: None, size: 1.0, roughness: 0.25, metallic: 0.0, strength: 0.0, tint: Some("AdColor"), mask: true, glow: 4.0),
     },
     rules: [
-        // Living things and the far city keep their look.
-        (match: ["vegetation", "leaves", "bush", "tree", "b_vista", "mountain", "skydome"], surface: None),
+        // Living things, the far city, water, the planes and cars far off, the editor's tool
+        // materials, and lamps keep their look.
+        (match: ["vegetation", "leaves", "bush", "tree", "b_vista", "mountain", "skydome", "water", "backdropvehicles", "airliner", "removesurface", "blocker", "bakeblack", "p_lights."], surface: None),
+        // (The Shard's curtain wall, a cubemap's reflection over its colour in the game: here,
+        // the world's own.)
+        (match: ["m_shard_01", "m_tower_01_facade"], surface: Some("glass")),
         (match: ["m_advertisement", "mi_ad_"], surface: Some("advert")),
         (match: ["glass", "window"], surface: Some("glass")),
         (match: ["b_bd_", "b_materials.m_bd"], surface: Some("far_building")),
         (match: ["cardboard"], surface: Some("cardboard")),
-        (match: ["tarp", "plasticcover", "housecover", "tent", "cover", "fabric", "cloth", "sack"], surface: Some("fabric")),
+        (match: ["tarp", "plasticcover", "housecover", "tent", "cover", "fabric", "cloth", "sack", "carpet"], surface: Some("fabric")),
         // (A scaffold's board walls are painted plywood, braced: its steel is scaffolding_02.)
         (match: ["wood", "plank", "pallet", "crate", "runnerobjects", "scaffolding_01"], surface: Some("wood")),
         (match: ["plastic", "barrel", "bin_", "bucket"], surface: Some("plastic")),
+        (match: ["interiortile", "subwaytiles"], surface: Some("tile")),
         // Galvanised and bare steel: scaffolding, wire, fences, grates.
         (match: ["scaffold", "fence", "wire", "razor", "barbed", "grate", "metalstack", "steel", "chain", "zipline"], surface: Some("bare_metal")),
         // Painted metal: machinery, ducts, pipes, catwalks, cranes, doors, signs.
-        (match: ["ventilation", "acrooftop", "acsystem", "acunit", "airduct", "vent", "fan", "pipe", "catwalk", "crane", "railing", "ladder", "swingpole", "door", "billboard", "signad", "sign", "metal", "container", "cablebox", "antenna", "satellite", "tank", "cistern", "generator", "elevator"], surface: Some("painted_metal")),
+        (match: ["ventilation", "acrooftop", "acsystem", "acunit", "airduct", "vent", "fan", "pipe", "catwalk", "crane", "railing", "ladder", "swingpole", "door", "billboard", "signad", "sign", "metal", "container", "cablebox", "antenna", "satellite", "tank", "cistern", "generator", "elevator", "boatexterior", "subwaytrain"], surface: Some("painted_metal")),
         // Concrete built on the roofs (their structures, plinths, plugs).
-        (match: ["rooftopstructure", "concrete", "plinth", "curb", "pillar"], surface: Some("concrete")),
+        (match: ["rooftopstructure", "concrete", "plinth", "curb", "pillar", "tunnel", "stormdrain", "canal", "harbour", "bridge", "chimney", "brick", "flowerbed"], surface: Some("concrete")),
+        // Ceilings (their tiles too; not their metal frames, or concrete): painted render,
+        // acoustic board.
+        (match: ["ceiling"], surface: Some("plaster")),
         // What she runs on: roofs, walkways, pavements.
         (match: ["rooftop", "roof", "floor", "walkway", "sidewalk", "road", "street", "pavement", "asphalt", "ground"], surface: Some("roof")),
         // The buildings' walls: painted render.

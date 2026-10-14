@@ -20,7 +20,7 @@ use serde::Deserialize;
 const BAKED: u32 = 1024;
 /// The brightest a colour may be (linear): fresh white paint reflects about this much. The
 /// game's whites, made for its lightmaps, are brighter, and blow out under real light.
-const WHITEST: f32 = 0.8;
+pub(crate) const WHITEST: f32 = 0.8;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Surface {

@@ -138,8 +138,10 @@ impl Bsp {
         Ok(Bsp { surfs, faces })
     }
 
+    /// (Not the editor's tool materials: the default one, and the one that marks a surface as
+    /// removed.)
     fn drawn(&self, s: &Surf, pkg: &Package) -> bool {
-        s.flags & PF_INVISIBLE == 0 && s.material != 0 && pkg.object_name(s.material) != "DefaultMaterial"
+        s.flags & PF_INVISIBLE == 0 && s.material != 0 && !matches!(pkg.object_name(s.material), "DefaultMaterial" | "RemoveSurfaceMaterial")
     }
 
     /// What's drawn of it, a section per material, as a mesh (Unreal units, its points where

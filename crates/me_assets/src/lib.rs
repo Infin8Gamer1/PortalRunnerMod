@@ -1365,6 +1365,7 @@ fn material_path(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> String {
 /// A plain material's colour from its constants (its first Constant3Vector), and whether it
 /// has an emissive input, following an instance to its parent.
 fn constant_color(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> (Option<[f32; 3]>, bool) {
+    let vectors = material_vectors(pkgs, pkg, m);
     let mut next = Some((pkg.clone(), m));
     for _ in 0..4 {
         let Some((p, obj)) = next.take() else { break };
@@ -1391,12 +1392,44 @@ fn constant_color(pkgs: &mut Packages, pkg: &Rc<Package>, m: i32) -> (Option<[f3
                     Some([inner.f32(&mp, "R")?, inner.f32(&mp, "G")?, inner.f32(&mp, "B")?])
                 })
             };
-            let color = constant.or_else(parameter);
+            // (Its diffuse input worked out, where it's constants and colour parameters (an
+            // instance's values first): a black constant is black, not "none". Else any colour
+            // it has.)
+            let color = input_color(&mp, mi, "DiffuseColor", &vectors, 0).or(constant).or_else(parameter);
             return (color, emissive);
         }
         next = props.object(&mp, "Parent").map(|par| (mp.clone(), par));
     }
     (None, false)
+}
+
+/// What input `input` of expression `e` is, when it's a colour made of constants and colour
+/// parameters (an instance's values in `vectors`, else their defaults): multiplied, added,
+/// masked. None if it takes anything else (a texture).
+fn input_color(p: &Package, e: usize, input: &str, vectors: &[(String, [f32; 3])], depth: u32) -> Option<[f32; 3]> {
+    if depth > 8 {
+        return None;
+    }
+    let x = input_of(p, e, input)?;
+    let props = props::Props::read(p, &p.exports[x]).ok()?;
+    let both = |op: fn(f32, f32) -> f32| -> Option<[f32; 3]> {
+        let (a, b) = (input_color(p, x, "A", vectors, depth + 1)?, input_color(p, x, "B", vectors, depth + 1)?);
+        Some([op(a[0], b[0]), op(a[1], b[1]), op(a[2], b[2])])
+    };
+    match p.class_name(&p.exports[x]) {
+        "MaterialExpressionConstant" => Some([props.f32(p, "R").unwrap_or(0.0); 3]),
+        "MaterialExpressionConstant3Vector" | "MaterialExpressionConstant4Vector" => Some([props.f32(p, "R").unwrap_or(0.0), props.f32(p, "G").unwrap_or(0.0), props.f32(p, "B").unwrap_or(0.0)]),
+        // (An unnamed one is named None, as an instance's value for it is; without a default,
+        // black.)
+        "MaterialExpressionVectorParameter" => {
+            let n = props.name(p, "ParameterName").unwrap_or_else(|| "None".into()).to_ascii_lowercase();
+            vectors.iter().find(|(v, _)| *v == n).map(|(_, c)| *c).or_else(|| props.get("DefaultValue").and_then(|t| linear_color(p, t))).or(Some([0.0; 3]))
+        }
+        "MaterialExpressionMultiply" => both(|a, b| a * b),
+        "MaterialExpressionAdd" => both(|a, b| a + b),
+        "MaterialExpressionComponentMask" | "MaterialExpressionClamp" | "MaterialExpressionConstantClamp" => input_color(p, x, "Input", vectors, depth + 1),
+        _ => None,
+    }
 }
 
 /// A material's textures: (name, lowercased with its parameter name, package, export).
