@@ -45,22 +45,14 @@ pub struct Settings {
     pub fps_cap: f32,
     /// Exposure offset in stops (+ brighter).
     pub brightness: f32,
-    /// `graphics::AA_MODES`.
-    pub anti_aliasing: f32,
     /// Contrast-adaptive sharpening strength (0 off).
     pub sharpening: f32,
     /// The portal views' resolution, as a fraction of the window's.
     pub portal_resolution: f32,
-    /// `graphics::SHADOWS`.
-    pub shadows: f32,
     /// Faith's third-person body, seen through portals (and her shadow): 1 on, 0 off.
     pub body3p: f32,
-    /// Ray-traced lighting (`raytrace`): 1 on, 0 off. Applies at the next start.
-    pub ray_tracing: f32,
     /// Glow round bright things (lamps, portal rims, lasers): its strength (0 off).
     pub bloom: f32,
-    /// Screen-space ambient occlusion (not with MSAA): 1 on, 0 off.
-    pub ssao: f32,
     /// The view's exposure follows how bright it is, within the range Portal's maps allow
     /// (as the eye adjusts): 1 on, 0 off.
     pub auto_exposure: f32,
@@ -68,7 +60,7 @@ pub struct Settings {
     /// 1024 square): lower takes less of the GPU's memory.
     pub texture_detail: f32,
     /// NVIDIA DLSS (`graphics::DLSS_MODES`; 0 off). Only in builds with the `dlss` feature (the
-    /// default), on a GPU that has it; elsewhere the anti-aliasing setting applies.
+    /// default), on a GPU that has it; else (and off) TAA smooths the picture.
     pub dlss: f32,
 }
 
@@ -127,14 +119,10 @@ impl Default for Settings {
             vsync: 1.0,
             fps_cap: 0.0,
             brightness: 0.0,
-            anti_aliasing: 2.0,
             sharpening: 0.0,
             portal_resolution: 1.0,
-            shadows: 2.0,
             body3p: 1.0,
-            ray_tracing: 1.0,
             bloom: 0.3,
-            ssao: 1.0,
             auto_exposure: 1.0,
             texture_detail: 2.0,
             // Quality, where there's DLSS.
@@ -249,7 +237,7 @@ fn on_off(v: f32) -> String {
     if v > 0.5 { "On".to_string() } else { "Off".to_string() }
 }
 
-const ROWS: [Row; 30] = [
+const ROWS: [Row; 26] = [
     Row { key: "master", page: Page::Audio, label: "Master volume", min: 0.0, max: 1.0, step: 0.05, get: |s| s.master, put: |s, v| s.master = v, show: pct },
     Row { key: "music", page: Page::Audio, label: "Music", min: 0.0, max: 1.0, step: 0.05, get: |s| s.music, put: |s, v| s.music = v, show: pct },
     Row { key: "effects", page: Page::Audio, label: "Effects", min: 0.0, max: 1.0, step: 0.05, get: |s| s.effects, put: |s, v| s.effects = v, show: pct },
@@ -351,17 +339,6 @@ const ROWS: [Row; 30] = [
         show: |v| format!("{v:+.2}"),
     },
     Row {
-        key: "anti_aliasing",
-        page: Page::Graphics,
-        label: "Anti-aliasing",
-        min: 0.0,
-        max: (crate::graphics::AA_MODES.len() - 1) as f32,
-        step: 1.0,
-        get: |s| s.anti_aliasing,
-        put: |s, v| s.anti_aliasing = v,
-        show: crate::graphics::aa_label,
-    },
-    Row {
         key: "sharpening",
         page: Page::Graphics,
         label: "Sharpening",
@@ -383,18 +360,6 @@ const ROWS: [Row; 30] = [
         put: |s, v| s.portal_resolution = v,
         show: pct,
     },
-    Row {
-        key: "shadows",
-        page: Page::Graphics,
-        label: "Shadows",
-        min: 0.0,
-        max: (crate::graphics::SHADOWS.len() - 1) as f32,
-        step: 1.0,
-        get: |s| s.shadows,
-        put: |s, v| s.shadows = v,
-        show: |v| crate::graphics::SHADOWS[v as usize].to_string(),
-    },
-    Row { key: "ray_tracing", page: Page::Graphics, label: "Ray-traced lighting", min: 0.0, max: 1.0, step: 1.0, get: |s| s.ray_tracing, put: |s, v| s.ray_tracing = v, show: crate::raytrace::label },
     Row { key: "bloom", page: Page::Graphics, label: "Bloom", min: 0.0, max: 1.0, step: 0.1, get: |s| s.bloom, put: |s, v| s.bloom = v, show: |v| if v <= 0.0 { "Off".to_string() } else { pct(v) } },
     Row {
         key: "dlss",
@@ -407,7 +372,6 @@ const ROWS: [Row; 30] = [
         put: |s, v| s.dlss = v,
         show: |v| crate::graphics::dlss_label(v),
     },
-    Row { key: "ssao", page: Page::Graphics, label: "Ambient occlusion", min: 0.0, max: 1.0, step: 1.0, get: |s| s.ssao, put: |s, v| s.ssao = v, show: on_off },
     Row { key: "auto_exposure", page: Page::Graphics, label: "Auto exposure", min: 0.0, max: 1.0, step: 1.0, get: |s| s.auto_exposure, put: |s, v| s.auto_exposure = v, show: on_off },
     Row {
         key: "texture_detail",
@@ -487,14 +451,10 @@ mod tests {
             vsync: 0.0,
             fps_cap: 2.0,
             brightness: 0.5,
-            anti_aliasing: 4.0,
             sharpening: 0.3,
             portal_resolution: 0.75,
-            shadows: 3.0,
             body3p: 0.0,
-            ray_tracing: 0.0,
             bloom: 0.8,
-            ssao: 0.0,
             auto_exposure: 0.0,
             texture_detail: 1.0,
             dlss: 3.0,

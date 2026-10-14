@@ -1,23 +1,19 @@
 //! The display and graphics settings, applied: window mode and size, VSync, a frame-rate
-//! cap, brightness, anti-aliasing (on the player's camera and, matched to it, the portal and
-//! viewmodel cameras), sharpening, HDR with bloom and ambient occlusion, the portal views'
-//! resolution and the sun's shadows (indoors too: the chambers' dim fill light). With
-//! ray-traced lighting (`raytrace`) there's no MSAA, SSAO or shadow maps: it does without.
+//! cap, brightness, anti-aliasing (TAA, or DLSS: on the player's camera and, matched to it,
+//! the portal and viewmodel cameras), sharpening, HDR with bloom and auto exposure, and the
+//! portal views' resolution. The lighting's traced (`raytrace`): it makes its own shadows and
+//! occlusion, so there are no shadow maps or SSAO, and TAA (or DLSS) is what smooths its grain
+//! over frames.
 
 use std::time::{Duration, Instant};
 
 use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
-use bevy::anti_alias::fxaa::Fxaa;
-use bevy::anti_alias::smaa::Smaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::camera::{CameraMainTextureUsages, Exposure, Hdr};
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::math::cubic_splines::LinearSpline;
 use bevy::post_process::auto_exposure::{AutoExposure, AutoExposureCompensationCurve, AutoExposurePlugin};
 use bevy::post_process::bloom::Bloom;
-use bevy::core_pipeline::prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass};
-use bevy::light::DirectionalLightShadowMap;
 use bevy::prelude::*;
 use bevy::render::camera::{MipBias, TemporalJitter};
 use bevy::render::render_resource::TextureUsages;
@@ -33,18 +29,6 @@ pub const RESOLUTIONS: [(u32, u32); 6] = [(1280, 720), (1600, 900), (1920, 1080)
 /// Frame-rate caps offered (0: none).
 pub const FPS_CAPS: [u32; 7] = [0, 30, 60, 120, 144, 165, 240];
 pub const WINDOW_MODES: [&str; 3] = ["Windowed", "Borderless", "Fullscreen"];
-pub const AA_MODES: [&str; 5] = ["Off", "FXAA", "SMAA", "MSAA 4x", "TAA"];
-
-/// The anti-aliasing setting as shown: with ray-traced lighting it's always TAA.
-pub fn aa_label(v: f32) -> String {
-    let name = AA_MODES[(v as usize).min(AA_MODES.len() - 1)];
-    if crate::raytrace::active() && name != "TAA" {
-        format!("{name} (TAA: ray tracing)")
-    } else {
-        name.to_string()
-    }
-}
-pub const SHADOWS: [&str; 4] = ["Off", "Low", "Medium", "High"];
 /// DLSS settings, and how much of the window's resolution each renders at.
 pub const DLSS_MODES: [(&str, f32); 6] = [("Off", 1.0), ("DLAA", 1.0), ("Quality", 0.667), ("Balanced", 0.58), ("Performance", 0.5), ("Ultra perf.", 0.333)];
 
@@ -53,9 +37,9 @@ pub const DLSS_MODES: [(&str, f32); 6] = [("Off", 1.0), ("DLAA", 1.0), ("Quality
 static DLSS_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static DLSS_RR_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// DLSS Ray Reconstruction is in use: DLSS on, with ray-traced lighting, on a GPU that has it.
+/// DLSS Ray Reconstruction is in use: DLSS on, on a GPU that has it (and traces the light).
 fn ray_reconstruction(settings: &Settings) -> bool {
-    dlss_on(settings) && crate::raytrace::active() && DLSS_RR_OK.load(std::sync::atomic::Ordering::Relaxed)
+    dlss_on(settings) && crate::raytrace::supported() && DLSS_RR_OK.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn dlss_label(v: f32) -> String {
@@ -66,7 +50,7 @@ pub fn dlss_label(v: f32) -> String {
         format!("{name} (not built in)")
     } else if !DLSS_OK.load(std::sync::atomic::Ordering::Relaxed) {
         format!("{name} (no GPU support)")
-    } else if crate::raytrace::active() && DLSS_RR_OK.load(std::sync::atomic::Ordering::Relaxed) {
+    } else if crate::raytrace::supported() && DLSS_RR_OK.load(std::sync::atomic::Ordering::Relaxed) {
         format!("{name} + Ray Reconstruction")
     } else {
         name.to_string()
@@ -80,27 +64,6 @@ pub fn render_scale(settings: &Settings) -> f32 {
 
 fn dlss_on(settings: &Settings) -> bool {
     settings.dlss >= 0.5 && DLSS_OK.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Aa {
-    Off,
-    Fxaa,
-    Smaa,
-    Msaa,
-    Taa,
-}
-
-impl Aa {
-    pub fn from_setting(v: f32) -> Aa {
-        match v.round() as i32 {
-            1 => Aa::Fxaa,
-            2 => Aa::Smaa,
-            3 => Aa::Msaa,
-            4 => Aa::Taa,
-            _ => Aa::Off,
-        }
-    }
 }
 
 /// Auto exposure: how far it may turn the picture down and up (stops), as Portal's maps let
@@ -138,7 +101,7 @@ pub struct GraphicsPlugin;
 
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(AutoExposurePlugin).add_systems(Update, (apply, map_tone.after(apply), reset_taa_on_teleport)).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
+        app.add_plugins(AutoExposurePlugin).add_systems(Update, (apply, map_tone.after(apply))).add_systems(PostUpdate, carry_previous_view).add_systems(Last, frame_cap);
         #[cfg(feature = "dlss")]
         app.add_systems(
             PreUpdate,
@@ -161,23 +124,21 @@ impl Plugin for GraphicsPlugin {
 #[derive(Default)]
 struct Applied {
     window: Option<(i32, i32, bool)>,
-    cameras: Option<(Aa, i32, i32)>,
-    shadows: Option<(i32, bool, bool)>,
+    cameras: Option<(i32, i32)>,
+    sun: bool,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply(
     mut commands: Commands,
     settings: Res<Settings>,
-    game: Res<Game>,
     mut applied: Local<Applied>,
     mut windows: Query<(&mut Window, Option<&bevy::window::OnMonitor>), With<PrimaryWindow>>,
-    main: Query<(Entity, Has<DeferredPrepass>), With<PlayerCamera>>,
+    main: Query<Entity, With<PlayerCamera>>,
     portals: Query<Entity, With<PortalCam>>,
     overlays: Query<Entity, (With<OverlayCamera>, Without<PlayerCamera>)>,
     new_cameras: Query<(), Added<Camera>>,
     mut sun: Query<&mut DirectionalLight, With<Sun>>,
-    mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut curves: ResMut<Assets<AutoExposureCompensationCurve>>,
     mut curve: Local<Option<Handle<AutoExposureCompensationCurve>>>,
 ) {
@@ -213,65 +174,33 @@ fn apply(
     }
 
     // ---- the cameras
-    let aa = Aa::from_setting(settings.anti_aliasing);
     let sharpen = (settings.sharpening * 4.0).round() as i32;
     let ev = (settings.brightness * 4.0).round() as i32;
-    let fx = ((settings.bloom * 10.0).round() as i32) * 2 + (settings.ssao > 0.5) as i32;
+    let bloom = (settings.bloom * 10.0).round() as i32;
     let dlss = if dlss_on(&settings) { settings.dlss as i32 } else { 0 };
     let rr = ray_reconstruction(&settings);
-
     let auto = settings.auto_exposure > 0.5;
-    // Ray-traced lighting just switched off: the cameras keep their deferred pass (and the
-    // traced light) a few frames more (see `raytrace::switch`). Till then they're set up as
-    // traced: MSAA can't go with a deferred pass (Bevy turns it off, and the overlays' then
-    // don't match), and the pass needs its prepasses.
-    let rt = crate::raytrace::active() || main.iter().any(|(_, deferred)| deferred);
-    let cams = (aa, sharpen, ev * 100000 + fx * 100 + dlss * 2 + rr as i32 + (auto as i32) * 10_000_000 + (rt as i32) * 100_000_000);
-    // DLSS does the anti-aliasing itself. Ray-traced lighting needs TAA: it's what smooths
-    // the traced light's grain over frames (and it can't take MSAA).
-    let aa = if dlss > 0 {
-        Aa::Off
-    } else if rt {
-        Aa::Taa
-    } else {
-        aa
-    };
+    let cams = (sharpen, ev * 100000 + bloom * 100 + dlss * 2 + rr as i32 + (auto as i32) * 10_000_000);
     if applied.cameras != Some(cams) || !new_cameras.is_empty() {
         applied.cameras = Some(cams);
         // Brighter is a lower exposure value.
         let exposure = Exposure { ev100: Exposure::EV100_BLENDER - settings.brightness };
-        for (e, _) in &main {
+        for e in &main {
             let mut ec = commands.entity(e);
-            ec.remove::<(Fxaa, Smaa, TemporalAntiAliasing, TemporalJitter, MipBias, ContrastAdaptiveSharpening)>();
-            // (The ray-traced lighting needs these prepasses.)
-            if !rt {
-                ec.remove::<(DepthPrepass, MotionVectorPrepass)>();
-            }
-            ec.remove::<(Bloom, ScreenSpaceAmbientOcclusion, bevy::core_pipeline::prepass::NormalPrepass, AutoExposure)>();
+            ec.remove::<(TemporalAntiAliasing, TemporalJitter, MipBias, ContrastAdaptiveSharpening, Bloom, AutoExposure)>();
             if auto {
                 let curve = curve.get_or_insert_with(|| curves.add(exposure_curve(auto_exposure_reference(), AUTO_EXPOSURE_RANGE))).clone();
                 ec.insert(AutoExposure { speed_brighten: AUTO_EXPOSURE_SPEED, speed_darken: AUTO_EXPOSURE_SPEED, compensation_curve: curve, ..default() });
             }
             // HDR, tonemapped once here (the portal views arrive linear), with bloom.
-            ec.insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface));
+            ec.insert((Msaa::Off, exposure, Hdr, Tonemapping::TonyMcMapface));
             if settings.bloom > 0.0 {
                 ec.insert(Bloom { intensity: 0.15 * settings.bloom, ..Bloom::NATURAL });
             }
-            // SSAO needs MSAA off; traced light has its own occlusion.
-            if settings.ssao > 0.5 && aa != Aa::Msaa && !rt {
-                ec.insert(ScreenSpaceAmbientOcclusion::default());
-            }
-            match aa {
-                Aa::Fxaa => {
-                    ec.insert(Fxaa::default());
-                }
-                Aa::Smaa => {
-                    ec.insert(Smaa::default());
-                }
-                Aa::Taa => {
-                    ec.insert(TemporalAntiAliasing::default());
-                }
-                Aa::Off | Aa::Msaa => {}
+            // DLSS does the anti-aliasing itself; else TAA, which also smooths the traced
+            // light's grain over frames.
+            if dlss == 0 {
+                ec.insert(TemporalAntiAliasing::default());
             }
             #[cfg(feature = "dlss")]
             {
@@ -297,11 +226,11 @@ fn apply(
                 ec.insert(ContrastAdaptiveSharpening { enabled: true, sharpening_strength: settings.sharpening, denoise: false });
             }
         }
-        // The portal views are drawn into the player's view before its post-processing, so
-        // FXAA, SMAA and TAA smooth them too; with MSAA they need their own.
-        // They render linear HDR (no tonemapping), which the player's camera tonemaps.
+        // The portal views are drawn into the player's view before its post-processing, so its
+        // TAA smooths them too. They render linear HDR (no tonemapping), which the player's
+        // camera tonemaps.
         for e in &portals {
-            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::None));
+            commands.entity(e).insert((Msaa::Off, exposure, Hdr, Tonemapping::None));
         }
         // The arms and the gun draw over the player's picture, into the same HDR texture
         // (a camera with a different format or sampling would start from its own, black, one
@@ -309,32 +238,22 @@ fn apply(
         // The same texture usages too: DLSS and the traced light both add storage to the
         // player's (DLSS out of sight, in the renderer), and a camera with other usages gets a
         // texture of its own, never cleared, laid over the picture.
-        let usages = if dlss > 0 || rt { CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING) } else { CameraMainTextureUsages::default() };
+        let usages = CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING);
         for e in &overlays {
-            commands.entity(e).insert((if aa == Aa::Msaa { Msaa::Sample4 } else { Msaa::Off }, exposure, Hdr, Tonemapping::TonyMcMapface, usages));
+            commands.entity(e).insert((Msaa::Off, exposure, Hdr, Tonemapping::TonyMcMapface, usages));
         }
     }
 
-    // ---- the sun's shadows
-    let quality = settings.shadows.round() as i32;
-    let outdoor = !game.sim.level.indoor;
-    if applied.shadows != Some((quality, outdoor, rt)) {
-        applied.shadows = Some((quality, outdoor, rt));
-        shadow_map.size = match quality {
-            1 => 1024,
-            3 => 4096,
-            _ => 2048,
-        };
-        let _ = outdoor;
-        // Traced light casts its own shadows.
+    // ---- the sun: no shadow maps (the traced light casts its own shadows; on a GPU that can't
+    // trace, the plain lighting does without).
+    if !applied.sun {
+        applied.sun = true;
         for mut l in &mut sun {
-            l.shadow_maps_enabled = quality > 0 && !crate::raytrace::active();
+            l.shadow_maps_enabled = false;
         }
     }
 }
 
-/// Through a portal the view jumps: TAA's (and DLSS's) history would smear the old view
-/// over the new.
 /// Portal's maps' tonemap controllers (env_tonemap_controller), as their logic sets them: how
 /// far the auto exposure may turn the picture down and up (Source's scales: 0.75x is down 0.42
 /// stops), how fast it adjusts (1: ours), and the bloom (Portal's chambers set 0.3: ours as it
@@ -371,24 +290,6 @@ fn map_tone(
             if glow.intensity != bloom {
                 glow.intensity = bloom;
             }
-        }
-    }
-}
-
-fn reset_taa_on_teleport(
-    game: Res<Game>,
-    mut taa: Query<&mut TemporalAntiAliasing, With<PlayerCamera>>,
-    #[cfg(feature = "dlss")] mut dlss: Query<&mut bevy::anti_alias::dlss::Dlss, With<PlayerCamera>>,
-) {
-    // With traced light TAA is also what smooths its grain: starting it over would show the
-    // grain for a moment. Its own checks catch the old view instead.
-    if game.sim.events.iter().any(|e| matches!(e, aperture::SimEvent::Teleported { .. })) && !crate::raytrace::active() {
-        for mut t in &mut taa {
-            t.reset = true;
-        }
-        #[cfg(feature = "dlss")]
-        for mut d in &mut dlss {
-            d.reset = true;
         }
     }
 }

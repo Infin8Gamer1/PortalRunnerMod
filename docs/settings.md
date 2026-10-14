@@ -35,10 +35,12 @@ Mouse sensitivity and field of view.
 
 ## Graphics
 
-- **Anti-aliasing**: off, FXAA, SMAA, MSAA 4x or TAA. With ray tracing it's always TAA: it's
-  what smooths the traced light. With DLSS, the DLSS setting takes its place.
-- **DLSS**: see [Getting started](getting-started.md#dlss).
-- Sharpening, the portal views' resolution, and shadow quality.
-- **Ray-traced lighting**: see [Getting started](getting-started.md#lighting).
+- **DLSS**: see [Getting started](getting-started.md#dlss). Off (or without DLSS), TAA smooths
+  the picture: it's also what smooths the traced light's grain over frames.
+- Sharpening, and the portal views' resolution.
 - **Auto exposure**, **Bloom**.
-- **Ambient occlusion**: needs MSAA off, and isn't needed with ray tracing.
+- **Texture detail**: Mirror's Edge's textures, at most 256, 512 or 1024 square.
+
+The lighting is always ray traced (see [Getting started](getting-started.md#lighting)): it
+makes its own shadows and occlusion, so there are no shadow, ambient occlusion or other
+anti-aliasing settings.

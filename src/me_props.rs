@@ -585,10 +585,10 @@ pub fn light_up_lit(game: Res<Game>, lit: Option<ResMut<LitMats>>, mut materials
     // (Its glow set here, in the units the lighting wants: not scaled again.)
     if let Some(mut scaled) = scaled {
         for l in &lit.0 {
-            scaled.0.entry(l.mat.id()).or_insert((1.0, 1.0));
+            scaled.0.insert(l.mat.id());
         }
     }
-    let units = if crate::raytrace::active() { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
+    let units = crate::raytrace::EMISSIVE_SCALE;
     for l in lit.0.iter_mut() {
         let s = me.lit(l.prop);
         if (s - l.drawn).abs() < 1e-3 {

@@ -72,12 +72,14 @@ and [Making levels](levels.md) for the level editor (**F4**).
 
 ## Lighting
 
-On GPUs with hardware ray tracing (NVIDIA RTX, AMD RX 6000 and later, on Vulkan), lighting is
-ray traced with Bevy's Solari. The sun, the ceiling panels and everything that glows light the
-chambers directly and by bouncing, every frame, through portal views too. Nothing is baked.
+The lighting is ray traced with Bevy's Solari, and that's a requirement: it needs a GPU with
+hardware ray tracing (NVIDIA RTX, AMD RX 6000 and later, on Vulkan). The sun, the ceiling
+panels and everything that glows light the chambers directly and by bouncing, every frame,
+through portal views too. Nothing is baked. (Views through a portal inside a portal, a small
+part of the screen, are lit the ordinary way, by the level's lamps.)
 
-Other GPUs light the chambers the ordinary way. So does turning off **Settings > Graphics >
-Ray-traced lighting** (which switches straight away), or `PORTAL_NORT=1` for one run.
+On a GPU without hardware ray tracing the game still runs, lit plainly by the lamps alone
+(no sun shadows, no bounced light), and the title screen says why.
 
 ## DLSS
 
@@ -110,9 +112,8 @@ run.
 
 On a GPU that has it, DLSS is on from the start (Quality). **Settings > Graphics > DLSS**
 offers DLAA, Quality, Balanced, Performance and Ultra performance, or off; it takes the place
-of the anti-aliasing setting, and the portal views render at its lower resolution too. With
-ray-traced lighting it's **DLSS Ray Reconstruction**, which denoises the traced light as it
-upscales (no grain, even moving fast). The log says which DLSS features the GPU has, and the
+of TAA, and the portal views render at its lower resolution too. It's **DLSS Ray
+Reconstruction**, which denoises the traced light as it upscales (no grain, even moving fast). The log says which DLSS features the GPU has, and the
 setting says when one is missing.
 
 Frame times on an RTX 4080 at 1440p, ray traced, standing still / with a pair of portals in

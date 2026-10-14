@@ -94,7 +94,7 @@ pub fn draw(
     mut state: Local<UiState>,
     lib: Res<Library>,
     me_cache: Option<Res<crate::me_props::MePropCache>>,
-    mut game_settings: ResMut<crate::settings::Settings>,
+    game_settings: Res<crate::settings::Settings>,
     mut prop_thumbs: ResMut<Thumbs>,
     mut prop_textures: Local<HashMap<usize, egui::TextureId>>,
     (extracted, mut images): (Res<crate::extracted::Extracted>, ResMut<Assets<Image>>),
@@ -154,7 +154,7 @@ pub fn draw(
     // ---- toolbar
     let top = egui::Panel::top("editor_toolbar").show(&mut root, |ui| {
         ui.horizontal(|ui| {
-            toolbar(ui, ed, &mut game, &mut menu, &mut settings, &mut game_settings);
+            toolbar(ui, ed, &mut game, &mut menu, &mut settings);
         });
     });
     ed.panels.push(top.response.rect);
@@ -246,7 +246,7 @@ pub fn draw(
     Ok(())
 }
 
-fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu::Menu, settings: &mut TransformGizmoSettings, game_settings: &mut crate::settings::Settings) {
+fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu::Menu, settings: &mut TransformGizmoSettings) {
     ui.menu_button("File", |ui| {
         if ed.unsaved {
             ui.colored_label(egui::Color32::from_rgb(240, 180, 60), "Unsaved changes are lost by New/Open/Import");
@@ -336,15 +336,6 @@ fn toolbar(ui: &mut egui::Ui, ed: &mut Editor, game: &mut Game, menu: &mut menu:
         ui.label("Lighting");
         ui.radio_value(&mut v.unlit, false, "Lit");
         ui.radio_value(&mut v.unlit, true, "Unlit").on_hover_text("Everything at its own colour (textures as they are)");
-        ui.separator();
-        // (Not while unlit: that view takes the materials' glow over, as switching does.)
-        let mut rt = game_settings.ray_tracing >= 0.5;
-        let r = ui.add_enabled(!v.unlit, egui::Checkbox::new(&mut rt, format!("Ray-traced lighting: {}", crate::raytrace::label(game_settings.ray_tracing))));
-        let r = if v.unlit { r.on_disabled_hover_text("Switch to Lit first") } else { r.on_hover_text("Switched straight away (the game's setting too)") };
-        if r.changed() {
-            game_settings.ray_tracing = if rt { 1.0 } else { 0.0 };
-            game_settings.save();
-        }
     });
     ui.separator();
     if ui.add_enabled(ed.can_undo(), egui::Button::new("⟲ Undo")).clicked() {

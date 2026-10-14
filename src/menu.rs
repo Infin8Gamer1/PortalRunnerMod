@@ -260,6 +260,11 @@ fn build(commands: &mut Commands, root: Entity, fonts: &UiFonts, menu: &Menu, li
         let h = commands.spawn((Text::new(big), fonts.bold(size), TextColor(RED))).id();
         let s = commands.spawn((Text::new(small), fonts.regular(17.0), TextColor(DIM), Node { margin: UiRect::bottom(px(28.0)), ..default() })).id();
         commands.entity(panel).add_children(&[h, s]);
+        // (On a GPU that can't trace the light, why it looks plain.)
+        if menu.screen == Screen::Title && !crate::raytrace::supported() {
+            let n = commands.spawn((Text::new(crate::raytrace::UNSUPPORTED), fonts.regular(16.0), TextColor(RED), Node { max_width: px(520.0), margin: UiRect::bottom(px(22.0)), ..default() })).id();
+            commands.entity(panel).add_child(n);
+        }
     };
     heading(commands, panel);
 

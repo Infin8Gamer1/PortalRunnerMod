@@ -37,7 +37,7 @@ The scripts are in `src/capture.rs`. Some of them:
 | `portals`, `recursion`, `fling`, `stations`, `gun` | The portals, views through them, a fling, the Proving Grounds' stations, the gun |
 | `through`, `flingfilm` | A screenshot every frame running through a portal, and falling through a floor portal |
 | `cubethrough`, `plate`, `goo`, `glass`, `pellets` | A cube held half through a portal, the faith plate, goo, observation windows, Chamber 06's pellet |
-| `lighting`, `lighting3`, `rtswitch` | Lighting still, moving and outdoors; before and after ray tracing, and a portal's view against the world it shows; switching ray tracing |
+| `lighting` | Lighting still, moving and outdoors |
 | `p1` | Portal's chambers' starts (`PORTAL_FIRST_MAP` / `PORTAL_LAST_MAP` pick them; `PORTAL_TP="x,y,z,yaw,pitch;..."` adds places to look from) |
 | `views` | Map `PORTAL_FIRST_MAP` from each place in `PORTAL_TP="x,y,z,yaw,pitch;..."` (where she'd stand, and which way to look): a spectator camera there, so nothing falls or drowns. `PORTAL_HOLD` frames before each shot, `PORTAL_SHOTS` shots of each; `PORTAL_TRACK=pellet` keeps the view on the pellet; `PORTAL_PLACE=1` puts her there instead |
 | `spectate` | The spectator camera over Chamber 08's goo, following the pellet, then back to her. A spectator sees her as others do: her third-person body |
@@ -52,4 +52,3 @@ Other variables:
 - `PORTAL_MAP=<n>`: start on chamber n (its place in the list).
 - `PORTAL_EDIT=1`: start in the level editor.
 - `PORTAL_NOVSYNC=1`: uncap the frame rate.
-- `PORTAL_NORT=1`: no ray-traced lighting for this run.

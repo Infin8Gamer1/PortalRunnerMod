@@ -1594,7 +1594,7 @@ struct Lit {
     emissive: LinearRgba,
     emissive_texture: Option<Handle<Image>>,
     weight: f32,
-    scaled: Option<(f32, f32)>,
+    scaled: bool,
 }
 
 /// The unlit view: every material shows its own colour, as glow alone (no colour lit by
@@ -1609,7 +1609,6 @@ fn unlit(
 ) {
     let want = ed.active && ed.view.unlit;
     let added: Vec<AssetId<StandardMaterial>> = events.read().filter_map(|e| if let AssetEvent::Added { id } = e { Some(*id) } else { None }).collect();
-    let rt = crate::raytrace::active();
     let mut flatten = |id: AssetId<StandardMaterial>, materials: &mut Assets<StandardMaterial>, saved: &mut std::collections::HashMap<AssetId<StandardMaterial>, Lit>| {
         if saved.contains_key(&id) {
             return;
@@ -1619,20 +1618,18 @@ fn unlit(
         if m.unlit {
             return;
         }
-        let was_scaled = scaled.as_ref().and_then(|s| s.0.get(&id).copied());
+        let was_scaled = scaled.as_ref().is_some_and(|s| s.0.contains(&id));
         saved.insert(id, Lit { base: m.base_color, emissive: m.emissive, emissive_texture: m.emissive_texture.clone(), weight: m.emissive_exposure_weight, scaled: was_scaled });
-        let weight = m.emissive_exposure_weight;
         let c = m.base_color.to_linear();
-        // Its colour as glow: in physical units when the light's traced (as every glow is then).
-        let scale = if rt { crate::raytrace::EMISSIVE_SCALE } else { 1.0 };
+        // Its colour as glow, in physical units (as every glow is).
+        let scale = crate::raytrace::EMISSIVE_SCALE;
         m.emissive = LinearRgba::rgb(c.red * scale, c.green * scale, c.blue * scale);
         m.emissive_texture = m.base_color_texture.clone();
-        m.emissive_exposure_weight = if rt { 1.0 } else { 0.0 };
+        m.emissive_exposure_weight = 1.0;
         m.base_color = Color::linear_rgba(0.0, 0.0, 0.0, c.alpha);
-        // (Marked as scaled already, so the traced light doesn't scale it again; with the
-        // lighting switched off meanwhile, it's unscaled like any other.)
-        if let (true, Some(s)) = (rt, scaled.as_mut()) {
-            s.0.entry(id).or_insert((scale, weight));
+        // (Marked as scaled already, so the traced light doesn't scale it again.)
+        if let Some(s) = scaled.as_mut() {
+            s.0.insert(id);
         }
     };
     if want && !*on {
@@ -1657,13 +1654,10 @@ fn unlit(
             }
             // As the traced light had it (or hadn't).
             if let Some(s) = scaled.as_mut() {
-                match lit.scaled {
-                    Some(v) => {
-                        s.0.insert(id, v);
-                    }
-                    None => {
-                        s.0.remove(&id);
-                    }
+                if lit.scaled {
+                    s.0.insert(id);
+                } else {
+                    s.0.remove(&id);
                 }
             }
         }

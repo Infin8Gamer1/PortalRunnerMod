@@ -46,12 +46,13 @@ one: a white room with lamps and a start.
   with the gizmo); each has a colour, an intensity in lumens (the ceiling lamps are 900,000), a
   range, a size (bigger is softer) and shadows on or off. A sun replaces the level's (its
   colour, brightness in lux, and the way it faces: where it stands doesn't matter). The
-  level's settings (nothing selected) can set its own ambient (fill) light. With ray-traced
-  lighting, which lights by what glows, each light is also a glowing bulb only the traced
-  light sees (a spot light's in a short black tube that shapes its cone).
+  level's settings (nothing selected) can set its own ambient (fill) light. The traced light
+  lights by what glows: each light is also a glowing bulb only the traced light sees (a spot
+  light's in a short black tube that shapes its cone). The light itself lights the deeper
+  portal views, which aren't traced.
 - **View** (toolbar): the level's meshes, collision (the boxes Faith and cubes stop against,
   coloured by what they are), markers, every signal's links, the grid, Faith, fog; lit or
-  unlit; and ray-traced lighting, on or off straight away (the game's setting too).
+  unlit.
 - **Outliner** and **details** (right): every object; the selected one's position, size,
   facing and settings (material, signal, what turns it on, cube kind, gel...). With nothing
   selected, the level's name, intro line, indoors or out, and which portals the gun shoots.

@@ -195,8 +195,8 @@ fn main() {
         hud::update,
     )
         .chain();
-    // Ray-traced lighting is chosen at startup (PORTAL_NORT=1 turns it off for this run).
-    raytrace::add(&mut app, settings::Settings::load().ray_tracing > 0.5 && std::env::var_os("PORTAL_NORT").is_none());
+    // Ray-traced lighting (#91: the only lighting).
+    raytrace::add(&mut app);
     app.add_systems(Update, ((capture::run.run_if(resource_exists::<capture::Capture>), capture::normal_test), menu::update.run_if(editor::idle), cursor_lock.run_if(editor::idle), game, editor::systems()).chain());
     app.run();
 }
@@ -423,7 +423,8 @@ fn light_for(
             *tf = Transform::from_xyz(8.0, 30.0, 14.0).looking_at(Vec3::ZERO, Vec3::Y);
         } else {
             l.illuminance = 11_000.0;
-            l.shadow_maps_enabled = !raytrace::active();
+            // (The traced light casts its own shadows.)
+            l.shadow_maps_enabled = false;
             *tf = Transform::from_xyz(30.0, 60.0, 20.0).looking_at(Vec3::new(0.0, 0.0, -60.0), Vec3::Y);
         }
         l.color = Color::WHITE;
